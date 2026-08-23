@@ -546,6 +546,17 @@ class Downloader(Runner[None, DownloaderBase]):
             logger.debug(
                 f"Reusing torrent_id {torrent_id} from validation for {stream.infohash}"
             )
+        else:
+            # Only Real-Debrid populates torrent_id while checking availability;
+            # every other service reports "cached" without adding the torrent,
+            # so add it here. Without this the bare assert below raised an
+            # AssertionError with no message, which surfaced as an empty
+            # failure reason and made a cached torrent look undownloadable.
+            torrent_id = service.add_torrent(stream.infohash)
+
+            logger.debug(
+                f"Added torrent {stream.infohash} to {service.key} as {torrent_id}"
+            )
 
         assert torrent_id
 
