@@ -341,6 +341,84 @@ class TpdbApi:
         data = self._get("movies", {"q": query, "page": page, "per_page": per_page})
         return self._parse_many(data, TpdbMovie)
 
+    # Similar / related
+
+    def get_similar_movies(self, movie_id: str) -> list[TpdbMovie]:
+        """Movies TPDB considers related to ``movie_id``.
+
+        This is the same "related" list the TPDB website shows on a title page.
+        """
+
+        data = self._get(f"movies/{movie_id}/similar")
+        return self._parse_many(data, TpdbMovie)
+
+    def get_similar_scenes(self, scene_id: str) -> list[TpdbScene]:
+        """Scenes TPDB considers related to ``scene_id``."""
+
+        data = self._get(f"scenes/{scene_id}/similar")
+        return self._parse_many(data, TpdbScene)
+
+    # Collection (the signed-in user's own marked titles)
+
+    def list_collected_movies(
+        self,
+        page: int | None = None,
+        per_page: int | None = None,
+    ) -> list[TpdbMovie]:
+        """Movies in the authenticated user's TPDB collection.
+
+        ``is_collected`` is the working filter. ``collected`` and
+        ``in_collection`` are accepted but ignored, returning the unfiltered
+        feed.
+        """
+
+        data = self._get(
+            "movies", {"is_collected": "true", "page": page, "per_page": per_page}
+        )
+        return self._parse_many(data, TpdbMovie)
+
+    def list_collected_scenes(
+        self,
+        page: int | None = None,
+        per_page: int | None = None,
+    ) -> list[TpdbScene]:
+        """Scenes in the authenticated user's TPDB collection."""
+
+        data = self._get(
+            "scenes", {"is_collected": "true", "page": page, "per_page": per_page}
+        )
+        return self._parse_many(data, TpdbScene)
+
+    def is_collected(self, numeric_id: int | str) -> bool:
+        """Whether one title is in the collection.
+
+        Takes the *integer* ``_id``, not the UUID. Despite the parameter being
+        named ``scene_id`` the id space is shared, so movies work here too.
+        """
+
+        data = self._get("user/collection", {"scene_id": numeric_id})
+        return bool(data.get("value"))
+
+    def add_to_collection(self, numeric_id: int | str) -> bool:
+        """Add one title to the collection, by integer ``_id``.
+
+        NOTE: TPDB exposes no DELETE on this route (GET, HEAD, POST only), so
+        this cannot be undone through the API -- removal is a manual step on the
+        TPDB website.
+        """
+
+        response = self.session.post(
+            "user/collection", json={"scene_id": int(numeric_id)}
+        )
+
+        if response.status_code >= 400:
+            raise TpdbApiError(
+                f"TPDB request failed ({response.status_code}): {response.text[:200]}",
+                status_code=response.status_code,
+            )
+
+        return True
+
     # Tags
 
     def list_tags(

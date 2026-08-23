@@ -12,6 +12,10 @@ A note on what TPDB actually provides, because it shapes this module:
     * Scenes cannot be filtered by tag. ``tag``/``tags``/``tags[]``/
       ``filter[tags]`` are ignored or return nothing; ``q`` is the only
       parameter that genuinely narrows a scene listing.
+    * It *does* expose per-title relatedness at ``/{movies,scenes}/{id}/similar``
+      -- the same "related" list the website shows -- and the signed-in user's
+      collection via ``is_collected=true``. Recommendations are built on those
+      two rather than on any ranking.
 
 So there is nothing to build a faithful "trending" or "top rated" feed on. The
 endpoints below are therefore split into two groups:
@@ -69,13 +73,29 @@ class PopularTagsResponse(BaseModel):
     tags: list[TagCount]
 
 
-class RecommendationsResponse(BaseModel):
-    """Scenes matched against signals taken from the local library."""
+Basis = Literal["collection", "library", "subscriptions", "latest"]
 
-    basis: Literal["library", "subscriptions", "latest"]
-    matched_sites: list[str]
-    matched_performers: list[str]
-    items: list[TpdbScene]
+
+class RecommendedMovie(BaseModel):
+    """A recommended movie plus why it was surfaced."""
+
+    votes: int
+    because_of: list[str]
+    movie: TpdbMovie
+
+
+class RecommendationsResponse(BaseModel):
+    """Recommendations and the signal they were derived from.
+
+    ``basis`` says which signal was available, strongest first: the TPDB
+    collection, then the local library, then configured subscriptions, then the
+    plain newest feed.
+    """
+
+    basis: Basis
+    seeds: list[str]
+    movies: list[RecommendedMovie]
+    scenes: list[TpdbScene]
 
 
 def _api() -> TpdbApi:
@@ -225,19 +245,27 @@ def recommendations(
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     pages: Annotated[int, Query(ge=1, le=MAX_SAMPLE_PAGES)] = 3,
 ) -> RecommendationsResponse:
-    """Recent scenes ranked against what is already in the library.
+    """Recommendations seeded from the TPDB collection, then the library.
 
-    Derived locally. Signals are the sites and performers that appear most in
-    the library; candidates are recent scenes from those sites, scored by
-    performer and site overlap, with anything already in the library removed.
+    When the account has collected titles, each one is expanded through TPDB's
+    own ``/similar`` list -- the same relatedness the website shows -- and the
+    results are ranked by how many seeds recommended them, with anything already
+    collected or already in the library removed. ``because_of`` names the seeds
+    responsible, so a suggestion can be explained rather than just asserted.
 
-    Falls back to the configured site subscriptions when the library holds no
-    TPDB items, and to the plain newest-scenes feed when neither is available.
+    Falls back to library site/performer overlap, then to configured
+    subscriptions, then to the newest scenes.
     """
 
     api = _api()
+    collected_movies = _call(api.list_collected_movies, per_page=100)
+    collected_scenes = _call(api.list_collected_scenes, per_page=100)
+
+    if collected_movies or collected_scenes:
+        return _recommend_from_collection(api, collected_movies, collected_scenes, limit)
+
     sites, performers, known = _library_signals()
-    basis: Literal["library", "subscriptions", "latest"] = "library"
+    basis: Basis = "library"
 
     if not sites:
         configured = [str(site) for site in settings_manager.settings.content.tpdb.sites]
@@ -282,9 +310,65 @@ def recommendations(
 
     return RecommendationsResponse(
         basis=basis,
-        matched_sites=sites,
-        matched_performers=performers[:10],
-        items=[scene for _, scene in scored[:limit]],
+        seeds=performers[:10],
+        movies=[],
+        scenes=[scene for _, scene in scored[:limit]],
+    )
+
+
+def _recommend_from_collection(
+    api: TpdbApi,
+    movies: list[TpdbMovie],
+    scenes: list[TpdbScene],
+    limit: int,
+) -> RecommendationsResponse:
+    """Expand each collected title through TPDB's own related list."""
+
+    owned = {item.id for item in [*movies, *scenes] if item.id}
+    votes: Counter[str] = Counter()
+    because: dict[str, list[str]] = {}
+    found: dict[str, TpdbMovie] = {}
+
+    for movie in movies:
+        if not movie.id:
+            continue
+
+        for similar in _call(api.get_similar_movies, movie.id):
+            if not similar.id or similar.id in owned:
+                continue
+
+            votes[similar.id] += 1
+            because.setdefault(similar.id, []).append(movie.title or movie.id)
+            found.setdefault(similar.id, similar)
+
+    scene_suggestions: list[TpdbScene] = []
+    seen_scenes: set[str] = set()
+
+    for scene in scenes:
+        if not scene.id:
+            continue
+
+        for similar in _call(api.get_similar_scenes, scene.id):
+            if not similar.id or similar.id in owned or similar.id in seen_scenes:
+                continue
+
+            seen_scenes.add(similar.id)
+            scene_suggestions.append(similar)
+
+    ranked = [
+        RecommendedMovie(
+            votes=count,
+            because_of=because.get(movie_id, []),
+            movie=found[movie_id],
+        )
+        for movie_id, count in votes.most_common(limit)
+    ]
+
+    return RecommendationsResponse(
+        basis="collection",
+        seeds=[item.title or "" for item in [*movies, *scenes] if item.title],
+        movies=ranked,
+        scenes=scene_suggestions[:limit],
     )
 
 
@@ -341,3 +425,66 @@ def get_movie(movie_id: Annotated[str, Path()]) -> TpdbMovie:
         raise HTTPException(status_code=404, detail="Movie not found")
 
     return movie
+
+
+class CollectionResponse(BaseModel):
+    movies: list[TpdbMovie]
+    scenes: list[TpdbScene]
+
+
+class CollectionStatus(BaseModel):
+    numeric_id: int
+    collected: bool
+
+
+@router.get("/collection", operation_id="tpdb_get_collection")
+def get_collection(
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=100)] = DEFAULT_PER_PAGE,
+) -> CollectionResponse:
+    """The titles marked as collected on the authenticated TPDB account."""
+
+    api = _api()
+
+    return CollectionResponse(
+        movies=_call(api.list_collected_movies, page=page, per_page=per_page),
+        scenes=_call(api.list_collected_scenes, page=page, per_page=per_page),
+    )
+
+
+@router.get("/collection/{numeric_id}", operation_id="tpdb_get_collection_status")
+def get_collection_status(numeric_id: Annotated[int, Path()]) -> CollectionStatus:
+    """Whether one title is collected. Takes the integer ``_id``, not the UUID."""
+
+    return CollectionStatus(
+        numeric_id=numeric_id,
+        collected=_call(_api().is_collected, numeric_id),
+    )
+
+
+@router.post("/collection/{numeric_id}", operation_id="tpdb_add_to_collection")
+def add_to_collection(numeric_id: Annotated[int, Path()]) -> CollectionStatus:
+    """Add one title to the TPDB collection, by integer ``_id``.
+
+    This writes to the upstream TPDB account. TPDB exposes no DELETE on the
+    route, so it cannot be undone from here -- removal is manual on the TPDB
+    website.
+    """
+
+    _call(_api().add_to_collection, numeric_id)
+
+    return CollectionStatus(numeric_id=numeric_id, collected=True)
+
+
+@router.get("/movies/{movie_id}/similar", operation_id="tpdb_similar_movies")
+def similar_movies(movie_id: Annotated[str, Path()]) -> list[TpdbMovie]:
+    """Movies TPDB considers related to this one."""
+
+    return _call(_api().get_similar_movies, movie_id)
+
+
+@router.get("/scenes/{scene_id}/similar", operation_id="tpdb_similar_scenes")
+def similar_scenes(scene_id: Annotated[str, Path()]) -> list[TpdbScene]:
+    """Scenes TPDB considers related to this one."""
+
+    return _call(_api().get_similar_scenes, scene_id)

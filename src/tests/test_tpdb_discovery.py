@@ -156,6 +156,87 @@ def _test_resolution_failure_returns_none():
     assert api.resolve_site_id("00000000-0000-0000-0000-000000000000") is None
 
 
+def _test_collection_uses_is_collected_filter():
+    """``is_collected`` filters; ``collected``/``in_collection`` are ignored."""
+
+    captured: list[str] = []
+    api = _client([{"data": [{"id": "m1", "title": "Owned"}]}], captured)
+    api.list_collected_movies(per_page=100)
+
+    assert "is_collected=true" in captured[0], captured
+    assert captured[0].startswith("movies?"), captured
+
+
+def _test_collection_scenes_endpoint():
+    captured: list[str] = []
+    api = _client([{"data": []}], captured)
+    api.list_collected_scenes()
+
+    assert captured[0].startswith("scenes?"), captured
+    assert "is_collected=true" in captured[0], captured
+
+
+def _test_is_collected_reads_value_flag():
+    captured: list[str] = []
+    api = _client([{"value": True}], captured)
+
+    assert api.is_collected(4773820) is True
+    assert captured[0] == "user/collection?scene_id=4773820", captured
+
+
+def _test_is_collected_false():
+    api = _client([{"value": False}], [])
+    assert api.is_collected(1) is False
+
+
+def _test_similar_endpoints():
+    captured: list[str] = []
+    api = _client([{"data": [{"id": "m2"}]}, {"data": [{"id": "s2"}]}], captured)
+    api.get_similar_movies("uuid-a")
+    api.get_similar_scenes("uuid-b")
+
+    assert captured[0] == "movies/uuid-a/similar", captured
+    assert captured[1] == "scenes/uuid-b/similar", captured
+
+
+def _test_add_to_collection_posts_integer_id():
+    """The write takes the integer ``_id``; a UUID is rejected upstream."""
+
+    sent: dict = {}
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+    api = api_mod.TpdbApi(api_token="x")
+
+    def fake_post(url, **kwargs):
+        sent["url"] = url
+        sent["json"] = kwargs.get("json")
+        return FakeResp()
+
+    api.session.post = fake_post
+    assert api.add_to_collection("4773820") is True
+    assert sent["url"] == "user/collection", sent
+    assert sent["json"] == {"scene_id": 4773820}, sent
+
+
+def _test_add_to_collection_raises_with_status():
+    class FakeResp:
+        status_code = 422
+        text = '{"message":"The scene id field is required."}'
+
+    api = api_mod.TpdbApi(api_token="x")
+    api.session.post = lambda url, **kwargs: FakeResp()
+
+    try:
+        api.add_to_collection(1)
+    except api_mod.TpdbApiError as exc:
+        assert exc.status_code == 422, exc.status_code
+    else:
+        raise AssertionError("expected TpdbApiError")
+
+
 def check(name, fn):
     try:
         fn()
