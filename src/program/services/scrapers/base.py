@@ -76,22 +76,41 @@ class ScraperService(Runner[T, "ScraperService", dict[str, str]]):
         return identifier, scrape_type, imdb_id
 
     @staticmethod
-    def get_infohash_from_url(url: str) -> str | None:
+    def get_infohash_from_url(
+        url: str,
+        session: SmartSession | None = None,
+        timeout: float | None = 10.0,
+    ) -> str | None:
         """
         Get infohash from a URL that could be:
-        1. A direct torrent file download
+        1. A URL that already contains the infohash (free, no request)
         2. A redirect to a magnet link
-        3. A URL containing the infohash
+        3. A direct torrent file download
+
+        Pass ``session`` to reuse one client across a batch of URLs; without it
+        a fresh SmartSession -- and a fresh connection pool and SSL context --
+        is built per call and never closed.
+
+        ``timeout`` bounds the request. The session default is a 30s read with
+        retries, which lets a single unresponsive indexer consume an entire
+        batch's time budget.
 
         Returns the infohash or None if it cannot be extracted.
         """
         if not url:
             return None
 
-        session = SmartSession()
+        # Free: many indexers hand back a magnet or a URL with the hash in it,
+        # so check before paying for a request rather than after.
+        infohash = extract_infohash(url)
+        if infohash:
+            return infohash
+
+        owned_session = session is None
+        session = session or SmartSession()
         try:
             # Try to download with redirects disabled to check for magnet redirects
-            r = session.get(url, allow_redirects=False)
+            r = session.get(url, allow_redirects=False, timeout=timeout)
 
             # If it's a redirect (3xx status code)
             if 300 <= r.status_code < 400:
@@ -114,12 +133,15 @@ class ScraperService(Runner[T, "ScraperService", dict[str, str]]):
                     # Not a valid torrent file, try to extract from URL
                     pass
 
-            # Try to extract infohash from the URL itself (handles magnets and bare hashes)
-            infohash = extract_infohash(url)
-            if infohash:
-                return infohash
-
         except Exception as e:
             logger.debug(f"Failed to get infohash from URL {url}: {e}")
+        finally:
+            if owned_session:
+                close = getattr(session, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
 
         return None

@@ -99,6 +99,30 @@ class DownloadersModel(Observable):
     proxy_url: EmptyOrUrl = Field(
         default="", description="Proxy URL for downloaders (optional)"
     )
+    # Fork addition. Upstream is cached-only: any torrent the debrid provider
+    # does not already hold is blacklisted. Adult releases are almost never in
+    # a provider's cache, so without this an adult-only library can rarely
+    # download anything at all.
+    download_uncached: bool = Field(
+        default=True,
+        description=(
+            "Ask the debrid provider to fetch torrents it has not cached yet, "
+            "instead of discarding them. Uses provider download quota."
+        ),
+    )
+    uncached_poll_minutes: int = Field(
+        default=10,
+        ge=1,
+        description="Minutes between re-checks while the provider caches a torrent",
+    )
+    uncached_max_wait_hours: int = Field(
+        default=24,
+        ge=1,
+        description=(
+            "Give up on an uncached torrent this many hours after the provider "
+            "started fetching it"
+        ),
+    )
     real_debrid: RealDebridModel = Field(
         default_factory=lambda: RealDebridModel(),
         description="Real-Debrid downloader configuration",

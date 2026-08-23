@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from loguru import logger
 from RTN import ParsedData
 
@@ -38,6 +38,42 @@ from .alldebrid import AllDebridDownloader
 from .torbox import TorBoxDownloader
 
 
+def _format_progress(progress: float) -> str:
+    """Render provider progress as a percentage.
+
+    Providers disagree on the scale: TorBox reports a 0-1 fraction, others a
+    0-100 percentage. Treat anything above 1 as already-a-percentage so the log
+    never claims "8300% done".
+    """
+
+    pct = progress * 100 if progress <= 1 else progress
+
+    return f"{max(0.0, min(pct, 100.0)):.0f}%"
+
+
+def _has_expired(started_at: datetime, max_wait_hours: int) -> bool:
+    """True if ``started_at`` is older than ``max_wait_hours``.
+
+    Providers report timestamps with a UTC offset while ``datetime.now()`` is
+    naive, and comparing the two raises TypeError -- so normalise both to naive
+    UTC first. An unreadable timestamp is treated as "not expired": losing a
+    torrent that is still downloading is worse than waiting one more cycle.
+    """
+
+    try:
+        if started_at.tzinfo is not None:
+            started_at = started_at.astimezone(timezone.utc).replace(tzinfo=None)
+            now = datetime.utcnow()
+        else:
+            now = datetime.now()
+
+        return (now - started_at) > timedelta(hours=max_wait_hours)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        # AttributeError covers a provider handing back a string or None where
+        # a datetime was expected -- that must not take the downloader down.
+        return False
+
+
 class Downloader(Runner[None, DownloaderBase]):
     def __init__(self):
         super().__init__()
@@ -67,6 +103,76 @@ class Downloader(Runner[None, DownloaderBase]):
         self.subtitles_enabled = (
             settings_manager.settings.post_processing.subtitle.enabled
         )
+
+        downloader_settings = settings_manager.settings.downloaders
+        self.download_uncached = downloader_settings.download_uncached
+        self.uncached_poll_minutes = downloader_settings.uncached_poll_minutes
+        self.uncached_max_wait_hours = downloader_settings.uncached_max_wait_hours
+
+    def _request_uncached(
+        self,
+        item: MediaItem,
+        streams: list[Stream],
+    ) -> datetime | None:
+        """Ask a provider to fetch the best uncached stream for ``item``.
+
+        Upstream Riven is cached-only: a torrent the provider does not already
+        hold is discarded. Adult releases are rarely in any provider's cache,
+        so this asks the provider to fetch one instead and reschedules the item
+        to be re-checked once it has had time to finish.
+
+        Returns when to look again, or None if the caller should give up. No
+        state is persisted on the item: the provider itself is the record of
+        what has been requested, and re-adding the same infohash returns the
+        existing torrent rather than starting a second one.
+        """
+
+        best = streams[0]
+
+        for service in self.initialized_services:
+            try:
+                torrent_id = service.add_torrent(best.infohash)
+            except Exception as e:
+                logger.debug(
+                    f"Could not ask {service.key} to fetch {best.infohash} "
+                    f"for {item.log_string}: {e}"
+                )
+                continue
+
+            progress = None
+            started_at = None
+
+            try:
+                info = service.get_torrent_info(torrent_id)
+                progress = info.progress
+                started_at = info.created_at
+            except Exception as e:
+                # The torrent was accepted; not being able to read progress back
+                # is not a reason to abandon it.
+                logger.debug(
+                    f"Queued {best.infohash} on {service.key} but could not read "
+                    f"its progress for {item.log_string}: {e}"
+                )
+
+            if started_at and _has_expired(started_at, self.uncached_max_wait_hours):
+                logger.warning(
+                    f"{service.key} has been fetching '{best.raw_title}' for over "
+                    f"{self.uncached_max_wait_hours}h without caching it; giving up "
+                    f"on it for {item.log_string}"
+                )
+                continue
+
+            logger.log(
+                "DEBRID",
+                f"Waiting on {service.key} to cache '{best.raw_title}' for "
+                f"{item.log_string}"
+                + (f" ({_format_progress(progress)} done)" if progress is not None else "")
+                + f"; re-checking in {self.uncached_poll_minutes}m",
+            )
+
+            return datetime.now() + timedelta(minutes=self.uncached_poll_minutes)
+
+        return None
 
     def validate(self):
         if not self.initialized_services:
@@ -117,6 +223,7 @@ class Downloader(Runner[None, DownloaderBase]):
         # Bound before the try so the failure log below cannot raise NameError
         # if sorting throws before the loop starts.
         tried_streams = 0
+        uncached_streams = list[Stream]()
 
         try:
             # Sort streams by resolution and rank (highest first) using simple, fast sorting
@@ -126,6 +233,10 @@ class Downloader(Runner[None, DownloaderBase]):
                 # Try each available service for this stream before blacklisting
                 stream_failed_on_all_services = True
                 stream_hit_circuit_breaker = False
+                # A stream the provider simply has not cached is not a bad
+                # stream -- with download_uncached on we ask the provider to
+                # fetch it rather than throwing it away.
+                stream_only_uncached = True
 
                 for service in available_services:
                     logger.debug(
@@ -147,6 +258,10 @@ class Downloader(Runner[None, DownloaderBase]):
                                 f"Stream {stream.infohash} not available on {service.key}"
                             )
                             continue
+
+                        # Reached the provider and it had the torrent; anything
+                        # that fails from here is a real failure, not a cache miss.
+                        stream_only_uncached = False
 
                         # Try to download using this service
                         download_result = self.download_cached_stream_on_service(
@@ -238,6 +353,13 @@ class Downloader(Runner[None, DownloaderBase]):
                         logger.debug(
                             f"Stream {stream.infohash} hit circuit breaker on single provider, will retry after cooldown"
                         )
+                    elif stream_only_uncached and self.download_uncached:
+                        # Keep it: _request_uncached below may ask the provider
+                        # to fetch this exact stream.
+                        uncached_streams.append(stream)
+                        logger.debug(
+                            f"Stream {stream.infohash} is not cached on any service, keeping for uncached fetch"
+                        )
                     else:
                         logger.debug(
                             f"Stream {stream.infohash} failed on all {len(available_services)} available service(s), blacklisting"
@@ -267,6 +389,22 @@ class Downloader(Runner[None, DownloaderBase]):
                 yield RunnerResult(media_items=[item], run_at=next_attempt)
 
                 return
+            elif uncached_streams:
+                next_attempt = self._request_uncached(item, uncached_streams)
+
+                if next_attempt:
+                    yield RunnerResult(media_items=[item], run_at=next_attempt)
+
+                    return
+
+                # The provider will not deliver these; fall through to failure.
+                for stream in uncached_streams:
+                    item.blacklist_stream(stream)
+
+                logger.warning(
+                    f"Giving up on {item.log_string} ({item.id}): the provider "
+                    f"did not cache any of {len(uncached_streams)} stream(s) in time"
+                )
             else:
                 # Warning, not debug: this is the terminal outcome for the item.
                 # It stays in Scraped with every stream blacklisted and nothing

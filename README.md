@@ -141,6 +141,27 @@ that is resolved to a fresh CDN URL whenever the VFS needs one.
 > any of these: Riven talks to debrid providers over their own REST APIs, not a
 > torrent client API.
 
+#### Uncached torrents
+
+Upstream Riven is **cached-only**: it asks the provider whether a torrent is
+already held (instant availability) and discards it otherwise. That assumption
+comes from mainstream content, where popular releases are usually in a
+provider's cache. Adult releases from adult trackers usually are not, so on this
+fork the cached-only rule rejects almost everything -- titles sit in `Scraped`
+with every stream blacklisted.
+
+This fork therefore asks the provider to *fetch* an uncached torrent and
+re-checks it later, instead of throwing it away:
+
+| Setting                                | Default | Meaning                                            |
+| -------------------------------------- | ------- | -------------------------------------------------- |
+| `downloaders.download_uncached`         | `true`  | Ask the provider to fetch torrents it has not cached |
+| `downloaders.uncached_poll_minutes`     | `10`    | Minutes between re-checks while it downloads        |
+| `downloaders.uncached_max_wait_hours`   | `24`    | Give up this long after the provider started        |
+
+This uses your provider's download quota. Set `download_uncached` to `false` to
+restore upstream's cached-only behaviour.
+
 ### 5. Web UI (optional)
 
 The image in this repository is the **backend only** -- it serves a JSON API and

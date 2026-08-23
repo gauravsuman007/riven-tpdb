@@ -99,9 +99,25 @@ the behaviour.
 defaults). These fix real misbehaviour — RTN's `remove_adult_content` and its
 0.85 `title_similarity` both reject this fork's content outright. Keep them.
 
+**Uncached downloads.** `services/downloaders/__init__.py`
+(`_request_uncached`, `_has_expired`, `_format_progress`, and the
+`uncached_streams` branch in `run`) plus three `download_uncached*` fields on
+`DownloadersModel`. Upstream is cached-only by design; on an adult-only library
+that rejects nearly everything, so this fork asks the provider to fetch the
+torrent and reschedules the item. No state is persisted on the item — the
+provider is the record, and re-adding the same infohash returns the existing
+torrent. Termination comes from the provider's own `created_at` versus
+`uncached_max_wait_hours`. `src/tests/test_uncached_downloads.py` pins it.
+
+On conflict, keep this: without it the fork's download path is largely
+non-functional. If upstream ever adds uncached support, prefer upstream's.
+
 **Bug fixes that belong upstream.** `services/downloaders/__init__.py`
 (add-torrent fallback and download-url backfill), `program.py` (optional
-updater), `services/updaters/__init__.py`. If upstream fixes the same thing,
+updater), `services/updaters/__init__.py`, and the infohash-resolution fixes in
+`services/scrapers/base.py` + `prowlarr.py` (free URL check before the request,
+a bounded per-request timeout, a reused session, and a worker count that lets
+the batch finish inside its own budget). If upstream fixes the same thing,
 prefer upstream's version.
 
 ## Before committing

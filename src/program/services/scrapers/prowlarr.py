@@ -539,45 +539,83 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                 # We already have an infohash, add it directly
                 streams[infohash] = title
 
-        # Fetch URLs in parallel
+        # Fetch URLs in parallel.
+        #
+        # These are IO-bound, so the worker count is what decides how many
+        # rounds of requests fit inside the wall-clock budget below. With only
+        # 10 workers a large result set needs more rounds than the budget
+        # allows and the tail can never finish, however healthy the indexer is.
         if urls_to_fetch:
-            with concurrent.futures.ThreadPoolExecutor(
-                thread_name_prefix="ProwlarrHashExtract", max_workers=10
-            ) as executor:
-                future_to_torrent = {
-                    executor.submit(self.get_infohash_from_url, torrent.download_url): (
-                        torrent,
-                        title,
+            budget = self.settings.infohash_fetch_timeout
+            # Bound a single request well inside the batch budget so one
+            # unresponsive host cannot consume the whole of it.
+            per_request_timeout = max(5.0, min(10.0, budget / 2))
+            workers = max(10, min(len(urls_to_fetch), 40))
+
+            # A dedicated session with no base_url: these download URLs are
+            # absolute, and reusing the API session would resolve them against
+            # its /api/v1 base. Created outside the pool so it can be closed
+            # only once every worker has stopped using it.
+            fetch_session = SmartSession(
+                retries=self.settings.retries,
+                backoff_factor=0.3,
+            )
+
+            try:
+                with concurrent.futures.ThreadPoolExecutor(
+                    thread_name_prefix="ProwlarrHashExtract",
+                    max_workers=workers,
+                ) as executor:
+                    future_to_torrent = {
+                        executor.submit(
+                            self.get_infohash_from_url,
+                            torrent.download_url,
+                            fetch_session,
+                            per_request_timeout,
+                        ): (
+                            torrent,
+                            title,
+                        )
+                        for torrent, title in urls_to_fetch
+                        if torrent.download_url
+                    }
+
+                    done, pending = concurrent.futures.wait(
+                        future_to_torrent.keys(),
+                        timeout=budget,
                     )
-                    for torrent, title in urls_to_fetch
-                    if torrent.download_url
-                }
 
-                done, pending = concurrent.futures.wait(
-                    future_to_torrent.keys(),
-                    timeout=self.settings.infohash_fetch_timeout,
-                )
+                    # Process completed futures
+                    for future in done:
+                        torrent, title = future_to_torrent[future]
 
-                # Process completed futures
-                for future in done:
-                    torrent, title = future_to_torrent[future]
+                        try:
+                            infohash = future.result()
+                            if infohash:
+                                streams[infohash] = title
+                        except Exception as e:
+                            logger.debug(
+                                f"Failed to get infohash from downloadUrl for {title}: {e}"
+                            )
 
-                    try:
-                        infohash = future.result()
-                        if infohash:
-                            streams[infohash] = title
-                    except Exception as e:
+                    # Cancel and log timeouts for pending futures
+                    for future in pending:
+                        torrent, title = future_to_torrent[future]
+                        future.cancel()
                         logger.debug(
-                            f"Failed to get infohash from downloadUrl for {title}: {e}"
+                            f"Timeout getting infohash from downloadUrl for {title}"
                         )
 
-                # Cancel and log timeouts for pending futures
-                for future in pending:
-                    torrent, title = future_to_torrent[future]
-                    future.cancel()
-                    logger.debug(
-                        f"Timeout getting infohash from downloadUrl for {title}"
-                    )
+                    if pending:
+                        # One line instead of one per release: at DEBUG this was
+                        # hundreds of lines, and at INFO it was invisible entirely.
+                        logger.warning(
+                            f"{indexer.name}: {len(pending)} of {len(future_to_torrent)} "
+                            f"releases did not resolve an infohash within {budget}s "
+                            f"for {item.log_string}"
+                        )
+            finally:
+                fetch_session.close()
 
         logger.debug(
             f"Indexer {indexer.name} found {len(streams)} streams for {item.log_string} in {time.time() - start_time:.2f} seconds"
