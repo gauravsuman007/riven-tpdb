@@ -10,6 +10,7 @@ from requests import ReadTimeout, RequestException
 
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.services.scrapers.base import ScraperService
+from program.services.scrapers.categories import is_adult_category, select_category_ids
 from program.settings import settings_manager
 from program.utils.request import SmartSession
 from program.utils.torrent import extract_infohash, normalize_infohash
@@ -247,6 +248,18 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                                             name="Anime", type="anime", ids=[cap.id]
                                         )
                                     )
+                        elif is_adult_category(cap.name):
+                            category = next(
+                                (x for x in categories if x.type == "xxx"), None
+                            )
+
+                            if cap.id:
+                                if category:
+                                    category.ids.append(cap.id)
+                                else:
+                                    categories.append(
+                                        Category(name="XXX", type="xxx", ids=[cap.id])
+                                    )
 
             if not categories:
                 logger.warning(
@@ -435,13 +448,12 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                     f"Indexer {indexer.name} does not support episode search"
                 )
 
-        categories = {
-            cat_id
-            for category in indexer.capabilities.categories
-            if category.type == item.type
-            or (category.type == "anime" and item.is_anime)
-            for cat_id in category.ids
-        }
+        categories = select_category_ids(
+            item.type,
+            item.is_anime,
+            item.is_adult,
+            [(category.type, category.ids) for category in indexer.capabilities.categories],
+        )
 
         indexer_ids = indexer.id
         limit = 1000

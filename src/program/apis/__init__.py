@@ -9,6 +9,7 @@ from .plex_api import PlexAPI
 from .tmdb_api import TMDBApi
 from .trakt_api import TraktAPI
 from .tvdb_api import TVDBApi
+from .tpdb_api import TpdbApi
 
 
 def bootstrap_apis():
@@ -19,6 +20,7 @@ def bootstrap_apis():
     __setup_trakt()
     __setup_tmdb()
     __setup_tvdb()
+    __setup_tpdb()
 
 
 def __setup_trakt():
@@ -31,6 +33,13 @@ def __setup_tmdb():
 
 def __setup_tvdb():
     di[TVDBApi] = TVDBApi()
+
+
+def __setup_tpdb():
+    di[TpdbApi] = TpdbApi(
+        api_base_url=settings_manager.settings.tpdb.api_base_url,
+        api_token=settings_manager.settings.tpdb.api_token,
+    )
 
 
 def __setup_plex():

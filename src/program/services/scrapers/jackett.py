@@ -106,7 +106,9 @@ class Jackett(ScraperService[JackettConfig]):
         torrents = dict[str, str]()
         query = item.log_string
 
-        if isinstance(item, Movie) and item.aired_at:
+        # Adult scenes are indexed by exact title; appending the release year
+        # only hurts matching on adult trackers.
+        if isinstance(item, Movie) and item.aired_at and not item.is_adult:
             query = f"{query} ({item.aired_at.year})"
 
         logger.debug(f"Searching for '{query}' in Jackett")

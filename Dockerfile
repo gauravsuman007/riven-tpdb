@@ -22,9 +22,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Final Stage
 # -----------------
 FROM python:3.13-alpine
-LABEL name="Riven" \
-      description="Riven Media Server" \
-      url="https://github.com/rivenmedia/riven"
+LABEL name="Riven TPDB" \
+      description="Adult-only Riven fork backed by ThePornDB (TPDB)" \
+      url="https://github.com/riven-tpdb/riven-tpdb"
 
 # Install only runtime dependencies
 RUN apk add --no-cache curl libcurl shadow unzip ffmpeg libpq fuse3 libcap libcap-utils postgresql17-client

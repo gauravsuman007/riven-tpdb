@@ -607,6 +607,24 @@ class TraktModel(Updatable):
     )
 
 
+class TpdbContentModel(Updatable):
+    enabled: bool = Field(
+        default=False, description="Enable TPDB adult content subscriptions"
+    )
+    sites: list[str] = Field(
+        default_factory=list,
+        description="TPDB site UUIDs (studios/networks) to subscribe to",
+    )
+    max_pages: int = Field(
+        default=3,
+        ge=1,
+        description="Pages of results (20 scenes each) to fetch per site per run",
+    )
+    update_interval: int = Field(
+        default=3600, ge=1, description="Update interval in seconds (1 hour default)"
+    )
+
+
 class ContentModel(Observable):
     overseerr: OverseerrModel = Field(
         default_factory=lambda: OverseerrModel(), description="Overseerr configuration"
@@ -623,6 +641,10 @@ class ContentModel(Observable):
     )
     trakt: TraktModel = Field(
         default_factory=lambda: TraktModel(), description="Trakt configuration"
+    )
+    tpdb: TpdbContentModel = Field(
+        default_factory=lambda: TpdbContentModel(),
+        description="TPDB adult content subscriptions",
     )
 
 
@@ -835,6 +857,16 @@ class IndexerModel(Observable):
     )
 
 
+class TpdbModel(Observable):
+    enabled: bool = Field(
+        default=False, description="Enable ThePornDB (TPDB) metadata integration"
+    )
+    api_token: str = Field(default="", description="ThePornDB API token (Bearer)")
+    api_base_url: str = Field(
+        default="https://api.theporndb.net", description="ThePornDB API base URL"
+    )
+
+
 class DatabaseModel(Observable):
     host: PostgresDsn = Field(
         default_factory=lambda: PostgresDsn(
@@ -978,6 +1010,10 @@ class AppModel(Observable):
     )
     indexer: IndexerModel = Field(
         default_factory=lambda: IndexerModel(), description="Indexer configuration"
+    )
+    tpdb: TpdbModel = Field(
+        default_factory=lambda: TpdbModel(),
+        description="ThePornDB metadata configuration",
     )
     database: DatabaseModel = Field(
         default_factory=lambda: DatabaseModel(), description="Database configuration"

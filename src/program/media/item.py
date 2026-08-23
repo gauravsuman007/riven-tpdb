@@ -61,6 +61,9 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
     imdb_id: Mapped[str | None]
     tvdb_id: Mapped[str | None]
     tmdb_id: Mapped[str | None]
+    tpdb_id: Mapped[str | None]
+    site_id: Mapped[str | None]
+    site_name: Mapped[str | None]
     title: Mapped[str]
     poster_path: Mapped[str | None]
     type: Mapped[Literal["episode", "season", "show", "movie", "mediaitem"]] = (
@@ -104,6 +107,9 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
     year: Mapped[int | None]
     genres: Mapped[list[str] | None] = mapped_column(sqlalchemy.JSON, nullable=True)
 
+    # ThePornDB (TPDB) adult metadata
+    performers: Mapped[list[str] | None] = mapped_column(sqlalchemy.JSON, nullable=True)
+
     # Rating metadata (normalized for filtering)
 
     ## 0.0-10.0 scale (TMDB vote_average)
@@ -146,6 +152,8 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         Index("ix_mediaitem_imdb_id", "imdb_id"),
         Index("ix_mediaitem_tvdb_id", "tvdb_id"),
         Index("ix_mediaitem_tmdb_id", "tmdb_id"),
+        Index("ix_mediaitem_tpdb_id", "tpdb_id"),
+        Index("ix_mediaitem_site_id", "site_id"),
         Index("ix_mediaitem_network", "network"),
         Index("ix_mediaitem_country", "country"),
         Index("ix_mediaitem_language", "language"),
@@ -178,12 +186,16 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         self.imdb_id = item.get("imdb_id")
         self.tvdb_id = item.get("tvdb_id")
         self.tmdb_id = item.get("tmdb_id")
+        self.tpdb_id = item.get("tpdb_id")
+        self.site_id = item.get("site_id")
+        self.site_name = item.get("site_name")
         self.network = item.get("network")
         self.country = item.get("country")
         self.language = item.get("language")
         self.aired_at = item.get("aired_at")
         self.year = item.get("year")
         self.genres = item.get("genres", None)
+        self.performers = item.get("performers", None)
         self.aliases = item.get("aliases", {})
         self.is_anime = item.get("is_anime", False)
         self.rating = item.get("rating")
@@ -442,6 +454,7 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
             "imdb_id": self.imdb_id,
             "tvdb_id": self.tvdb_id,
             "tmdb_id": self.tmdb_id,
+            "tpdb_id": self.tpdb_id,
         }
 
         if isinstance(self, Season):
@@ -450,6 +463,7 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
             parent_ids["imdb_id"] = self.parent.imdb_id
             parent_ids["tvdb_id"] = self.parent.tvdb_id
             parent_ids["tmdb_id"] = self.parent.tmdb_id
+            parent_ids["tpdb_id"] = self.parent.tpdb_id
         elif isinstance(self, Episode):
             parent_title = self.parent.parent.title
             season_number = self.parent.number
@@ -457,6 +471,7 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
             parent_ids["imdb_id"] = self.parent.parent.imdb_id
             parent_ids["tvdb_id"] = self.parent.parent.tvdb_id
             parent_ids["tmdb_id"] = self.parent.parent.tmdb_id
+            parent_ids["tpdb_id"] = self.parent.parent.tpdb_id
 
         data = {
             "id": str(self.id),
@@ -469,6 +484,9 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
             "imdb_id": self.imdb_id,
             "tvdb_id": self.tvdb_id,
             "tmdb_id": self.tmdb_id,
+            "tpdb_id": self.tpdb_id,
+            "site_name": self.site_name,
+            "performers": self.performers,
             "parent_ids": parent_ids,
             "state": self.last_state.name if self.last_state else self.state.name,
             "aired_at": str(self.aired_at),
@@ -583,6 +601,12 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
             return self.parent.parent.title
         else:
             return self.title
+
+    @property
+    def is_adult(self) -> bool:
+        """Return True if this item is adult content (has a TPDB id)."""
+
+        return bool(self.tpdb_id)
 
     # Filesystem entry properties
     @property

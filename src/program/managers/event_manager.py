@@ -560,10 +560,11 @@ class EventManager:
         """
 
         if not db_functions.item_exists_by_any_id(
-            item.id,
-            item.tvdb_id,
-            item.tmdb_id,
-            item.imdb_id,
+            item_id=item.id,
+            tvdb_id=item.tvdb_id,
+            tmdb_id=item.tmdb_id,
+            imdb_id=item.imdb_id,
+            tpdb_id=item.tpdb_id,
         ):
             if self.add_event(
                 Event(
@@ -628,8 +629,9 @@ class EventManager:
         tmdb_id = item.tmdb_id
         tvdb_id = item.tvdb_id
         imdb_id = item.imdb_id
+        tpdb_id = item.tpdb_id
 
-        if not (item_id or tmdb_id or tvdb_id or imdb_id):
+        if not (item_id or tmdb_id or tvdb_id or imdb_id or tpdb_id):
             return False
 
         for ev in queue:
@@ -646,6 +648,9 @@ class EventManager:
                 return True
 
             if imdb_id and content_item.imdb_id == imdb_id:
+                return True
+
+            if tpdb_id and content_item.tpdb_id == tpdb_id:
                 return True
 
         return False

@@ -1,25 +1,27 @@
-"""Composite indexer that uses TMDB for movies and TVDB for TV shows"""
+"""Adult-only indexer that resolves TPDB items into Riven Movies.
+
+This fork drops TMDB/TVDB indexing entirely: only items carrying a TPDB id
+are resolved. Any mainstream (IMDB/TMDB/TVDB) item is skipped.
+"""
 
 from loguru import logger
 from sqlalchemy import select
 
 from program.db.db import db_session
-from program.media.item import Episode, MediaItem, Movie, Season, Show
+from program.media.item import MediaItem, Movie
 from program.media.state import States
 from program.services.indexers.base import BaseIndexer
-from program.services.indexers.tmdb_indexer import TMDBIndexer
-from program.services.indexers.tvdb_indexer import TVDBIndexer
+from program.services.indexers.tpdb_indexer import TPDBIndexer
 from program.core.runner import MediaItemGenerator
 
 
 class IndexerService(BaseIndexer):
-    """Entry point to indexing. Composite indexer that delegates to appropriate service based on media type."""
+    """Entry point to indexing. Adult-only: delegates to the TPDB indexer."""
 
     def __init__(self):
         super().__init__()
 
-        self.tmdb_indexer = TMDBIndexer()
-        self.tvdb_indexer = TVDBIndexer()
+        self.tpdb_indexer = TPDBIndexer()
 
     @classmethod
     def get_key(cls) -> str:
@@ -30,59 +32,29 @@ class IndexerService(BaseIndexer):
         item: MediaItem,
         log_msg: bool = True,
     ) -> MediaItemGenerator:
-        """Run the appropriate indexer based on item type."""
+        """Run the TPDB indexer for TPDB items; skip anything mainstream."""
 
-        if isinstance(item, Movie) or (item.tmdb_id and not item.tvdb_id):
-            yield from self.tmdb_indexer.run(
+        if item.tpdb_id:
+            yield from self.tpdb_indexer.run(
                 item=item,
                 log_msg=log_msg,
             )
-        elif isinstance(item, (Show, Season, Episode)) or (
-            item.tvdb_id and not item.tmdb_id
-        ):
-            yield from self.tvdb_indexer.run(
-                item=item,
-                log_msg=log_msg,
-            )
-        else:
-            movie_result = self.tmdb_indexer.run(
-                item=item,
-                log_msg=False,
-            )
+            return
 
-            indexed_item = next(movie_result, None)
-
-            if not indexed_item:
-                show_result = self.tvdb_indexer.run(
-                    item=item,
-                    log_msg=False,
-                )
-                indexed_item = next(show_result, None)
-
-            if indexed_item:
-                yield indexed_item
-                return
-
-        logger.warning(f"Unknown item type, cannot index {item.log_string}.. skipping")
-
+        logger.debug(
+            f"Skipping non-TPDB item (adult-only fork): {item.log_string}"
+        )
         return
 
     def reindex_ongoing(self) -> int:
-        """
-        Reindex all ongoing/unreleased movies and shows by updating them in-place.
-
-        Returns the number of items reindexed.
-        """
+        """Reindex all ongoing/unreleased movies (adult-only: movies only)."""
 
         try:
             with db_session() as session:
-                # Gather two sets: (1) ongoing/unreleased movies & shows, (2) shows missing tvdb_status
-                items_state = (
+                items = (
                     session.execute(
-                        select(MediaItem)
-                        .where(MediaItem.type.in_(["movie", "show"]))
-                        .where(
-                            MediaItem.last_state.in_(
+                        select(Movie).where(
+                            Movie.last_state.in_(
                                 [States.Ongoing, States.Unreleased]
                             )
                         )
@@ -91,22 +63,6 @@ class IndexerService(BaseIndexer):
                     .scalars()
                     .all()
                 )
-
-                # For now to populate missing fields for existing shows, this can be removed later on.
-                shows_missing_status = (
-                    session.execute(select(Show).where(Show.tvdb_status.is_(None)))
-                    .unique()
-                    .scalars()
-                    .all()
-                )
-
-                # Combine and deduplicate by id
-                items_map = {i.id: i for i in items_state}
-
-                for sh in shows_missing_status:
-                    items_map.setdefault(sh.id, sh)
-
-                items = list(items_map.values())
 
                 if not items:
                     logger.debug("No ongoing/unreleased items to reindex")

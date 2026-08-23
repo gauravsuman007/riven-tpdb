@@ -23,7 +23,6 @@ CLAUDE.md
 .cursor/
 release_manager.py
 container_data
-AGENTS.md
 docs/
 .augment/
 .editorconfig

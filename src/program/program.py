@@ -10,13 +10,7 @@ from program.apis import bootstrap_apis
 from program.managers.event_manager import EventManager
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.media.filesystem_entry import FilesystemEntry
-from program.services.content import (
-    Listrr,
-    Mdblist,
-    Overseerr,
-    PlexWatchlist,
-    TraktContent,
-)
+from program.services.content import TPDBContent
 from program.services.downloaders import Downloader
 from program.services.indexers import IndexerService
 from program.services.notifications import NotificationService
@@ -46,12 +40,8 @@ from program.db.db import (
 
 @dataclass
 class Services:
-    overseerr: Overseerr
-    plex_watchlist: PlexWatchlist
-    listrr: Listrr
-    mdblist: Mdblist
-    trakt: TraktContent
     indexer: IndexerService
+    tpdb: TPDBContent
     scraping: Scraping
     updater: Updater
     downloader: Downloader
@@ -121,12 +111,8 @@ class Program(threading.Thread):
         _downloader = Downloader()
 
         self.services = Services(
-            overseerr=Overseerr(),
-            plex_watchlist=PlexWatchlist(),
-            listrr=Listrr(),
-            mdblist=Mdblist(),
-            trakt=TraktContent(),
             indexer=IndexerService(),
+            tpdb=TPDBContent(),
             scraping=Scraping(),
             updater=Updater(),
             downloader=_downloader,

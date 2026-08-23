@@ -4,13 +4,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from program.media.item import MediaItem
-from program.services.content import (
-    Listrr,
-    Mdblist,
-    Overseerr,
-    PlexWatchlist,
-    TraktContent,
-)
+from program.services.content import TPDBContent
 from program.services.downloaders import Downloader
 from program.services.scrapers import Scraping
 from program.services.updaters import Updater
@@ -22,15 +16,15 @@ from program.services.post_processing import PostProcessing
 
 # Type aliases for various service types
 Scraper = Scraping
-Content = Overseerr | PlexWatchlist | Listrr | Mdblist | TraktContent
+Content = TPDBContent
 Service = (
-    Content
-    | Scraper
+    Scraper
     | FilesystemService
     | Updater
     | IndexerService
     | PostProcessing
     | Downloader
+    | Content
 )
 
 
