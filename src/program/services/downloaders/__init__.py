@@ -114,11 +114,13 @@ class Downloader(Runner[None, DownloaderBase]):
         # Track if we hit circuit breaker on any service
         hit_circuit_breaker = False
 
+        # Bound before the try so the failure log below cannot raise NameError
+        # if sorting throws before the loop starts.
+        tried_streams = 0
+
         try:
             # Sort streams by resolution and rank (highest first) using simple, fast sorting
             sorted_streams = sort_streams_by_quality(item.streams)
-
-            tried_streams = 0
 
             for stream in sorted_streams:
                 # Try each available service for this stream before blacklisting
@@ -266,8 +268,14 @@ class Downloader(Runner[None, DownloaderBase]):
 
                 return
             else:
-                logger.debug(
-                    f"Failed to download any streams for {item.log_string} ({item.id})"
+                # Warning, not debug: this is the terminal outcome for the item.
+                # It stays in Scraped with every stream blacklisted and nothing
+                # further happens, so at the default INFO level the pipeline
+                # would otherwise appear to stall in complete silence.
+                logger.warning(
+                    f"Failed to download any streams for {item.log_string} ({item.id}): "
+                    f"tried {tried_streams} stream(s), none were cached on "
+                    f"{', '.join(s.key for s in self.initialized_services)}"
                 )
         else:
             # Clear service cooldowns on successful download
