@@ -77,10 +77,22 @@ change and re-add the `tpdb_id` arm — it is always parallel to `imdb_id`.
 
 **Provider set is reduced.** `services/scrapers/__init__.py`,
 `services/indexers/__init__.py`, `services/content/__init__.py`,
-`apis/__init__.py`, `settings/models.py`. These trim registries and settings
-to what can work here. On conflict, take upstream's structure and re-apply the
-trim; do not reintroduce a provider without checking it can serve adult
-content (only Prowlarr and Jackett can).
+`apis/__init__.py`. These trim the service registries to what can work here.
+On conflict, take upstream's structure and re-apply the trim; do not
+reintroduce a provider without checking it can serve adult content (only
+Prowlarr and Jackett can).
+
+Note that `settings/models.py` deliberately does **not** delete the unusable
+providers' models. Deleting them cost ~230 lines of permanent conflict
+surface, so upstream's models are kept verbatim and the providers are hidden
+from the settings schema instead, by `settings/visibility.py`. Hidden means
+not rendered and not editable — the values still exist on the model and
+round-trip untouched, because the form submits the value snapshot it was
+given and `/settings/set/all` merges rather than replaces.
+
+To hide or re-expose a provider, edit `HIDDEN_SECTIONS` in that one file; do
+not edit `settings/models.py`. `src/tests/test_settings_visibility.py` pins
+the behaviour.
 
 **Adult-content correctness.** `services/scrapers/shared.py` (volume matching),
 `services/scrapers/base.py` (`supports_adult`), `settings/models.py` (RTN

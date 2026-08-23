@@ -6,6 +6,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from program.settings import settings_manager
 from program.settings.models import AppModel
+from program.settings.visibility import prune_settings_schema
 
 from ..models.shared import MessageResponse
 
@@ -24,7 +25,7 @@ router = APIRouter(
 async def get_settings_schema() -> dict[str, Any]:
     """Get the JSON schema for the settings."""
 
-    return settings_manager.settings.model_json_schema()
+    return prune_settings_schema(settings_manager.settings.model_json_schema())
 
 
 @router.get(
@@ -91,7 +92,7 @@ async def get_settings_schema_for_keys(
     if all_defs:
         filtered_schema["$defs"] = all_defs
 
-    return filtered_schema
+    return prune_settings_schema(filtered_schema)
 
 
 @router.get(
