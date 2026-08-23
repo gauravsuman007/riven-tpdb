@@ -25,6 +25,10 @@ class RarbgScrapeResponse(BaseModel):
 class Rarbg(ScraperService[RarbgConfig]):
     """Scraper for `TheRARBG`"""
 
+    # The upstream query hardcodes ``ncategory:XXX``, which excludes adult
+    # results by construction, so this scraper can never serve TPDB items.
+    supports_adult = False
+
     def __init__(self):
         super().__init__()
 

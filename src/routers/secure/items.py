@@ -336,6 +336,13 @@ class AddMediaItemPayload(BaseModel):
             description="Comma-separated list of TVDB IDs",
         ),
     ]
+    tpdb_ids: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description="Comma-separated list of TPDB UUIDs",
+        ),
+    ]
     media_type: Annotated[
         Literal["movie", "tv"],
         Field(description="Media type"),
@@ -358,7 +365,7 @@ async def add_items(
         Body(description="Add media items payload"),
     ],
 ) -> MessageResponse:
-    if not payload.tmdb_ids and not payload.tvdb_ids:
+    if not payload.tmdb_ids and not payload.tvdb_ids and not payload.tpdb_ids:
         raise HTTPException(status_code=400, detail="No ID(s) provided")
 
     all_tmdb_ids = (
@@ -371,6 +378,10 @@ async def add_items(
         [id.strip() for id in payload.tvdb_ids if id]
         if payload.tvdb_ids and payload.media_type == "tv"
         else None
+    )
+
+    all_tpdb_ids = (
+        [id.strip() for id in payload.tpdb_ids if id] if payload.tpdb_ids else None
     )
 
     added_count = 0
@@ -417,6 +428,25 @@ async def add_items(
                         items.append(item)
                 else:
                     logger.debug(f"Item with TVDB ID {id} already exists")
+
+        if all_tpdb_ids:
+            for id in all_tpdb_ids:
+                existing = session.execute(
+                    select(MediaItem).where(MediaItem.tpdb_id == id)
+                ).scalar_one_or_none()
+
+                if not existing:
+                    item = MediaItem(
+                        {
+                            "tpdb_id": id,
+                            "requested_by": "riven",
+                            "requested_at": datetime.now(),
+                        }
+                    )
+                    if item:
+                        items.append(item)
+                else:
+                    logger.debug(f"Item with TPDB ID {id} already exists")
 
         if items:
             for item in items:

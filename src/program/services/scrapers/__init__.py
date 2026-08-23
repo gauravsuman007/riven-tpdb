@@ -113,6 +113,28 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
 
         yield RunnerResult(media_items=[item])
 
+    def _eligible_services(
+        self, item: MediaItem
+    ) -> list["ScraperService[Observable]"]:
+        """Services that can actually serve this item.
+
+        Adult (TPDB) items carry no IMDb id, so the Stremio-style scrapers --
+        which address content purely by IMDb id -- can only ever return an
+        empty result for them. Skipping them keeps the logs honest and avoids
+        a pointless network round trip per item.
+        """
+
+        eligible = list[ScraperService[Observable]]()
+
+        for service in self.initialized_services:
+            if item.is_adult and not service.supports_adult:
+                continue
+            if service.requires_imdb_id and not item.imdb_id:
+                continue
+            eligible.append(service)
+
+        return eligible
+
     def scrape(
         self,
         item: MediaItem,
@@ -143,13 +165,22 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
                         f"Error updating results for {svc.__class__.__name__}: {e}"
                     )
 
+        services = self._eligible_services(item)
+
+        if not services:
+            logger.debug(
+                f"No scraper can serve {item.log_string}: "
+                f"adult={item.is_adult}, imdb_id={item.imdb_id or 'none'}"
+            )
+            return {}
+
         with ThreadPoolExecutor(
             thread_name_prefix="ScraperService_",
-            max_workers=max(1, len(self.initialized_services)),
+            max_workers=max(1, len(services)),
         ) as executor:
             futures = {
                 executor.submit(run_service, service, item): service.key
-                for service in self.initialized_services
+                for service in services
             }
 
             for future in as_completed(futures):
@@ -212,13 +243,22 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
                 logger.error(f"Error running {svc.key}: {e}")
                 results_queue.put((svc.key, {}))
 
+        services = self._eligible_services(item)
+
+        if not services:
+            logger.debug(
+                f"No scraper can serve {item.log_string}: "
+                f"adult={item.is_adult}, imdb_id={item.imdb_id or 'none'}"
+            )
+            return
+
         with ThreadPoolExecutor(
             thread_name_prefix="ScraperServiceStreaming_",
-            max_workers=max(1, len(self.initialized_services)),
+            max_workers=max(1, len(services)),
         ) as executor:
             futures = {
                 executor.submit(run_service_streaming, service, item): service.key
-                for service in self.initialized_services
+                for service in services
             }
 
             services_completed = 0

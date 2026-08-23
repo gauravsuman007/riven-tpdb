@@ -23,9 +23,11 @@ class ScraperService(Runner[T, "ScraperService", dict[str, str]]):
 
     Optional attributes:
     - requires_imdb_id: whether the scraper needs an IMDb id to function
+    - supports_adult: whether the scraper can return adult (TPDB) results
     """
 
     requires_imdb_id = False
+    supports_adult = True
 
     def _initialize(self) -> None:
         try:
