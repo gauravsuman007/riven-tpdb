@@ -1,5 +1,6 @@
 """Shared functions for scrapers."""
 
+import regex
 from loguru import logger
 from RTN import (
     RTN,
@@ -70,6 +71,41 @@ def get_ranking_overrides(
         return None
 
 
+# "Vol. 3", "Volume 3", "Part 3" -- the edition marker that distinguishes one
+# release in a series from another.
+_VOLUME_PATTERN = regex.compile(
+    r"\b(?:vol(?:ume)?|part|pt)\.?\s*(\d{1,3})\b", regex.IGNORECASE
+)
+
+
+def _volume_number(title: str) -> int | None:
+    """Return the volume/part number in a title, if it carries one."""
+
+    match = _VOLUME_PATTERN.search(title or "")
+
+    return int(match.group(1)) if match else None
+
+
+def _volume_mismatch(correct_title: str, raw_title: str) -> bool:
+    """True when both titles name a volume and the volumes differ.
+
+    RTN normalises the volume away, so "Brazzers University Vol. 2" and
+    "Brazzers University Vol. 4" compare as the same title -- at the looser
+    similarity threshold adult releases need, one volume happily satisfies a
+    request for another. Only reject when *both* sides state a volume; a
+    release that simply omits it stays eligible.
+    """
+
+    wanted = _volume_number(correct_title)
+
+    if wanted is None:
+        return False
+
+    found = _volume_number(raw_title)
+
+    return found is not None and found != wanted
+
+
 def parse_results(
     item: MediaItem,
     results: dict[str, str],
@@ -130,6 +166,12 @@ def parse_results(
                         f"Skipping show torrent for movie {item.log_string}: {raw_title}"
                     )
                     continue
+
+            if not manual and _volume_mismatch(correct_title, raw_title):
+                logger.debug(
+                    f"Skipping wrong volume for {item.log_string}: {raw_title}"
+                )
+                continue
 
             if isinstance(item, Show):
                 # make sure the torrent has at least 2 episodes (should weed out most junk)
