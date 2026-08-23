@@ -151,8 +151,8 @@ class Program(threading.Thread):
             )
 
         if not self.services.updater.initialized:
-            logger.error(
-                "No Updater service initialized, you must enable at least one."
+            logger.debug(
+                "No Updater service initialized; media server refreshes are disabled."
             )
 
         if self.enable_trace:

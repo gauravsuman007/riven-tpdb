@@ -450,8 +450,15 @@ async def add_items(
 
         if items:
             for item in items:
-                di[Program].em.add_item(item)
-                added_count += 1
+                # add_item returns False when the item is deduped away; counting
+                # unconditionally reported success for items that were silently
+                # dropped.
+                if di[Program].em.add_item(item):
+                    added_count += 1
+                else:
+                    logger.debug(
+                        f"Item {item.log_string} was not queued (already present or running)"
+                    )
 
     return MessageResponse(message=f"Added {added_count} item(s) to the queue")
 

@@ -33,13 +33,25 @@ class Updater(Runner[None, BaseUpdater]):
         self.initialized = self.validate()
 
     def validate(self) -> bool:
-        """Validate that at least one updater service is initialized."""
+        """Always valid: notifying a media server is optional.
 
-        initialized_services = [
-            service for service in self.services.values() if service.initialized
-        ]
+        Playback in this fork is served by RivenVFS, not by Plex/Jellyfin/Emby,
+        so a media server is a nice-to-have rather than a requirement. This has
+        to report valid even with nothing configured, because `Program.is_valid`
+        requires *every* enabled service to be initialized and the main loop
+        refuses to process any event while that is false -- an uninitialized
+        updater would otherwise silently stall the entire pipeline.
 
-        return len(initialized_services) > 0
+        `refresh_path` skips services that are not initialized, so with none
+        configured this is simply a no-op.
+        """
+
+        if not any(service.initialized for service in self.services.values()):
+            logger.debug(
+                "No media server updater configured; skipping library refreshes."
+            )
+
+        return True
 
     def run(self, item: MediaItem) -> MediaItemGenerator:
         """
