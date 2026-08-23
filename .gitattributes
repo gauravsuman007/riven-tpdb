@@ -1,0 +1,8 @@
+# Keep every file's line endings exactly as committed.
+#
+# This fork tracks upstream Riven, and upstream ships a mix of LF and CRLF
+# files. Any automatic normalisation rewrites whole files, which turns a
+# two-line change into a thousand-line diff and a guaranteed conflict on
+# every upstream merge -- db_functions.py drifted to 1144 changed lines that
+# way, for 10 lines of real change.
+* -text
