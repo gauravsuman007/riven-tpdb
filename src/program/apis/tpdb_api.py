@@ -31,7 +31,16 @@ from program.utils.request import SmartSession
 
 
 class TpdbApiError(Exception):
-    """Base exception for TPDB API errors."""
+    """Base exception for TPDB API errors.
+
+    ``status_code`` carries the upstream HTTP status when the failure came from
+    a response rather than from parsing, so callers can distinguish "no such
+    record" from "TPDB is unwell".
+    """
+
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class _TpdbModel(BaseModel):
@@ -162,6 +171,8 @@ class TpdbApi:
         if api_token:
             self.session.headers.update({"Authorization": f"Bearer {api_token}"})
 
+        self._site_id_cache: dict[str, int | None] = {}
+
     def _get(
         self,
         path: str,
@@ -179,7 +190,8 @@ class TpdbApi:
 
         if response.status_code >= 400:
             raise TpdbApiError(
-                f"TPDB request failed ({response.status_code}): {response.text[:200]}"
+                f"TPDB request failed ({response.status_code}): {response.text[:200]}",
+                status_code=response.status_code,
             )
 
         try:
@@ -226,16 +238,62 @@ class TpdbApi:
 
     def list_scenes(
         self,
-        site_id: str | None = None,
+        site_id: str | int | None = None,
         page: int | None = None,
+        per_page: int | None = None,
     ) -> list[TpdbScene]:
-        """List scenes, optionally filtered by site UUID and paginated.
+        """List scenes newest-first, optionally restricted to one site.
 
-        The live API returns a fixed page size (20); use ``page`` to advance.
+        ``site_id`` accepts a site UUID or numeric id; UUIDs are resolved to the
+        numeric id first because the API only filters on the latter.
+
+        NOTE: the filter parameter is ``site_id``. A plain ``site`` parameter is
+        accepted by the API but silently ignored, which returns the unfiltered
+        global feed rather than an error.
         """
 
-        data = self._get("scenes", {"site": site_id, "page": page})
+        resolved = self.resolve_site_id(site_id) if site_id is not None else None
+        data = self._get(
+            "scenes",
+            {"site_id": resolved, "page": page, "per_page": per_page},
+        )
         return self._parse_many(data, TpdbScene)
+
+    def list_movies(
+        self,
+        site_id: str | int | None = None,
+        page: int | None = None,
+        per_page: int | None = None,
+    ) -> list[TpdbMovie]:
+        """List movies newest-first, optionally restricted to one site."""
+
+        resolved = self.resolve_site_id(site_id) if site_id is not None else None
+        data = self._get(
+            "movies",
+            {"site_id": resolved, "page": page, "per_page": per_page},
+        )
+        return self._parse_many(data, TpdbMovie)
+
+    def resolve_site_id(self, site_ref: str | int) -> int | None:
+        """Resolve a site UUID (or numeric id) to the numeric id used by filters.
+
+        ``/sites/{id}`` accepts either form, so a UUID costs one extra lookup.
+        Results are memoised for the lifetime of the client.
+        """
+
+        if isinstance(site_ref, int) or str(site_ref).isdigit():
+            return int(site_ref)
+
+        key = str(site_ref)
+
+        if key in self._site_id_cache:
+            return self._site_id_cache[key]
+
+        site = self.get_site(key)
+        resolved = site.id if site else None
+        self._site_id_cache[key] = resolved
+
+        return resolved
 
     def get_scene(self, uuid: str) -> TpdbScene | None:
         data = self._get(f"scenes/{uuid}")
@@ -255,6 +313,45 @@ class TpdbApi:
     def get_movie(self, movie_id: str) -> TpdbMovie | None:
         data = self._get(f"movies/{movie_id}")
         return self._parse_one(data, TpdbMovie)
+
+    def search_scenes_text(
+        self,
+        query: str,
+        page: int | None = None,
+        per_page: int | None = None,
+    ) -> list[TpdbScene]:
+        """Full-text scene search.
+
+        ``q`` is the only parameter the API actually filters scenes on; tag
+        filters (``tag``/``tags``/``tags[]``/``filter[tags]``) are either
+        ignored or return nothing, so tag browsing is built on this.
+        """
+
+        data = self._get("scenes", {"q": query, "page": page, "per_page": per_page})
+        return self._parse_many(data, TpdbScene)
+
+    def search_movies_text(
+        self,
+        query: str,
+        page: int | None = None,
+        per_page: int | None = None,
+    ) -> list[TpdbMovie]:
+        """Full-text movie search."""
+
+        data = self._get("movies", {"q": query, "page": page, "per_page": per_page})
+        return self._parse_many(data, TpdbMovie)
+
+    # Tags
+
+    def list_tags(
+        self,
+        page: int | None = None,
+        per_page: int | None = None,
+    ) -> list[TpdbTag]:
+        """List the tag vocabulary (~2.6k entries, paginated)."""
+
+        data = self._get("tags", {"page": page, "per_page": per_page})
+        return self._parse_many(data, TpdbTag)
 
     # Performers
 

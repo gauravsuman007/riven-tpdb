@@ -12,7 +12,7 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
-SRC = "/projects/riven/src"
+SRC = str(Path(__file__).resolve().parents[1])
 sys.path.insert(0, SRC)
 
 
@@ -313,8 +313,11 @@ def _test_list_scenes_url_building():
 
     client = api_mod.TpdbApi(api_token="x")
     client.session.get = fake_get
-    client.list_scenes(site_id="site-abc", page=2)
-    assert captured["url"] == "scenes?site=site-abc&page=2"
+    # A numeric id needs no /sites lookup. The filter parameter is `site_id`;
+    # a plain `site` is accepted by the API but silently ignored, which returns
+    # the unfiltered global feed instead of erroring.
+    client.list_scenes(site_id=1161, page=2)
+    assert captured["url"] == "scenes?site_id=1161&page=2", captured["url"]
 
 
 # ---------------------------------------------------------------------------
