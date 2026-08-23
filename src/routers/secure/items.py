@@ -16,6 +16,7 @@ from program.db.db import db_session
 from program.media.filesystem_entry import FilesystemEntry
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.media.state import States
+from program.settings import settings_manager
 from program.types import Event
 from program.program import Program
 from program.media.models import MediaMetadata
@@ -615,12 +616,66 @@ async def get_download_activity(
         )
 
 
+class LibraryFile(BaseModel):
+    """One file on disk belonging to a library item."""
+
+    filename: Annotated[str, Field(description="Original filename from the release")]
+    path: Annotated[
+        str | None,
+        Field(description="Full path inside the mounted filesystem"),
+    ]
+    file_size: Annotated[int, Field(description="Size in bytes")]
+    resolution: Annotated[
+        str | None,
+        Field(description='Resolution label such as "1080p" or "4K", when known'),
+    ]
+    codec: Annotated[str | None, Field(description="Video codec, when probed")]
+    hdr_type: Annotated[str | None, Field(description="HDR flavour, when probed")]
+    available_in_vfs: Annotated[
+        bool, Field(description="Whether the file is mounted and playable")
+    ]
+
+
+class LibraryStream(BaseModel):
+    """A release found for an item but not yet downloaded.
+
+    There is no size here because Riven does not record one: indexers report
+    sizes inconsistently and the value is not stored on the stream, so claiming
+    a size would mean inventing it.
+    """
+
+    raw_title: Annotated[str, Field(description="Release title as the indexer gave it")]
+    resolution: Annotated[str | None, Field(description="Parsed resolution, when known")]
+    rank: Annotated[int, Field(description="RTN rank; higher is preferred")]
+    is_active: Annotated[
+        bool, Field(description="Whether this is the release Riven settled on")
+    ]
+
+
 class LibraryStateEntry(BaseModel):
     """Where one TPDB title stands in the local library."""
 
     riven_id: Annotated[int, Field(description="The Riven media item id")]
     state: Annotated[str, Field(description="The item's current state")]
     title: Annotated[str, Field(description="The item's title in the library")]
+    resolution: Annotated[
+        str | None,
+        Field(description="Best known resolution for the item as a whole"),
+    ]
+    total_size: Annotated[
+        int | None, Field(description="Total bytes on disk, when downloaded")
+    ]
+    files: Annotated[
+        list[LibraryFile],
+        Field(default_factory=list, description="Files on disk; empty unless detailed"),
+    ]
+    streams: Annotated[
+        list[LibraryStream],
+        Field(
+            default_factory=list,
+            description="Candidate releases, best first; empty unless detailed",
+        ),
+    ]
 
 
 class LibraryStatesResponse(BaseModel):
@@ -628,6 +683,98 @@ class LibraryStatesResponse(BaseModel):
         dict[str, LibraryStateEntry],
         Field(description="TPDB uuid -> library state, omitting unknown ids"),
     ]
+
+
+def _library_files(item: MediaItem, mount_path: str) -> list[LibraryFile]:
+    """Flatten an item's filesystem entries into view rows.
+
+    Quality is taken from probed metadata where it exists. In practice ffprobe
+    often fills in only the frame dimensions, leaving codec and HDR empty, so
+    each field is reported independently rather than gated on the whole block
+    being present.
+    """
+
+    files = list[LibraryFile]()
+
+    for entry in item.filesystem_entries or []:
+        metadata = getattr(entry, "media_metadata", None)
+        video = metadata.video if metadata else None
+
+        # Path generation walks naming rules and can legitimately fail (an
+        # entry whose item was detached, say); a missing path must not cost
+        # the caller the size and quality it came for.
+        path = None
+
+        try:
+            paths = entry.get_all_vfs_paths()
+
+            if paths:
+                path = f"{mount_path.rstrip('/')}{paths[0]}"
+        except Exception as exc:
+            logger.debug(f"Could not resolve VFS path for entry {entry.id}: {exc}")
+
+        files.append(
+            LibraryFile(
+                filename=getattr(entry, "original_filename", "") or "",
+                path=path,
+                file_size=entry.file_size or 0,
+                resolution=video.resolution_label if video else None,
+                codec=video.codec if video else None,
+                hdr_type=video.hdr_type if video else None,
+                available_in_vfs=bool(entry.available_in_vfs),
+            )
+        )
+
+    return files
+
+
+def _library_streams(item: MediaItem) -> list[LibraryStream]:
+    """Candidate releases for an item, best rank first."""
+
+    active_hash = item.active_stream.infohash if item.active_stream else None
+
+    streams = sorted(
+        item.streams or [], key=lambda stream: stream.rank or 0, reverse=True
+    )
+
+    return [
+        LibraryStream(
+            raw_title=stream.raw_title,
+            # RTN writes the literal string "unknown" when it cannot tell,
+            # which is noise in a UI -- report nothing instead.
+            resolution=(
+                stream.resolution
+                if stream.resolution and stream.resolution != "unknown"
+                else None
+            ),
+            rank=stream.rank or 0,
+            is_active=bool(active_hash and stream.infohash == active_hash),
+        )
+        for stream in streams[:10]
+    ]
+
+
+def _item_resolution(item: MediaItem, files: list[LibraryFile]) -> str | None:
+    """Best single resolution to show for an item.
+
+    Probed video wins, because it describes the file that actually landed. The
+    release Riven settled on is the fallback -- its title was parsed, not
+    measured, but it beats showing nothing. Both are frequently absent for
+    adult releases, whose filenames rarely carry a resolution at all.
+    """
+
+    for file in files:
+        if file.resolution:
+            return file.resolution
+
+    active_hash = item.active_stream.infohash if item.active_stream else None
+
+    if active_hash:
+        for stream in item.streams or []:
+            if stream.infohash == active_hash and stream.resolution:
+                return stream.resolution if stream.resolution != "unknown" else None
+
+    return None
 
 
 @router.get(
@@ -645,6 +792,13 @@ async def get_library_states(
             min_length=1,
         ),
     ],
+    detailed: Annotated[
+        bool,
+        Query(
+            description="Include per-file details and candidate releases. "
+            "A detail page wants these; a poster grid does not."
+        ),
+    ] = False,
 ) -> LibraryStatesResponse:
     """Resolve TPDB uuids to library state in one round trip.
 
@@ -671,16 +825,27 @@ async def get_library_states(
 
         states = dict[str, LibraryStateEntry]()
 
+        mount_path = str(settings_manager.settings.filesystem.mount_path)
+
         for item in items:
             if not item.tpdb_id:
                 continue
 
             state = item.last_state or item.state
+            files = _library_files(item, mount_path) if detailed else []
+            streams = _library_streams(item) if detailed else []
+
+            entries = list(item.filesystem_entries or [])
+            total_size = sum(entry.file_size or 0 for entry in entries) or None
 
             states[item.tpdb_id] = LibraryStateEntry(
                 riven_id=item.id,
                 state=state.name if state else States.Unknown.name,
                 title=item.title,
+                resolution=_item_resolution(item, files),
+                total_size=total_size,
+                files=files,
+                streams=streams,
             )
 
     return LibraryStatesResponse(states=states)
