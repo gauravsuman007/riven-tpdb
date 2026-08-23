@@ -421,7 +421,9 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
             return States.Indexed
         elif self.title:
             return States.Unreleased
-        elif (self.imdb_id or self.tmdb_id or self.tvdb_id) and self.requested_by:
+        elif (
+            self.imdb_id or self.tmdb_id or self.tvdb_id or self.tpdb_id
+        ) and self.requested_by:
             return States.Requested
 
         return States.Unknown
