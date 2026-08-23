@@ -14,11 +14,11 @@ ENV PATH="/root/.local/bin:$PATH"
 
 WORKDIR /app
 
-# Install dependencies with uv (no dev in builder)
+# Install dependencies with uv (no dev in builder).
+# NOTE: no --mount=type=cache here — a shared cache mount is racy when buildx
+# builds amd64/arm64/armv7 in parallel (uv's cache lock collides).
 COPY pyproject.toml uv.lock* ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=cache,target=/root/.cache/pip \
-    uv venv .venv && uv sync --no-dev --frozen
+RUN uv venv .venv && uv sync --no-dev --frozen
 
 # -----------------
 # Final Stage
