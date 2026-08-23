@@ -133,6 +133,13 @@ class NameBuilder(BaseModel, Generic[T]):
 
     @computed_field
     @property
+    def tpdb_id(self) -> str | None:
+        """Get TPDB ID from item if applicable"""
+
+        return self._item.tpdb_id
+
+    @computed_field
+    @property
     def resolution(self) -> str | None:
         """Get resolution label from media metadata (e.g., "1080p", "4K")"""
 

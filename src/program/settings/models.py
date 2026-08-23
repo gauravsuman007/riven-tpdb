@@ -293,10 +293,10 @@ class FilesystemModel(Observable):
 
     # VFS Naming Templates
     movie_dir_template: str = Field(
-        default="{title} ({year}) {{tmdb-{tmdb_id}}}",
+        default="{title} ({year}) {{tpdb-{tpdb_id}}}",
         description=(
             "Template for movie directory names. "
-            "Available variables: title, year, tmdb_id, imdb_id, resolution, codec, hdr, audio, quality, "
+            "Available variables: title, year, tpdb_id, tmdb_id, imdb_id, resolution, codec, hdr, audio, quality, "
             "is_remux, is_proper, is_repack, is_extended, is_directors_cut, container. "
             "Example: '{title} ({year})' or '{title} ({year}) [{resolution}]'"
         ),
@@ -306,7 +306,7 @@ class FilesystemModel(Observable):
         default="{title} ({year})",
         description=(
             "Template for movie file names (without extension). "
-            "Available variables: title, year, tmdb_id, imdb_id, resolution, codec, hdr, audio, quality, "
+            "Available variables: title, year, tpdb_id, tmdb_id, imdb_id, resolution, codec, hdr, audio, quality, "
             "remux, proper, repack, extended, directors_cut, edition (string flags, empty if false). "
             "Example: '{title} ({year})' or '{title} ({year}) {edition} [{resolution}] {remux}'"
         ),
