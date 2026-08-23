@@ -80,23 +80,25 @@ def get_item_by_external_id(
     imdb_id: str | None = None,
     tvdb_id: str | None = None,
     tmdb_id: str | None = None,
+    tpdb_id: str | None = None,
     session: Session | None = None,
 ) -> "MediaItem | None":
     """
     Retrieve a movie or show by one of its external identifiers.
 
-    If a matching show is returned, its seasons and episodes are also loaded. At least one of `imdb_id`, `tvdb_id`, or `tmdb_id` must be provided.
+    If a matching show is returned, its seasons and episodes are also loaded. At least one of `imdb_id`, `tvdb_id`, `tmdb_id`, or `tpdb_id` must be provided.
 
     Parameters:
         imdb_id (str | None): IMDb identifier to match.
         tvdb_id (str | None): TVDB identifier to match.
         tmdb_id (str | None): TMDB identifier to match.
+        tpdb_id (str | None): TPDB identifier to match.
 
     Returns:
         MediaItem: The matched movie or show, or `None` if no match is found.
 
     Raises:
-        ValueError: If none of `imdb_id`, `tvdb_id`, or `tmdb_id` are provided.
+        ValueError: If none of `imdb_id`, `tvdb_id`, `tmdb_id`, or `tpdb_id` are provided.
     """
     from program.media.item import MediaItem, Season, Show
 
@@ -110,6 +112,9 @@ def get_item_by_external_id(
 
     if tmdb_id:
         conditions.append(MediaItem.tmdb_id == tmdb_id)
+
+    if tpdb_id:
+        conditions.append(MediaItem.tpdb_id == tpdb_id)
 
     if not conditions:
         raise ValueError("At least one external ID must be provided")

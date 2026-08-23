@@ -409,6 +409,7 @@ def resolve_media_item(
     tmdb_id: str | None = None,
     tvdb_id: str | None = None,
     imdb_id: str | None = None,
+    tpdb_id: str | None = None,
     media_type: Literal["movie", "tv"] | None = None,
     raise_on_not_found: bool = True,
 ) -> MediaItem | None:
@@ -427,21 +428,35 @@ def resolve_media_item(
     if item_id:
         item = db_functions.get_item_by_id(item_id, session=session)
 
-    if not item and (tmdb_id or tvdb_id or imdb_id):
+    if not item and (tmdb_id or tvdb_id or imdb_id or tpdb_id):
         try:
             item = db_functions.get_item_by_external_id(
-                imdb_id=imdb_id, tvdb_id=tvdb_id, tmdb_id=tmdb_id, session=session
+                imdb_id=imdb_id,
+                tvdb_id=tvdb_id,
+                tmdb_id=tmdb_id,
+                tpdb_id=tpdb_id,
+                session=session,
             )
         except ValueError:
             pass
 
     # If item not found locally, try to create it via Indexer if external IDs are provided
-    if not item and (tmdb_id or tvdb_id or imdb_id):
+    if not item and (tmdb_id or tvdb_id or imdb_id or tpdb_id):
         if services := di[Program].services:
             indexer = services.indexer
             prepared_item = None
 
-            if tmdb_id and media_type == "movie":
+            # TPDB first: it is the only identifier this fork's own titles
+            # carry, and a TPDB scene or movie is always indexed as a Movie.
+            if tpdb_id:
+                prepared_item = MediaItem(
+                    {
+                        "tpdb_id": tpdb_id,
+                        "requested_by": "riven",
+                        "requested_at": datetime.now(),
+                    }
+                )
+            elif tmdb_id and media_type == "movie":
                 prepared_item = MediaItem(
                     {
                         "tmdb_id": tmdb_id,
@@ -551,6 +566,10 @@ def scrape_item(
         str | None,
         Query(description="The IMDB ID of the media item"),
     ] = None,
+    tpdb_id: Annotated[
+        str | None,
+        Query(description="The TPDB UUID of the media item"),
+    ] = None,
     media_type: Annotated[
         Literal["movie", "tv"] | None,
         Query(description="The media type"),
@@ -615,7 +634,13 @@ def scrape_item(
         async def generate_events(scraper: Scraping):
             with db_session() as session:
                 item = resolve_media_item(
-                    session, item_id, tmdb_id, tvdb_id, imdb_id, target_media_type
+                    session,
+                    item_id=item_id,
+                    tmdb_id=tmdb_id,
+                    tvdb_id=tvdb_id,
+                    imdb_id=imdb_id,
+                    tpdb_id=tpdb_id,
+                    media_type=target_media_type,
                 )
 
                 if not item:
@@ -730,7 +755,13 @@ def scrape_item(
     # Standard JSON response mode
     with db_session() as session:
         item = resolve_media_item(
-            session, item_id, tmdb_id, tvdb_id, imdb_id, target_media_type
+            session,
+            item_id=item_id,
+            tmdb_id=tmdb_id,
+            tvdb_id=tvdb_id,
+            imdb_id=imdb_id,
+            tpdb_id=tpdb_id,
+            media_type=target_media_type,
         )
         assert item
         apply_custom_params(item, custom_title, custom_imdb_id)
@@ -801,6 +832,10 @@ async def start_manual_session(
         str | None,
         Query(description="The IMDB ID of the media item"),
     ] = None,
+    tpdb_id: Annotated[
+        str | None,
+        Query(description="The TPDB UUID of the media item"),
+    ] = None,
     media_type: Annotated[
         Literal["movie", "tv"] | None,
         Query(description="The media type"),
@@ -829,7 +864,13 @@ async def start_manual_session(
 
     with db_session() as session:
         item = resolve_media_item(
-            session, item_id, tmdb_id, tvdb_id, imdb_id, target_media_type
+            session,
+            item_id=item_id,
+            tmdb_id=tmdb_id,
+            tvdb_id=tvdb_id,
+            imdb_id=imdb_id,
+            tpdb_id=tpdb_id,
+            media_type=target_media_type,
         )
 
         # ensure item is present
@@ -1224,6 +1265,7 @@ class AutoScrapeRequest(BaseModel):
     tmdb_id: str | None = None
     tvdb_id: str | None = None
     imdb_id: str | None = None
+    tpdb_id: str | None = None
     ranking_overrides: dict[str, list[str]] | None = None
     season_numbers: list[int] | None = (
         None  # If provided for TV, scrape specific seasons
@@ -1262,11 +1304,12 @@ async def auto_scrape(
     with db_session() as session:
         item = resolve_media_item(
             session,
-            request.item_id,
-            request.tmdb_id,
-            request.tvdb_id,
-            request.imdb_id,
-            request.media_type,
+            item_id=request.item_id,
+            tmdb_id=request.tmdb_id,
+            tvdb_id=request.tvdb_id,
+            imdb_id=request.imdb_id,
+            tpdb_id=request.tpdb_id,
+            media_type=request.media_type,
         )
 
         if not item:
