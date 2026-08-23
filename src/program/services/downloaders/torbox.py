@@ -14,6 +14,8 @@ CDN URL on demand. That is exactly the contract the VFS wants -- it calls
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
+from typing import Any
 
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -210,9 +212,30 @@ class TorBoxDownloader(DownloaderBase):
         body = response.data
 
         if isinstance(body, dict):
-            return body.get("data")
+            return TorBoxDownloader._to_plain(body.get("data"))
 
-        return getattr(body, "data", None)
+        return TorBoxDownloader._to_plain(getattr(body, "data", None))
+
+    @staticmethod
+    def _to_plain(value: Any) -> Any:
+        """Recursively turn SmartResponse's dot-notation objects into plain data.
+
+        `SmartSession` decodes JSON into nested `SimpleNamespace`s. Converting
+        only the top level leaves nested members (notably a torrent's `files`)
+        as namespaces, which pydantic rejects outright -- so the conversion has
+        to go all the way down.
+        """
+
+        if isinstance(value, SimpleNamespace):
+            return {key: TorBoxDownloader._to_plain(val) for key, val in vars(value).items()}
+
+        if isinstance(value, dict):
+            return {key: TorBoxDownloader._to_plain(val) for key, val in value.items()}
+
+        if isinstance(value, list):
+            return [TorBoxDownloader._to_plain(item) for item in value]
+
+        return value
 
     # ------------------------------------------------------------- operations
 
@@ -365,9 +388,7 @@ class TorBoxDownloader(DownloaderBase):
 
                 data = data[0]
 
-            torrent = TorBoxTorrent.model_validate(
-                data if isinstance(data, dict) else vars(data)
-            )
+            torrent = TorBoxTorrent.model_validate(self._to_plain(data))
 
             files = {}
 

@@ -626,7 +626,26 @@ class ScraperModel(Observable):
 # Version Ranking Model (set application defaults here!)
 
 
-class RTNSettingsModel(SettingsModel, Observable): ...
+class RTNSettingsModel(SettingsModel, Observable):
+    """Ranking settings, with defaults corrected for adult releases.
+
+    RTN is tuned for mainstream media, and two of its defaults are actively
+    wrong in an adult-only fork:
+
+    * ``remove_adult_content`` discards exactly the content this fork exists
+      to serve.
+    * ``title_similarity`` of 0.85 is too strict for adult naming, where a
+      release is routinely titled "<Title> Vol. 3" against a TPDB title of
+      "<Title>". At 0.85 every result for a real request was rejected; 0.60
+      accepts the genuine matches while still filtering unrelated titles.
+    """
+
+    def __init__(self, **data: Any):
+        super().__init__(**data)
+
+        if "options" not in data:
+            self.options.remove_adult_content = False
+            self.options.title_similarity = 0.60
 
 
 # Application Settings
