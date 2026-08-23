@@ -7,10 +7,10 @@
   </p>
 </div>
 
-> **Status:** experimental work-in-progress. The fork compiles, and the TPDB
-> metadata, content, and scraping layers are implemented and unit-tested against
-> the live TPDB API. Recommendations and performer/tag catalogs are not yet
-> implemented.
+> **Status:** experimental work-in-progress. The TPDB metadata, content,
+> scraping, discovery and recommendation layers are implemented and unit-tested
+> against the live TPDB API, and the companion frontend fork sources every
+> browse surface from TPDB.
 
 ---
 
@@ -50,9 +50,16 @@ The core guarantee of the fork:
   picked up and flow into the indexer.
 - ✅ **Scraping** — Prowlarr/Jackett recognize adult (Newznab "XXX") categories
   and search adult trackers by scene title.
-- ⏳ **Recommendations** — not yet implemented.
-- ⏳ **Performer/tag catalogs** — not yet implemented (TPDB's public list
-  endpoint only filters by `site`).
+- ✅ **Discovery & recommendations** — `/api/v1/tpdb/*` serves newest movies and
+  scenes, full-text search, performers, sites, the tag vocabulary, per-title
+  related lists, and a recommendations feed seeded from your TPDB collection,
+  your library, or your site subscriptions.
+- ✅ **Requesting** — TPDB titles can be queued into Riven by UUID
+  (`POST /api/v1/items/add` with `tpdb_ids`).
+- ⚠️ **Ranking** — TPDB exposes no popularity or rating signal. Its ordering
+  parameters are silently ignored and `rating` is 0 on every record, so nothing
+  here is sorted by popularity. Feeds are newest-first and recommendations are
+  derived from relatedness, not from ranking.
 
 ## Getting started
 
@@ -102,6 +109,14 @@ how to run it.
 The fork now recognizes Newznab adult categories (`XXX`/`Adult`, category 6000),
 so adult trackers are searched correctly instead of being silently dropped.
 
+**Prowlarr and Jackett are the only scrapers that work for adult content**, and
+at least one of them is required for anything to download. The Stremio-style
+scrapers -- Torrentio, Comet, MediaFusion, AIOStreams, Orionoid -- address
+content purely by IMDb id. TPDB titles have no IMDb id, so those scrapers can
+only ever return nothing and are now skipped rather than queried. Rarbg is
+skipped too: its query hardcodes `ncategory:XXX`, excluding adult results by
+construction.
+
 ### 4. Web UI (optional)
 
 The image in this repository is the **backend only** -- it serves a JSON API and
@@ -122,16 +137,24 @@ AUTH_SECRET=$(openssl rand -base64 32)
 Then browse to `http://localhost:3000` and register an account. Set
 `ENABLE_EMAIL_PASSWORD_SIGNUP=false` afterwards to close registration.
 
-Its settings form is generated at runtime from the backend's JSON schema
-(`/api/v1/settings/schema`), so this fork's TPDB settings appear on the settings
-page automatically -- no TPDB-specific frontend build is needed.
+Use the fork, [`riven-tpdb-frontend`][riven-tpdb-frontend]
+(`ghcr.io/gauravsuman007/riven-tpdb-frontend:latest`). Upstream's frontend
+browses TMDB, so its home page, search and list pages show mainstream movies and
+TV regardless of what this backend serves. The fork sources every browse surface
+from the TPDB endpoints instead and adds a TPDB detail page with "Request" and
+"Add to TPDB collection" actions.
 
-> **Use the `:dev` tag, not `:latest`.** At the time of writing `:latest` is a
-> much older build that predates RivenVFS. It reads settings keys this fork no
-> longer has (`symlink.*`, `downloaders.torbox.*`) and its settings pages fail
-> with HTTP 500 as a result.
+The settings form is generated at runtime from the backend's JSON schema
+(`/api/v1/settings/schema`), so this fork's TPDB settings appear there
+automatically.
+
+> If you do run upstream's image, use the `:dev` tag, not `:latest`. At the time
+> of writing `:latest` is a much older build that predates RivenVFS: it reads
+> settings keys this fork no longer has (`symlink.*`, `downloaders.torbox.*`)
+> and its settings pages fail with HTTP 500 as a result.
 
 [riven-frontend]: https://github.com/rivenmedia/riven-frontend
+[riven-tpdb-frontend]: https://github.com/gauravsuman007/riven-tpdb-frontend
 
 ## Environment variables
 
