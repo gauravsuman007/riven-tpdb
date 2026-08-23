@@ -108,13 +108,14 @@ push to `main` and on version tags:
 
 | Label  | Docker platform    |
 | ------ | ------------------ |
-| arm32  | `linux/arm/v7`     |
 | arm64  | `linux/arm64`      |
 | x64    | `linux/amd64`      |
 
-> **x86 (32-bit `linux/386`) is not supported.** The project depends on
-> `rapidfuzz` (via `rank-torrent-name`, the torrent-ranking engine), which
-> publishes no 32-bit x86 binaries and cannot be compiled on that target.
+> **arm32 (`linux/arm/v7`) and x86 (`linux/386`) are not built in CI.** Their
+> native dependencies (`lxml`, `psycopg2`, `psutil`, ...) publish no 32-bit
+> wheels, so they would have to compile from source under QEMU emulation —
+> making each build take an hour or more. `rapidfuzz` (via `rank-torrent-name`)
+> ships no 32-bit x86 binaries at all, so 32-bit x86 is unsupported upstream.
 
 Pull with: `ghcr.io/<your-user>/riven-tpdb:latest`.
 

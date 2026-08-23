@@ -3,10 +3,8 @@
 # -----------------
 FROM python:3.13-alpine AS builder
 
-# Install build dependencies. postgresql-dev provides pg_config (psycopg2),
-# libxml2-dev/libxslt-dev are needed by lxml, and rust/cargo build rpds-py from
-# source on architectures (e.g. arm/v7) that lack a musl wheel.
-RUN apk add --no-cache gcc musl-dev libffi-dev python3-dev build-base curl curl-dev openssl-dev fuse3-dev pkgconf fuse3 postgresql-dev libxml2-dev libxslt-dev rust cargo
+# Install build dependencies (psutil/pyfuse3 compile from source on musl).
+RUN apk add --no-cache gcc musl-dev libffi-dev python3-dev build-base curl curl-dev openssl-dev fuse3-dev pkgconf fuse3
 
 # Install uv (fast package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
