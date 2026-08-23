@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, object_session
 
 from program.db import db_functions
 from program.db.db import db_session
+from program.media.filesystem_entry import FilesystemEntry
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.media.state import States
 from program.types import Event
@@ -461,6 +462,228 @@ async def add_items(
                     )
 
     return MessageResponse(message=f"Added {added_count} item(s) to the queue")
+
+
+# In-flight states, in the order an item passes through them. Completed,
+# Failed, Paused and Unreleased are deliberately absent: they are outcomes,
+# not work in progress.
+_ACTIVE_STATES: tuple[States, ...] = (
+    States.Requested,
+    States.Indexed,
+    States.Scraped,
+    States.Downloaded,
+    States.Symlinked,
+)
+
+
+class DownloadActivityEntry(BaseModel):
+    """One row of the downloads view."""
+
+    riven_id: Annotated[int, Field(description="The Riven media item id")]
+    title: Annotated[str, Field(description="Item title")]
+    type: Annotated[str, Field(description="Item type")]
+    state: Annotated[str, Field(description="Current state")]
+    tpdb_id: Annotated[str | None, Field(description="TPDB uuid, when adult")]
+    poster_path: Annotated[str | None, Field(description="Poster URL")]
+    requested_at: Annotated[
+        str | None, Field(description="When the item was requested, ISO 8601")
+    ]
+    scraped_at: Annotated[
+        str | None, Field(description="When the item was last scraped, ISO 8601")
+    ]
+    scraped_times: Annotated[int, Field(description="How many scrape passes have run")]
+    stream_count: Annotated[
+        int, Field(description="Usable streams found so far")
+    ]
+    blacklisted_count: Annotated[
+        int, Field(description="Streams rejected for this item")
+    ]
+    file_size: Annotated[
+        int | None, Field(description="Total bytes on disk, when downloaded")
+    ]
+    completed_at: Annotated[
+        str | None,
+        Field(description="When the file appeared on disk, ISO 8601"),
+    ]
+
+
+class DownloadActivityResponse(BaseModel):
+    active: Annotated[
+        list[DownloadActivityEntry],
+        Field(description="Items still moving through the pipeline, oldest request first"),
+    ]
+    recent: Annotated[
+        list[DownloadActivityEntry],
+        Field(description="Most recently completed items, newest first"),
+    ]
+
+
+def _activity_entry(item: MediaItem) -> DownloadActivityEntry:
+    """Flatten one item plus its filesystem entries into a view row."""
+
+    entries = list(item.filesystem_entries or [])
+    # A title can land as several files (split scenes), so size is the sum and
+    # the completion time is the last file to arrive.
+    file_size = sum(entry.file_size or 0 for entry in entries) or None
+    created = [entry.created_at for entry in entries if entry.created_at]
+    state = item.last_state or item.state
+
+    return DownloadActivityEntry(
+        riven_id=item.id,
+        title=item.title,
+        type=item.type,
+        state=state.name if state else States.Unknown.name,
+        tpdb_id=item.tpdb_id,
+        poster_path=item.poster_path,
+        requested_at=item.requested_at.isoformat() if item.requested_at else None,
+        scraped_at=item.scraped_at.isoformat() if item.scraped_at else None,
+        scraped_times=item.scraped_times or 0,
+        stream_count=len(item.streams or []),
+        blacklisted_count=len(item.blacklisted_streams or []),
+        file_size=file_size,
+        completed_at=max(created).isoformat() if created else None,
+    )
+
+
+@router.get(
+    "/downloads",
+    summary="Download Activity",
+    description="In-flight items and recently completed downloads",
+    operation_id="get_download_activity",
+    response_model=DownloadActivityResponse,
+)
+async def get_download_activity(
+    limit: Annotated[
+        int,
+        Query(description="Maximum rows per section", ge=1, le=100),
+    ] = 25,
+) -> DownloadActivityResponse:
+    """The two halves of "what is my downloader doing".
+
+    Riven has no per-torrent progress to report -- a debrid provider either has
+    a release or it does not -- so progress is expressed as the state an item
+    has reached and how many scrape passes it has taken to get there. Items that
+    have been scraped repeatedly without a usable stream are the ones actually
+    stuck, and this makes that legible.
+    """
+
+    with db_session() as session:
+        active = (
+            session.execute(
+                select(MediaItem)
+                .where(MediaItem.last_state.in_(_ACTIVE_STATES))
+                # Oldest request first: whatever has been waiting longest is
+                # the thing worth looking at.
+                .order_by(MediaItem.requested_at.asc())
+                .limit(limit)
+            )
+            .unique()
+            .scalars()
+            .all()
+        )
+
+        # History is ordered by when the file actually landed, not when it was
+        # requested -- an item queued weeks ago that only just completed
+        # belongs at the top. A title can own several files, so collapse them
+        # to the newest one before ordering.
+        landed_at = (
+            select(
+                FilesystemEntry.media_item_id.label("media_item_id"),
+                func.max(FilesystemEntry.created_at).label("landed_at"),
+            )
+            .where(FilesystemEntry.media_item_id.is_not(None))
+            .group_by(FilesystemEntry.media_item_id)
+            .subquery()
+        )
+
+        recent = (
+            session.execute(
+                select(MediaItem)
+                .join(landed_at, landed_at.c.media_item_id == MediaItem.id)
+                .where(MediaItem.last_state == States.Completed)
+                .order_by(landed_at.c.landed_at.desc())
+                .limit(limit)
+            )
+            .unique()
+            .scalars()
+            .all()
+        )
+
+        return DownloadActivityResponse(
+            active=[_activity_entry(item) for item in active],
+            recent=[_activity_entry(item) for item in recent],
+        )
+
+
+class LibraryStateEntry(BaseModel):
+    """Where one TPDB title stands in the local library."""
+
+    riven_id: Annotated[int, Field(description="The Riven media item id")]
+    state: Annotated[str, Field(description="The item's current state")]
+    title: Annotated[str, Field(description="The item's title in the library")]
+
+
+class LibraryStatesResponse(BaseModel):
+    states: Annotated[
+        dict[str, LibraryStateEntry],
+        Field(description="TPDB uuid -> library state, omitting unknown ids"),
+    ]
+
+
+@router.get(
+    "/library_states",
+    summary="Library State by TPDB ID",
+    description="Look up which of the given TPDB uuids already exist in the library",
+    operation_id="get_library_states",
+    response_model=LibraryStatesResponse,
+)
+async def get_library_states(
+    tpdb_ids: Annotated[
+        list[str],
+        Query(
+            description="TPDB uuids to look up. Ids not in the library are omitted.",
+            min_length=1,
+        ),
+    ],
+) -> LibraryStatesResponse:
+    """Resolve TPDB uuids to library state in one round trip.
+
+    Detail pages and poster grids each need to know whether a title is already
+    requested, downloading or available. Asking per title would be a request per
+    card, so this takes the whole set at once and simply leaves out the ids it
+    does not know -- absence is the answer for those, not an error.
+    """
+
+    # Bound the set so a hand-written query string cannot turn into an
+    # unbounded IN clause.
+    wanted = [tpdb_id for tpdb_id in dict.fromkeys(tpdb_ids) if tpdb_id][:200]
+
+    if not wanted:
+        return LibraryStatesResponse(states={})
+
+    with db_session() as session:
+        items = (
+            session.execute(select(MediaItem).where(MediaItem.tpdb_id.in_(wanted)))
+            .unique()
+            .scalars()
+            .all()
+        )
+
+        states = dict[str, LibraryStateEntry]()
+
+        for item in items:
+            if not item.tpdb_id:
+                continue
+
+            state = item.last_state or item.state
+
+            states[item.tpdb_id] = LibraryStateEntry(
+                riven_id=item.id,
+                state=state.name if state else States.Unknown.name,
+                title=item.title,
+            )
+
+    return LibraryStatesResponse(states=states)
 
 
 @router.get(

@@ -22,9 +22,12 @@ Endpoints used here:
     GET /sites/{id}                                       -> Site
 """
 
+import threading
+import time
 from typing import Any
 from urllib.parse import urlencode
 
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 from program.utils.request import SmartSession
@@ -153,7 +156,20 @@ class TpdbApi:
 
     BASE_URL = "https://api.theporndb.net"
 
-    def __init__(self, api_base_url: str | None = None, api_token: str = ""):
+    # Reads are cached for a short window. Catalogue and similar-title lists
+    # barely move minute to minute, but a single home or detail page can ask
+    # for the same ones several times over, and every miss is charged against
+    # a 2-per-second rate limit.
+    CACHE_TTL_SECONDS = 300.0
+    CACHE_MAX_ENTRIES = 512
+    SLOW_REQUEST_SECONDS = 1.0
+
+    def __init__(
+        self,
+        api_base_url: str | None = None,
+        api_token: str = "",
+        cache_ttl: float | None = None,
+    ):
         base_url = (api_base_url or self.BASE_URL).rstrip("/")
 
         self.session = SmartSession(
@@ -173,6 +189,44 @@ class TpdbApi:
 
         self._site_id_cache: dict[str, int | None] = {}
 
+        self.cache_ttl = self.CACHE_TTL_SECONDS if cache_ttl is None else cache_ttl
+        # url -> (monotonic stored_at, body)
+        self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._cache_lock = threading.Lock()
+
+    def _cache_get(self, url: str) -> dict[str, Any] | None:
+        """Return a cached body for `url`, or None when absent or stale."""
+
+        if self.cache_ttl <= 0:
+            return None
+
+        with self._cache_lock:
+            hit = self._cache.get(url)
+
+            if hit is None:
+                return None
+
+            stored_at, body = hit
+
+            if (time.monotonic() - stored_at) > self.cache_ttl:
+                self._cache.pop(url, None)
+                return None
+
+            return body
+
+    def _cache_put(self, url: str, body: dict[str, Any]) -> None:
+        if self.cache_ttl <= 0:
+            return
+
+        with self._cache_lock:
+            # Cheap bound: the cache exists to collapse a burst of identical
+            # reads within one page load, not to be a long-lived store, so
+            # dropping the whole thing beats tracking per-entry LRU order.
+            if len(self._cache) >= self.CACHE_MAX_ENTRIES:
+                self._cache.clear()
+
+            self._cache[url] = (time.monotonic(), body)
+
     def _get(
         self,
         path: str,
@@ -186,7 +240,21 @@ class TpdbApi:
             if clean:
                 url = f"{path}?{urlencode(clean)}"
 
+        cached = self._cache_get(url)
+
+        if cached is not None:
+            return cached
+
+        # TPDB is rate limited to a couple of requests a second, so a page that
+        # fans out over the collection spends most of its time waiting in the
+        # bucket rather than on the wire. Timing every call makes that visible
+        # instead of leaving "the UI is slow" unattributable.
+        started = time.monotonic()
         response = self.session.get(url)
+        elapsed = time.monotonic() - started
+
+        if elapsed > self.SLOW_REQUEST_SECONDS:
+            logger.debug(f"TPDB GET {url} took {elapsed:.2f}s")
 
         if response.status_code >= 400:
             raise TpdbApiError(
@@ -204,6 +272,8 @@ class TpdbApi:
 
         if "message" in data:
             raise TpdbApiError(str(data["message"]))
+
+        self._cache_put(url, data)
 
         return data
 
@@ -408,6 +478,12 @@ class TpdbApi:
         )
         return self._parse_many(data, TpdbScene)
 
+    def invalidate_cache(self) -> None:
+        """Drop every cached read. Called after a write that changes them."""
+
+        with self._cache_lock:
+            self._cache.clear()
+
     def is_collected(self, numeric_id: int | str) -> bool:
         """Whether one title is in the collection.
 
@@ -435,6 +511,13 @@ class TpdbApi:
                 f"TPDB request failed ({response.status_code}): {response.text[:200]}",
                 status_code=response.status_code,
             )
+
+        # Adding invalidates every cached read: the collection lists change,
+        # `is_collected` flips, and recommendations are derived from both. A
+        # stale hit would show the title as uncollected immediately after the
+        # user collected it. Cleared after the write lands, not before, so a
+        # concurrent read cannot repopulate the old value.
+        self.invalidate_cache()
 
         return True
 
