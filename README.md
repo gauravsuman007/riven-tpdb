@@ -110,8 +110,11 @@ push to `main` and on version tags:
 | ------ | ------------------ |
 | arm32  | `linux/arm/v7`     |
 | arm64  | `linux/arm64`      |
-| x86    | `linux/386`        |
 | x64    | `linux/amd64`      |
+
+> **x86 (32-bit `linux/386`) is not supported.** The project depends on
+> `rapidfuzz` (via `rank-torrent-name`, the torrent-ranking engine), which
+> publishes no 32-bit x86 binaries and cannot be compiled on that target.
 
 Pull with: `ghcr.io/<your-user>/riven-tpdb:latest`.
 
