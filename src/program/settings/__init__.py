@@ -66,6 +66,19 @@ class SettingsManager:
                 if os.getenv(environment_variable, None):
                     new_value = os.getenv(environment_variable)
 
+                    # A forced variable wins on *every* load, so it silently
+                    # overwrites whatever was saved from the UI -- the setting
+                    # simply appears not to stick. Surface it instead of
+                    # letting it happen quietly. (Empty variables are falsy and
+                    # never reach here, so they leave the saved value alone.)
+                    if new_value != str(value):
+                        logger.warning(
+                            f"{environment_variable} is pinning "
+                            f"{prefix.lstrip(separator)}{separator}{key} to the environment; "
+                            "changes saved in the UI will be discarded. "
+                            "Unset it to manage this setting from the UI."
+                        )
+
                     if new_value is None:
                         checked_settings[key] = value
                     elif isinstance(value, bool):

@@ -641,8 +641,9 @@ class IndexerModel(Observable):
 
 
 class TpdbModel(Observable):
+    # TPDB is the only metadata source in this fork, so it is on by default.
     enabled: bool = Field(
-        default=False, description="Enable ThePornDB (TPDB) metadata integration"
+        default=True, description="Enable ThePornDB (TPDB) metadata integration"
     )
     api_token: str = Field(default="", description="ThePornDB API token (Bearer)")
     api_base_url: str = Field(

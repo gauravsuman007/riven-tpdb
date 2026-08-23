@@ -23,19 +23,17 @@ services:
             # Must match the container-side path of the /mount volume below,
             # otherwise RivenVFS falls back to the placeholder default.
             - RIVEN_FILESYSTEM_MOUNT_PATH=/mount
-            # ThePornDB metadata (set RIVEN_TPDB_API_TOKEN in a .env file next to this compose).
-            - RIVEN_TPDB_ENABLED=true
+            # ThePornDB API token. Optional: leave unset and enter it in the UI
+            # instead. An empty value is ignored rather than forced, so it does
+            # not pin the field.
             - RIVEN_TPDB_API_TOKEN=${RIVEN_TPDB_API_TOKEN:-}
-            # TPDB site subscriptions (studios/networks to index).
-            - RIVEN_CONTENT_TPDB_ENABLED=true
-            - RIVEN_CONTENT_TPDB_SITES=${RIVEN_CONTENT_TPDB_SITES:-[]}
-            # Adult trackers (enable one and point at your Prowlarr/Jackett).
-            - RIVEN_SCRAPING_PROWLARR_ENABLED=${RIVEN_SCRAPING_PROWLARR_ENABLED:-false}
-            - RIVEN_SCRAPING_PROWLARR_URL=${RIVEN_SCRAPING_PROWLARR_URL:-http://localhost:9696}
-            - RIVEN_SCRAPING_PROWLARR_API_KEY=${RIVEN_SCRAPING_PROWLARR_API_KEY:-}
-            - RIVEN_SCRAPING_JACKETT_ENABLED=${RIVEN_SCRAPING_JACKETT_ENABLED:-false}
-            - RIVEN_SCRAPING_JACKETT_URL=${RIVEN_SCRAPING_JACKETT_URL:-http://localhost:9117}
-            - RIVEN_SCRAPING_JACKETT_API_KEY=${RIVEN_SCRAPING_JACKETT_API_KEY:-}
+            #
+            # NOTE: do not add RIVEN_* variables here for anything editable in
+            # the settings UI. RIVEN_FORCE_ENV=true re-applies every non-empty
+            # variable on each settings load, so a variable with a hardcoded
+            # fallback (e.g. `${VAR:-false}`) silently overwrites whatever you
+            # save and the setting appears to "not stick". Only genuine
+            # container infrastructure belongs above.
         healthcheck:
             test: curl -s http://localhost:8080 >/dev/null || exit 1
             interval: 30s
