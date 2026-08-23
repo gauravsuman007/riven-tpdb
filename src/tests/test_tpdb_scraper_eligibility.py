@@ -1,8 +1,9 @@
 """Tests for scraper eligibility on adult (TPDB) items.
 
 TPDB items carry no IMDb id, so the Stremio-style scrapers -- which address
-content purely by IMDb id -- can never serve them. Rarbg is separately unable
-to: its query hardcodes ``ncategory:XXX``, excluding adult results outright.
+content purely by IMDb id -- can never serve them, and Rarbg excludes XXX by
+construction. Those scrapers have been removed from this fork; the eligibility
+guard stays as defence in depth if one is ever reintroduced.
 
 ``Scraping._eligible_services`` is the guard. Importing it for real would boot
 the whole program, so this exercises the same predicate against stub services,
@@ -117,23 +118,33 @@ def _test_no_eligible_services_yields_empty():
 
 
 def _test_real_flags_declared():
-    # The scrapers that address content by IMDb id must say so.
-    for module, cls in [
-        ("torrentio", "Torrentio"),
-        ("comet", "Comet"),
-        ("mediafusion", "Mediafusion"),
-        ("aiostreams", "AIOStreams"),
-        ("orionoid", "Orionoid"),
-    ]:
-        assert _class_flag(module, cls, "requires_imdb_id", False) is True, module
+    """Only scrapers that can serve adult content are still shipped.
 
-    # Title-based scrapers must not.
-    for module, cls in [("prowlarr", "Prowlarr"), ("jackett", "Jackett")]:
+    The IMDb-keyed scrapers (Torrentio, Comet, MediaFusion, AIOStreams,
+    Orionoid) and Rarbg were removed from this fork outright, since a TPDB item
+    has no IMDb id and Rarbg excludes XXX by construction. The eligibility
+    guard remains for defence in depth if one is ever added back.
+    """
+
+    shipped = {p.stem for p in SCRAPERS.glob("*.py")}
+    assert "torrentio" not in shipped, shipped
+    assert "rarbg" not in shipped, shipped
+
+    for gone in ["comet", "mediafusion", "aiostreams", "orionoid"]:
+        assert gone not in shipped, f"{gone} should not ship in an adult-only fork"
+
+    # The title-based scrapers are the ones that remain, and must not claim to
+    # need an IMDb id.
+    for module, cls in [
+        ("prowlarr", "Prowlarr"),
+        ("jackett", "Jackett"),
+        ("zilean", "Zilean"),
+    ]:
+        assert module in shipped, module
         assert _class_flag(module, cls, "requires_imdb_id", False) is False, module
 
-    # Rarbg excludes XXX by construction.
-    assert _class_flag("rarbg", "Rarbg", "supports_adult", True) is False
     assert _class_flag("base", "ScraperService", "supports_adult", None) is True
+    assert _class_flag("base", "ScraperService", "requires_imdb_id", None) is False
 
 
 TESTS = [

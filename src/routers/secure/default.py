@@ -10,7 +10,6 @@ from loguru import logger
 from pydantic import BaseModel, Field, HttpUrl
 from sqlalchemy import Date, cast, func, select
 
-from program.apis import TraktAPI
 from program.db import db_functions
 from program.db.db import db_session
 from program.media.item import Episode, MediaItem, Movie, Season, Show
@@ -170,57 +169,6 @@ async def get_services() -> dict[str, bool]:
                 data[service.key] = service.initialized
 
     return data
-
-
-class TraktOAuthInitiateResponse(BaseModel):
-    auth_url: str
-
-
-@router.get(
-    "/trakt/oauth/initiate",
-    operation_id="trakt_oauth_initiate",
-    response_model=TraktOAuthInitiateResponse,
-)
-async def initiate_trakt_oauth() -> TraktOAuthInitiateResponse:
-    try:
-        trakt_api = di[TraktAPI]
-    except ServiceError:
-        raise HTTPException(status_code=404, detail="Trakt service not found")
-
-    auth_url = trakt_api.build_oauth_url()
-
-    return TraktOAuthInitiateResponse(auth_url=auth_url)
-
-
-@router.get(
-    "/trakt/oauth/callback",
-    operation_id="trakt_oauth_callback",
-    response_model=MessageResponse,
-)
-async def trakt_oauth_callback(
-    code: Annotated[
-        str,
-        Query(description="The OAuth code returned by Trakt"),
-    ],
-) -> MessageResponse:
-    try:
-        trakt_api = di[TraktAPI]
-    except ServiceError:
-        raise HTTPException(status_code=404, detail="Trakt Api not found")
-
-    trakt_api_key = settings_manager.settings.content.trakt.api_key
-
-    if not trakt_api_key:
-        raise HTTPException(
-            status_code=404, detail="Trakt Api key not found in settings"
-        )
-
-    success = trakt_api.handle_oauth_callback(trakt_api_key, code)
-
-    if success:
-        return MessageResponse(message="OAuth token obtained successfully")
-    else:
-        raise HTTPException(status_code=400, detail="Failed to obtain OAuth token")
 
 
 class StatsResponse(BaseModel):

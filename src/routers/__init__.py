@@ -11,7 +11,6 @@ from routers.secure.scrape import router as scrape_router
 from routers.secure.settings import router as settings_router
 from routers.secure.stream import router as stream_router
 from routers.secure.tpdb import router as tpdb_router
-from routers.secure.webhooks import router as webhooks_router
 from routers.secure.ws import router as ws_router
 
 API_VERSION = "v1"
@@ -32,7 +31,6 @@ app_router.include_router(default_router, dependencies=[Depends(resolve_api_key)
 app_router.include_router(items_router, dependencies=[Depends(resolve_api_key)])
 app_router.include_router(scrape_router, dependencies=[Depends(resolve_api_key)])
 app_router.include_router(settings_router, dependencies=[Depends(resolve_api_key)])
-app_router.include_router(webhooks_router, dependencies=[Depends(resolve_api_key)])
 app_router.include_router(ws_router, dependencies=[Depends(resolve_ws_api_key)])
 app_router.include_router(stream_router, dependencies=[Depends(resolve_api_key)])
 app_router.include_router(tpdb_router, dependencies=[Depends(resolve_api_key)])

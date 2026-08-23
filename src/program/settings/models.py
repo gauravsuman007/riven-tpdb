@@ -497,116 +497,6 @@ class UpdatersModel(Observable):
 # Content Services
 
 
-class ListrrModel(Updatable):
-    enabled: bool = Field(default=False, description="Enable Listrr integration")
-    movie_lists: list[str] = Field(
-        default_factory=list, description="Listrr movie list IDs"
-    )
-    show_lists: list[str] = Field(
-        default_factory=list, description="Listrr TV show list IDs"
-    )
-    api_key: str = Field(default="", description="Listrr API key")
-    update_interval: int = Field(
-        default=86400, ge=1, description="Update interval in seconds (24 hours default)"
-    )
-
-
-class MdblistModel(Updatable):
-    enabled: bool = Field(default=False, description="Enable MDBList integration")
-    api_key: str = Field(default="", description="MDBList API key")
-    lists: list[int | str] = Field(
-        default_factory=list[int | str], description="MDBList list IDs to monitor"
-    )
-    update_interval: int = Field(
-        default=86400, ge=1, description="Update interval in seconds (24 hours default)"
-    )
-
-
-class OverseerrModel(Updatable):
-    enabled: bool = Field(default=False, description="Enable Overseerr integration")
-    url: EmptyOrUrl = Field(
-        default="http://localhost:5055", description="Overseerr URL"
-    )
-    api_key: str = Field(default="", description="Overseerr API key")
-    use_webhook: bool = Field(
-        default=False, description="Use webhook instead of polling"
-    )
-    update_interval: int = Field(
-        default=60, ge=1, description="Update interval in seconds"
-    )
-
-
-class PlexWatchlistModel(Updatable):
-    enabled: bool = Field(
-        default=False, description="Enable Plex Watchlist integration"
-    )
-    rss: list[EmptyOrUrl] = Field(
-        default_factory=list, description="Plex Watchlist RSS feed URLs"
-    )
-    update_interval: int = Field(
-        default=60, ge=1, description="Update interval in seconds"
-    )
-
-
-class TraktOauthModel(BaseModel):
-    oauth_client_id: str = Field(default="", description="Trakt OAuth client ID")
-    oauth_client_secret: str = Field(
-        default="", description="Trakt OAuth client secret"
-    )
-    oauth_redirect_uri: str = Field(default="", description="Trakt OAuth redirect URI")
-    access_token: str = Field(default="", description="Trakt OAuth access token")
-    refresh_token: str = Field(default="", description="Trakt OAuth refresh token")
-
-
-class TraktModel(Updatable):
-    enabled: bool = Field(default=False, description="Enable Trakt integration")
-    api_key: str = Field(default="", description="Trakt API key")
-    watchlist: list[str] = Field(
-        default_factory=list[str],
-        description="Trakt usernames for watchlist monitoring",
-    )
-    user_lists: list[str] = Field(
-        default_factory=list[str],
-        description="Trakt user list URLs to monitor",
-    )
-    collection: list[str] = Field(
-        default_factory=list[str],
-        description="Trakt usernames for collection monitoring",
-    )
-    fetch_trending: bool = Field(
-        default=False, description="Fetch trending content from Trakt"
-    )
-    trending_count: int = Field(
-        default=10, ge=1, description="Number of trending items to fetch"
-    )
-    fetch_popular: bool = Field(
-        default=False, description="Fetch popular content from Trakt"
-    )
-    popular_count: int = Field(
-        default=10, ge=1, description="Number of popular items to fetch"
-    )
-    fetch_most_watched: bool = Field(
-        default=False, description="Fetch most watched content from Trakt"
-    )
-    most_watched_period: str = Field(
-        default="weekly",
-        description="Period for most watched (daily, weekly, monthly, yearly)",
-    )
-    most_watched_count: int = Field(
-        default=10, ge=1, description="Number of most watched items to fetch"
-    )
-    update_interval: int = Field(
-        default=86400, ge=1, description="Update interval in seconds (24 hours default)"
-    )
-    oauth: TraktOauthModel = Field(
-        default_factory=lambda: TraktOauthModel(),
-        description="Trakt OAuth configuration",
-    )
-    proxy_url: EmptyOrUrl = Field(
-        default="", description="Proxy URL for Trakt API requests"
-    )
-
-
 class TpdbContentModel(Updatable):
     enabled: bool = Field(
         default=False, description="Enable TPDB adult content subscriptions"
@@ -626,98 +516,27 @@ class TpdbContentModel(Updatable):
 
 
 class ContentModel(Observable):
-    overseerr: OverseerrModel = Field(
-        default_factory=lambda: OverseerrModel(), description="Overseerr configuration"
-    )
-    plex_watchlist: PlexWatchlistModel = Field(
-        default_factory=lambda: PlexWatchlistModel(),
-        description="Plex Watchlist configuration",
-    )
-    mdblist: MdblistModel = Field(
-        default_factory=lambda: MdblistModel(), description="MDBList configuration"
-    )
-    listrr: ListrrModel = Field(
-        default_factory=lambda: ListrrModel(), description="Listrr configuration"
-    )
-    trakt: TraktModel = Field(
-        default_factory=lambda: TraktModel(), description="Trakt configuration"
-    )
+    """Content sources.
+
+    This fork is adult-only, so the mainstream providers upstream ships
+    (Overseerr, Plex Watchlist, MDBList, Listrr, Trakt) are gone -- none of them
+    can produce an item carrying a TPDB id, which is the only thing the indexer
+    will resolve.
+    """
+
     tpdb: TpdbContentModel = Field(
         default_factory=lambda: TpdbContentModel(),
         description="TPDB adult content subscriptions",
     )
 
 
+
 # Scraper Services
-
-
-class TorrentioConfig(Observable):
-    enabled: bool = Field(default=False, description="Enable Torrentio scraper")
-    filter: str = Field(
-        default="sort=qualitysize%7Cqualityfilter=480p,scr,cam",
-        description="Torrentio filter parameters",
-    )
-    url: EmptyOrUrl = Field(
-        default="http://torrentio.strem.fun", description="Torrentio URL"
-    )
-    timeout: int = Field(default=30, ge=1, description="Request timeout in seconds")
-    retries: int = Field(
-        default=1, ge=0, description="Number of retries for failed requests"
-    )
-    ratelimit: bool = Field(default=True, description="Enable rate limiting")
-    proxy_url: EmptyOrUrl = Field(
-        default="", description="Proxy URL for Torrentio requests"
-    )
-
-
-class CometConfig(Observable):
-    enabled: bool = Field(default=False, description="Enable Comet scraper")
-    url: EmptyOrUrl = Field(default="http://localhost:8000", description="Comet URL")
-    timeout: int = Field(default=30, ge=1, description="Request timeout in seconds")
-    retries: int = Field(
-        default=1, ge=0, description="Number of retries for failed requests"
-    )
-    ratelimit: bool = Field(default=True, description="Enable rate limiting")
 
 
 class ZileanConfig(Observable):
     enabled: bool = Field(default=False, description="Enable Zilean scraper")
     url: EmptyOrUrl = Field(default="http://localhost:8181", description="Zilean URL")
-    timeout: int = Field(default=30, ge=1, description="Request timeout in seconds")
-    retries: int = Field(
-        default=1, ge=0, description="Number of retries for failed requests"
-    )
-    ratelimit: bool = Field(default=True, description="Enable rate limiting")
-
-
-class MediafusionConfig(Observable):
-    enabled: bool = Field(default=False, description="Enable Mediafusion scraper")
-    url: EmptyOrUrl = Field(
-        default="http://localhost:8000", description="Mediafusion URL"
-    )
-    timeout: int = Field(default=30, ge=1, description="Request timeout in seconds")
-    retries: int = Field(
-        default=1, ge=0, description="Number of retries for failed requests"
-    )
-    ratelimit: bool = Field(default=True, description="Enable rate limiting")
-
-
-class OrionoidConfigParametersDict(Observable):
-    video3d: bool = Field(default=False, description="Include 3D video results")
-    videoquality: str = Field(default="sd_hd8k", description="Video quality filter")
-    limitcount: int = Field(default=5, ge=1, description="Maximum number of results")
-
-
-class OrionoidConfig(Observable):
-    enabled: bool = Field(default=False, description="Enable Orionoid scraper")
-    api_key: str = Field(default="", description="Orionoid API key")
-    cached_results_only: bool = Field(
-        default=False, description="Only return cached/downloadable results"
-    )
-    parameters: OrionoidConfigParametersDict = Field(
-        default_factory=lambda: OrionoidConfigParametersDict(),
-        description="Additional Orionoid parameters",
-    )
     timeout: int = Field(default=30, ge=1, description="Request timeout in seconds")
     retries: int = Field(
         default=1, ge=0, description="Number of retries for failed requests"
@@ -760,31 +579,6 @@ class ProwlarrConfig(Observable):
     )
 
 
-class RarbgConfig(Observable):
-    enabled: bool = Field(default=False, description="Enable RARBG scraper")
-    url: EmptyOrUrl = Field(default="https://therarbg.to", description="RARBG URL")
-    timeout: int = Field(default=30, ge=1, description="Request timeout in seconds")
-    retries: int = Field(
-        default=1, ge=0, description="Number of retries for failed requests"
-    )
-    ratelimit: bool = Field(default=True, description="Enable rate limiting")
-
-
-class AIOStreamsConfig(Observable):
-    enabled: bool = Field(default=False, description="Enable AIOStreams scraper")
-    url: EmptyOrUrl = Field(
-        default="http://localhost:8000", description="AIOStreams instance URL"
-    )
-    timeout: int = Field(default=30, ge=1, description="Request timeout in seconds")
-    retries: int = Field(
-        default=1, ge=0, description="Number of retries for failed requests"
-    )
-    ratelimit: bool = Field(default=True, description="Enable rate limiting")
-    proxy_url: EmptyOrUrl = Field(default="", description="Proxy URL for AIOStreams requests")
-    uuid: str = Field(default="", description="User UUID for AIOStreams authentication")
-    password: str = Field(default="", description="User password for AIOStreams authentication")
-
-
 class ScraperModel(Observable):
     after_2: float = Field(
         default=2, description="Hours to wait after 2 failed scrapes"
@@ -810,33 +604,14 @@ class ScraperModel(Observable):
     dubbed_anime_only: bool = Field(
         default=False, description="Only scrape dubbed anime content"
     )
-    torrentio: TorrentioConfig = Field(
-        default_factory=lambda: TorrentioConfig(), description="Torrentio configuration"
-    )
     jackett: JackettConfig = Field(
         default_factory=lambda: JackettConfig(), description="Jackett configuration"
     )
     prowlarr: ProwlarrConfig = Field(
         default_factory=lambda: ProwlarrConfig(), description="Prowlarr configuration"
     )
-    orionoid: OrionoidConfig = Field(
-        default_factory=lambda: OrionoidConfig(), description="Orionoid configuration"
-    )
-    mediafusion: MediafusionConfig = Field(
-        default_factory=lambda: MediafusionConfig(),
-        description="Mediafusion configuration",
-    )
     zilean: ZileanConfig = Field(
         default_factory=lambda: ZileanConfig(), description="Zilean configuration"
-    )
-    comet: CometConfig = Field(
-        default_factory=lambda: CometConfig(), description="Comet configuration"
-    )
-    rarbg: RarbgConfig = Field(
-        default_factory=lambda: RarbgConfig(), description="RARBG configuration"
-    )
-    aiostreams: AIOStreamsConfig = Field(
-        default_factory=lambda: AIOStreamsConfig(), description="AIOStreams configuration"
     )
 
 

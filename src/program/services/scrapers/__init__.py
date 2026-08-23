@@ -11,16 +11,10 @@ from program.core.runner import MediaItemGenerator, Runner, RunnerResult
 from program.media.item import MediaItem
 from program.media.state import States
 from program.media.stream import Stream
-from program.services.scrapers.aiostreams import AIOStreams
 from program.services.scrapers.base import ScraperService
-from program.services.scrapers.comet import Comet
 from program.services.scrapers.jackett import Jackett
-from program.services.scrapers.mediafusion import Mediafusion
-from program.services.scrapers.orionoid import Orionoid
 from program.services.scrapers.prowlarr import Prowlarr
-from program.services.scrapers.rarbg import Rarbg
 from program.services.scrapers.shared import parse_results
-from program.services.scrapers.torrentio import Torrentio
 from program.services.scrapers.zilean import Zilean
 from program.settings import settings_manager
 from program.settings.models import Observable, ScraperModel
@@ -36,15 +30,11 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
             settings_manager.settings.scraping.max_failed_attempts
         )
 
+        # Only title-based scrapers ship in this fork. The Stremio-style ones
+        # address content by IMDb id, which TPDB titles do not have.
         self.services = {
-            AIOStreams: AIOStreams(),
-            Comet: Comet(),
             Jackett: Jackett(),
-            Mediafusion: Mediafusion(),
-            Orionoid: Orionoid(),
             Prowlarr: Prowlarr(),
-            Rarbg: Rarbg(),
-            Torrentio: Torrentio(),
             Zilean: Zilean(),
         }
 

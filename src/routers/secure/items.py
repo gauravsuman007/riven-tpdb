@@ -799,7 +799,7 @@ async def remove_item(
     """
     Remove one or more media items identified by their IDs.
 
-    Deletes the MediaItem rows and their related data (joined-table rows, hierarchical children, subtitles, and stream relations) and coordinates related side effects: cancels active jobs for the item, deletes an associated Overseerr request when present, and triggers a media server library refresh for the item's library path when an Updater service is available and initialized.
+    Deletes the MediaItem rows and their related data (joined-table rows, hierarchical children, subtitles, and stream relations) and coordinates related side effects: cancels active jobs for the item, triggers a media server library refresh for the item's library path when an Updater service is available and initialized.
 
     Parameters:
         request (Request): FastAPI request object (used to access application services).
@@ -824,7 +824,6 @@ async def remove_item(
     assert services, "Program services not initialized"
 
     # Get services
-    overseerr = services.overseerr
     updater = services.updater
     removed_ids = list[int]()
 
@@ -883,24 +882,11 @@ async def remove_item(
                         if refresh_path not in refresh_paths:
                             refresh_paths.append(refresh_path)
 
-            # 3. Delete from Overseerr
-            if item.overseerr_id and overseerr:
-                try:
-                    overseerr.api.delete_request(item.overseerr_id)
-
-                    logger.debug(
-                        f"Deleted Overseerr request {item.overseerr_id} for {item.id}"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to delete Overseerr request {item.overseerr_id}: {e}"
-                    )
-
-            # 4. Remove from VFS
+            # 3. Remove from VFS
             if services.filesystem.riven_vfs:
                 services.filesystem.riven_vfs.remove(item)
 
-            # 5. Delete from database using ORM
+            # 4. Delete from database using ORM
             session.delete(item)
             session.commit()
 
@@ -908,7 +894,7 @@ async def remove_item(
 
             logger.debug(f"Deleted item {item_id} from database")
 
-            # 6. Trigger media server refresh for all paths where this item appeared
+            # 5. Trigger media server refresh for all paths where this item appeared
             if updater and updater.initialized:
                 for refresh_path in refresh_paths:
                     updater.refresh_path(refresh_path)
