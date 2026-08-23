@@ -293,9 +293,19 @@ class TorBoxDownloader(DownloaderBase):
 
             files = list[DebridFile]()
 
-            for file_id, raw in enumerate(raw_files):
+            for index, raw in enumerate(raw_files):
                 name = raw.get("name", "") if isinstance(raw, dict) else getattr(raw, "name", "")
                 size = raw.get("size", 0) if isinstance(raw, dict) else getattr(raw, "size", 0)
+
+                # Use TorBox's own file id, never the position: `checkcached`
+                # does not return files in id order (a .nfo at id 0 can follow
+                # the video at id 1). Numbering them positionally made the
+                # container disagree with `get_torrent_info`, which would
+                # select the wrong file and hand playback the wrong URL.
+                raw_id = (
+                    raw.get("id") if isinstance(raw, dict) else getattr(raw, "id", None)
+                )
+                file_id = raw_id if isinstance(raw_id, int) else index
 
                 try:
                     files.append(

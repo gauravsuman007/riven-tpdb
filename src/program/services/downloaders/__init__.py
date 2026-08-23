@@ -568,6 +568,24 @@ class Downloader(Runner[None, DownloaderBase]):
             # Fallback: fetch info if not cached
             info = service.get_torrent_info(torrent_id)
 
+        # Real-Debrid can fill in each file's download_url while checking
+        # availability, because its availability check already fetches the
+        # torrent info. Services that check the cache by infohash cannot: at
+        # that point the torrent has no id, so its per-file URLs do not exist
+        # yet. Backfill them from the info we now hold, otherwise
+        # _update_attributes skips creating the MediaEntry (it requires a
+        # download_url) and the item never reaches Downloaded -- leaving it to
+        # be downloaded over and over.
+        if info.files:
+            for debrid_file in container.files:
+                if debrid_file.download_url or debrid_file.file_id is None:
+                    continue
+
+                torrent_file = info.files.get(debrid_file.file_id)
+
+                if torrent_file and torrent_file.download_url:
+                    debrid_file.download_url = torrent_file.download_url
+
         if container.file_ids:
             service.select_files(torrent_id, container.file_ids)
 
