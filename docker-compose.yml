@@ -48,6 +48,37 @@ services:
             riven_postgres:
                 condition: service_healthy
 
+    # The web UI is a separate application; the backend above serves only the
+    # JSON API. Its settings form is rendered from the backend's JSON schema,
+    # so the TPDB section appears automatically -- no TPDB-specific frontend
+    # build is required. Use the :dev tag: :latest is a much older build that
+    # predates RivenVFS and fails on this schema.
+    riven-frontend:
+        image: ghcr.io/rivenmedia/riven-frontend:dev
+        container_name: riven-frontend
+        restart: unless-stopped
+        tty: true
+        environment:
+            - TZ=America/New_York
+            # The URL you browse to; used for auth and CSRF checks.
+            - ORIGIN=http://localhost:3000
+            - BACKEND_URL=http://riven:8080
+            # Backend api_key, found in data/settings.json after first start.
+            - BACKEND_API_KEY=${BACKEND_API_KEY:?set BACKEND_API_KEY in .env}
+            # openssl rand -base64 32
+            - AUTH_SECRET=${AUTH_SECRET:?set AUTH_SECRET in .env}
+            - DATABASE_URL=/riven/data/riven.db
+            # Allow creating the first account; disable once registered.
+            - ENABLE_EMAIL_PASSWORD_SIGNUP=true
+        ports:
+            - "3000:3000"
+        volumes:
+            - ./frontend-data:/riven/data
+        depends_on:
+            riven:
+                condition: service_started
+
+
     riven_postgres:
         image: postgres:17-alpine
         container_name: riven-db

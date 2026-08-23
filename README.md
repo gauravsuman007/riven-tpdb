@@ -89,7 +89,8 @@ docker run -d \
 ```
 
 You can also configure everything from the Riven web UI (**Settings → TPDB**)
-instead of environment variables.
+instead of environment variables -- see [Web UI](#4-web-ui-optional) below for
+how to run it.
 
 ### 3. Point Riven at adult trackers
 
@@ -100,6 +101,37 @@ instead of environment variables.
 
 The fork now recognizes Newznab adult categories (`XXX`/`Adult`, category 6000),
 so adult trackers are searched correctly instead of being silently dropped.
+
+### 4. Web UI (optional)
+
+The image in this repository is the **backend only** -- it serves a JSON API and
+has no web pages. Browsing to it directly returns `{"detail":"Not Found"}`; that
+is the API 404ing on `/`, not a broken deployment. The interactive API docs live
+at `http://<host>:8080/docs`.
+
+The web UI is a separate application, [`riven-frontend`][riven-frontend]. It is
+included in `docker-compose.yml` and needs two secrets in your `.env`:
+
+```bash
+# Backend api_key -- printed on first start, and stored in data/settings.json
+BACKEND_API_KEY=<backend api_key>
+# Session signing secret
+AUTH_SECRET=$(openssl rand -base64 32)
+```
+
+Then browse to `http://localhost:3000` and register an account. Set
+`ENABLE_EMAIL_PASSWORD_SIGNUP=false` afterwards to close registration.
+
+Its settings form is generated at runtime from the backend's JSON schema
+(`/api/v1/settings/schema`), so this fork's TPDB settings appear on the settings
+page automatically -- no TPDB-specific frontend build is needed.
+
+> **Use the `:dev` tag, not `:latest`.** At the time of writing `:latest` is a
+> much older build that predates RivenVFS. It reads settings keys this fork no
+> longer has (`symlink.*`, `downloaders.torbox.*`) and its settings pages fail
+> with HTTP 500 as a result.
+
+[riven-frontend]: https://github.com/rivenmedia/riven-frontend
 
 ## Environment variables
 
