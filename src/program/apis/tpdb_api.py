@@ -207,6 +207,25 @@ class TpdbApi:
 
         return data
 
+    def _get_optional(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Like `_get`, but a 404 means "no such record" rather than a failure.
+
+        Lookups by id are routinely speculative -- a TPDB uuid may name either
+        a scene or a movie, so callers try one and fall back to the other. A
+        raised 404 would abort that fallback before it ran.
+        """
+
+        try:
+            return self._get(path, params)
+        except TpdbApiError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+
     @staticmethod
     def _parse_one(data: dict[str, Any], model: type[BaseModel]):
         payload = data.get("data")
@@ -296,8 +315,8 @@ class TpdbApi:
         return resolved
 
     def get_scene(self, uuid: str) -> TpdbScene | None:
-        data = self._get(f"scenes/{uuid}")
-        return self._parse_one(data, TpdbScene)
+        data = self._get_optional(f"scenes/{uuid}")
+        return self._parse_one(data, TpdbScene) if data else None
 
     # Movies
 
@@ -311,8 +330,8 @@ class TpdbApi:
         return self._parse_many(data, TpdbMovie)
 
     def get_movie(self, movie_id: str) -> TpdbMovie | None:
-        data = self._get(f"movies/{movie_id}")
-        return self._parse_one(data, TpdbMovie)
+        data = self._get_optional(f"movies/{movie_id}")
+        return self._parse_one(data, TpdbMovie) if data else None
 
     def search_scenes_text(
         self,
