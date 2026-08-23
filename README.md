@@ -60,7 +60,22 @@ The core guarantee of the fork:
 
 Create an account at <https://theporndb.net> and generate an API token.
 
-### 2. Run with Docker
+### 2. Run with Docker Compose (recommended)
+
+Copy `.env.example` to `.env`, then set `RIVEN_TPDB_API_TOKEN` (and optionally
+`RIVEN_CONTENT_TPDB_SITES`):
+
+```bash
+cp .env.example .env
+# edit .env -> RIVEN_TPDB_API_TOKEN=<your-tpdb-token>
+docker compose up -d
+```
+
+This starts Riven + PostgreSQL and pulls
+`ghcr.io/gauravsuman007/riven-tpdb:latest`. See
+[`docker-compose.yml`](./docker-compose.yml).
+
+You can also run a single container directly:
 
 ```bash
 docker run -d \
@@ -70,7 +85,7 @@ docker run -d \
   -e 'RIVEN_CONTENT_TPDB_SITES=["<site-uuid-1>","<site-uuid-2>"]' \
   -v ./data:/riven/data \
   -p 8080:8080 \
-  ghcr.io/<your-user>/riven-tpdb:latest
+  ghcr.io/gauravsuman007/riven-tpdb:latest
 ```
 
 You can also configure everything from the Riven web UI (**Settings → TPDB**)
@@ -91,14 +106,22 @@ so adult trackers are searched correctly instead of being silently dropped.
 Settings are loaded from `settings.json`; set `RIVEN_FORCE_ENV=true` to override
 them from the environment. TPDB-specific variables:
 
-| Variable                        | Description                                  |
-| ------------------------------- | -------------------------------------------- |
-| `RIVEN_TPDB_API_TOKEN`          | ThePornDB API token (Bearer)                 |
-| `RIVEN_TPDB_API_BASE_URL`       | TPDB API base URL (default `https://api.theporndb.net`) |
-| `RIVEN_TPDB_ENABLED`            | Enable TPDB metadata integration             |
-| `RIVEN_CONTENT_TPDB_ENABLED`    | Enable TPDB site subscriptions               |
-| `RIVEN_CONTENT_TPDB_SITES`      | JSON array of site UUIDs to subscribe to     |
-| `RIVEN_CONTENT_TPDB_MAX_PAGES`  | Pages (20 scenes each) to fetch per site/run |
+| Variable                          | Description                                        |
+| --------------------------------- | -------------------------------------------------- |
+| `RIVEN_TPDB_API_TOKEN`            | ThePornDB API token (Bearer)                       |
+| `RIVEN_TPDB_API_BASE_URL`         | TPDB API base URL (default `https://api.theporndb.net`) |
+| `RIVEN_TPDB_ENABLED`              | Enable TPDB metadata integration                   |
+| `RIVEN_CONTENT_TPDB_ENABLED`      | Enable TPDB site subscriptions                     |
+| `RIVEN_CONTENT_TPDB_SITES`        | JSON array of site UUIDs to subscribe to           |
+| `RIVEN_CONTENT_TPDB_MAX_PAGES`    | Pages (20 scenes each) to fetch per site/run       |
+| `RIVEN_CONTENT_TPDB_UPDATE_INTERVAL` | Seconds between site subscription runs (default 3600) |
+| `RIVEN_DATABASE_HOST`             | PostgreSQL connection string (full SQLAlchemy URL) |
+| `RIVEN_SCRAPING_PROWLARR_ENABLED` | Enable the Prowlarr scraper                        |
+| `RIVEN_SCRAPING_PROWLARR_URL`     | Prowlarr URL (default `http://localhost:9696`)     |
+| `RIVEN_SCRAPING_PROWLARR_API_KEY` | Prowlarr API key                                   |
+| `RIVEN_SCRAPING_JACKETT_ENABLED`  | Enable the Jackett scraper                         |
+| `RIVEN_SCRAPING_JACKETT_URL`      | Jackett URL (default `http://localhost:9117`)      |
+| `RIVEN_SCRAPING_JACKETT_API_KEY`  | Jackett API key                                    |
 
 ## Docker images
 
@@ -117,7 +140,7 @@ push to `main` and on version tags:
 > making each build take an hour or more. `rapidfuzz` (via `rank-torrent-name`)
 > ships no 32-bit x86 binaries at all, so 32-bit x86 is unsupported upstream.
 
-Pull with: `ghcr.io/<your-user>/riven-tpdb:latest`.
+Pull with: `ghcr.io/gauravsuman007/riven-tpdb:latest`.
 
 ## Development
 

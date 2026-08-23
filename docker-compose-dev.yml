@@ -16,7 +16,11 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=UTC
-      - ORIGIN=${RIVEN_ORIGIN:-http://localhost:8080}
+      - RIVEN_FORCE_ENV=true
+      - RIVEN_TPDB_ENABLED=true
+      - RIVEN_TPDB_API_TOKEN=${RIVEN_TPDB_API_TOKEN:-}
+      - RIVEN_CONTENT_TPDB_ENABLED=true
+      - RIVEN_CONTENT_TPDB_SITES=${RIVEN_CONTENT_TPDB_SITES:-[]}
     devices:
       - /dev/fuse
     cap_add:

@@ -1,7 +1,7 @@
 [project]
 name = "riven"
 version = "1.0.0"
-description = "Plex torrent streaming through Real Debrid and 3rd party services like Overseerr, Mdblist, etc."
+description = "Adult-only Riven fork backed by ThePornDB (TPDB) — no Whisparr"
 authors = [{ name = "Riven Developers" }]
 requires-python = "~=3.13.0"
 readme = "README.md"

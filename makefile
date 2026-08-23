@@ -16,9 +16,9 @@ help:
 	@echo "make install     - Install dependencies"
 	@echo "make run         - Run the application"
 	@echo "make build       - Build the application image"
-	@echo "make push        - Build and push the application image to Docker Hub"
-	@echo "make push-dev    - Build and push the dev image to Docker Hub"
-	@echo "make push-branch - Build and push the branch image to Docker Hub"
+	@echo "make push        - Build and push the application image to GitHub Container Registry"
+	@echo "make push-dev    - Build and push the dev image to GitHub Container Registry"
+	@echo "make push-branch - Build and push the branch image to GitHub Container Registry"
 	@echo "make tidy        - Remove unused Docker images"
 	@echo "make clean       - Clean up temporary files"
 	@echo "make hard_reset  - Hard reset the database"
@@ -46,14 +46,14 @@ build: setup-builder
 	@docker buildx build --platform linux/amd64,linux/arm64 -t riven --load .
 
 push-dev: setup-builder
-	@echo "Building and pushing dev image to Docker Hub..."
-	@docker buildx build --platform linux/amd64,linux/arm64 -t spoked/riven:dev --push .
-	@echo "Image 'spoked/riven:dev' pushed to Docker Hub"
+	@echo "Building and pushing dev image to GitHub Container Registry..."
+	@docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/gauravsuman007/riven-tpdb:dev --push .
+	@echo "Image 'ghcr.io/gauravsuman007/riven-tpdb:dev' pushed to GHCR"
 
 push-branch: setup-builder
-	@echo "Building and pushing branch '${BRANCH_NAME}' image to Docker Hub..."
-	@docker buildx build --platform linux/amd64,linux/arm64 -t spoked/riven:${BRANCH_NAME} --push .
-	@echo "Image 'spoked/riven:${BRANCH_NAME}' pushed to Docker Hub"
+	@echo "Building and pushing branch '${BRANCH_NAME}' image to GitHub Container Registry..."
+	@docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/gauravsuman007/riven-tpdb:${BRANCH_NAME} --push .
+	@echo "Image 'ghcr.io/gauravsuman007/riven-tpdb:${BRANCH_NAME}' pushed to GHCR"
 
 tidy:
 	@echo "Removing unused Docker images..."

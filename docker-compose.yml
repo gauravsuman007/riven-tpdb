@@ -1,21 +1,6 @@
 services:
-    # riven-frontend:
-    #     image: spoked/riven-frontend:latest
-    #     container_name: riven-frontend
-    #     restart: unless-stopped
-    #     tty: true
-    #     environment:
-    #         - TZ=Etc/UTC
-    #     ports:
-    #         - 3000:3000
-    #     volumes:
-    #         - /path/to/riven/frontend:/riven/config # You need to mount a config directory here (different from riven)
-    #     depends_on:
-    #         riven:
-    #             condition: service_started
-
     riven:
-        image: spoked/riven:latest
+        image: ghcr.io/gauravsuman007/riven-tpdb:latest
         container_name: riven
         restart: unless-stopped
         ports:
@@ -33,7 +18,21 @@ services:
             - PGID=1000
             - TZ=America/New_York
             - RIVEN_FORCE_ENV=true
-            - RIVEN_DATABASE_HOST=postgresql+psycopg2://postgres:postgres@riven-db/riven
+            # Database connection string (full SQLAlchemy URL).
+            - RIVEN_DATABASE_HOST=postgresql+psycopg2://postgres:postgres@riven_postgres/riven
+            # ThePornDB metadata (set RIVEN_TPDB_API_TOKEN in a .env file next to this compose).
+            - RIVEN_TPDB_ENABLED=true
+            - RIVEN_TPDB_API_TOKEN=${RIVEN_TPDB_API_TOKEN:-}
+            # TPDB site subscriptions (studios/networks to index).
+            - RIVEN_CONTENT_TPDB_ENABLED=true
+            - RIVEN_CONTENT_TPDB_SITES=${RIVEN_CONTENT_TPDB_SITES:-[]}
+            # Adult trackers (enable one and point at your Prowlarr/Jackett).
+            - RIVEN_SCRAPING_PROWLARR_ENABLED=${RIVEN_SCRAPING_PROWLARR_ENABLED:-false}
+            - RIVEN_SCRAPING_PROWLARR_URL=${RIVEN_SCRAPING_PROWLARR_URL:-http://localhost:9696}
+            - RIVEN_SCRAPING_PROWLARR_API_KEY=${RIVEN_SCRAPING_PROWLARR_API_KEY:-}
+            - RIVEN_SCRAPING_JACKETT_ENABLED=${RIVEN_SCRAPING_JACKETT_ENABLED:-false}
+            - RIVEN_SCRAPING_JACKETT_URL=${RIVEN_SCRAPING_JACKETT_URL:-http://localhost:9117}
+            - RIVEN_SCRAPING_JACKETT_API_KEY=${RIVEN_SCRAPING_JACKETT_API_KEY:-}
         healthcheck:
             test: curl -s http://localhost:8080 >/dev/null || exit 1
             interval: 30s
