@@ -26,6 +26,15 @@ mkdir -p "$USER_HOME"
 chown -R "$PUID:$PGID" "$USER_HOME"
 export HOME="$USER_HOME"
 
+# The data directory is a bind mount; Docker creates a missing source dir as
+# root, so it must be handed to the runtime user or the first write fails.
+if [ "$PUID" != "0" ]; then
+    mkdir -p /riven/data
+    chown -R "$PUID:$PGID" /riven/data
+fi
+
+umask 002
+
 # Define the command to run based on the DEBUG flag
 if [ "${DEBUG}" != "" ]; then
     echo "Installing debugpy..."

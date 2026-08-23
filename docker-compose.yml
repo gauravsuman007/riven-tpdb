@@ -20,6 +20,9 @@ services:
             - RIVEN_FORCE_ENV=true
             # Database connection string (full SQLAlchemy URL).
             - RIVEN_DATABASE_HOST=postgresql+psycopg2://postgres:postgres@riven_postgres/riven
+            # Must match the container-side path of the /mount volume below,
+            # otherwise RivenVFS falls back to the placeholder default.
+            - RIVEN_FILESYSTEM_MOUNT_PATH=/mount
             # ThePornDB metadata (set RIVEN_TPDB_API_TOKEN in a .env file next to this compose).
             - RIVEN_TPDB_ENABLED=true
             - RIVEN_TPDB_API_TOKEN=${RIVEN_TPDB_API_TOKEN:-}
