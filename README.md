@@ -96,7 +96,7 @@ docker run -d \
 ```
 
 You can also configure everything from the Riven web UI (**Settings → TPDB**)
-instead of environment variables -- see [Web UI](#4-web-ui-optional) below for
+instead of environment variables -- see [Web UI](#5-web-ui-optional) below for
 how to run it.
 
 ### 3. Point Riven at adult trackers
@@ -112,12 +112,34 @@ so adult trackers are searched correctly instead of being silently dropped.
 **Prowlarr and Jackett are the only scrapers that work for adult content**, and
 at least one of them is required for anything to download. The Stremio-style
 scrapers -- Torrentio, Comet, MediaFusion, AIOStreams, Orionoid -- address
-content purely by IMDb id. TPDB titles have no IMDb id, so those scrapers can
-only ever return nothing and are now skipped rather than queried. Rarbg is
-skipped too: its query hardcodes `ncategory:XXX`, excluding adult results by
-construction.
+content purely by IMDb id. TPDB titles have no IMDb id, so those scrapers could
+only ever return nothing, and they have been removed from this fork along with
+Rarbg, whose query hardcodes `ncategory:XXX`. Zilean remains alongside Prowlarr
+and Jackett since it searches by title, though its DMM hashlists skew
+mainstream.
 
-### 4. Web UI (optional)
+### 4. Pick a debrid service
+
+Riven does not download torrents itself -- it hands infohashes to a debrid
+service, which caches them and streams the files back through RivenVFS. One of
+these must be configured or nothing will ever play:
+
+| Service     | Setting                             |
+| ----------- | ----------------------------------- |
+| Real-Debrid | `RIVEN_DOWNLOADERS_REAL_DEBRID_*`   |
+| AllDebrid   | `RIVEN_DOWNLOADERS_ALL_DEBRID_*`    |
+| Debrid-Link | `RIVEN_DOWNLOADERS_DEBRID_LINK_*`   |
+
+> **TorBox is not supported.** Upstream Riven removed its TorBox downloader in
+> October 2025, before this fork branched, and the removed implementation
+> predates RivenVFS -- it has no `unrestrict_link`, which is how the VFS turns a
+> cached file into a stream. Supporting TorBox again means porting that
+> downloader to the current interface, not restoring the old file. Note also
+> that a qBittorrent-emulating bridge (decypharr, rdt-client) cannot stand in:
+> Riven talks to debrid providers over their own REST APIs, not a torrent
+> client API.
+
+### 5. Web UI (optional)
 
 The image in this repository is the **backend only** -- it serves a JSON API and
 has no web pages. Browsing to it directly returns `{"detail":"Not Found"}`; that
