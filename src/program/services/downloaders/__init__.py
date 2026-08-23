@@ -75,6 +75,10 @@ def _has_expired(started_at: datetime, max_wait_hours: int) -> bool:
 
 
 class Downloader(Runner[None, DownloaderBase]):
+    # How many of the top-ranked uncached streams to offer the provider each
+    # pass. One is too few: a single rejected torrent would strand the item.
+    UNCACHED_STREAMS_PER_PASS = 3
+
     def __init__(self):
         super().__init__()
 
@@ -130,61 +134,82 @@ class Downloader(Runner[None, DownloaderBase]):
         existing torrent rather than starting a second one.
         """
 
-        best = streams[0]
+        # More than the single best stream: a provider that rejects one
+        # torrent (transiently or otherwise) should not strand the item.
+        candidates = streams[: self.UNCACHED_STREAMS_PER_PASS]
+        all_past_deadline = True
 
-        for service in self.initialized_services:
-            torrent_id = None
+        for stream in candidates:
+            started = self._uncached_wait_started(item, stream)
 
-            try:
-                torrent_id = service.add_torrent(best.infohash)
-            except TorBoxQueued:
-                # Accepted, just not started yet: it has a queue id rather than
-                # a torrent id. That is a normal first response for a torrent
-                # the provider has never seen, not a failure.
-                pass
-            except Exception as e:
-                logger.debug(
-                    f"Could not ask {service.key} to fetch {best.infohash} "
-                    f"for {item.log_string}: {e}"
-                )
+            if _has_expired(started, self.uncached_max_wait_hours):
                 continue
 
-            waited_for = self._uncached_wait_started(item, best)
+            # At least one stream is still inside its budget, so whatever
+            # happens below this is not a terminal failure.
+            all_past_deadline = False
 
-            if _has_expired(waited_for, self.uncached_max_wait_hours):
-                logger.warning(
-                    f"{service.key} has been fetching '{best.raw_title}' for over "
-                    f"{self.uncached_max_wait_hours}h without caching it; giving up "
-                    f"on it for {item.log_string}"
-                )
-                self._uncached_since.pop((item.id, best.infohash), None)
+            for service in self.initialized_services:
+                torrent_id = None
 
-                continue
-
-            progress = None
-
-            if torrent_id is not None:
                 try:
-                    progress = service.get_torrent_info(torrent_id).progress
+                    torrent_id = service.add_torrent(stream.infohash)
+                except TorBoxQueued:
+                    # Accepted, just not started yet: it has a queue id rather
+                    # than a torrent id. That is a normal first response for a
+                    # torrent the provider has never seen, not a failure.
+                    pass
                 except Exception as e:
-                    # The torrent was accepted; not being able to read progress
-                    # back is not a reason to abandon it.
                     logger.debug(
-                        f"Queued {best.infohash} on {service.key} but could not "
-                        f"read its progress for {item.log_string}: {e}"
+                        f"Could not ask {service.key} to fetch {stream.infohash} "
+                        f"for {item.log_string}: {e}"
                     )
+                    continue
 
-            logger.log(
-                "DEBRID",
-                f"Waiting on {service.key} to cache '{best.raw_title}' for "
-                f"{item.log_string}"
-                + (f" ({_format_progress(progress)} done)" if progress is not None else "")
-                + f"; re-checking in {self.uncached_poll_minutes}m",
-            )
+                progress = None
 
-            return datetime.now() + timedelta(minutes=self.uncached_poll_minutes)
+                if torrent_id is not None:
+                    try:
+                        progress = service.get_torrent_info(torrent_id).progress
+                    except Exception as e:
+                        # The torrent was accepted; not being able to read
+                        # progress back is not a reason to abandon it.
+                        logger.debug(
+                            f"Queued {stream.infohash} on {service.key} but could "
+                            f"not read its progress for {item.log_string}: {e}"
+                        )
 
-        return None
+                logger.log(
+                    "DEBRID",
+                    f"Waiting on {service.key} to cache '{stream.raw_title}' for "
+                    f"{item.log_string}"
+                    + (
+                        f" ({_format_progress(progress)} done)"
+                        if progress is not None
+                        else ""
+                    )
+                    + f"; re-checking in {self.uncached_poll_minutes}m",
+                )
+
+                return datetime.now() + timedelta(
+                    minutes=self.uncached_poll_minutes
+                )
+
+        if all_past_deadline:
+            for stream in candidates:
+                self._uncached_since.pop((item.id, stream.infohash), None)
+
+            return None
+
+        # Nothing was accepted this pass, but the budget has not run out --
+        # provider errors are often transient, so come back rather than
+        # blacklisting streams the provider may well take next time.
+        logger.debug(
+            f"No provider accepted an uncached stream for {item.log_string}; "
+            f"retrying in {self.uncached_poll_minutes}m"
+        )
+
+        return datetime.now() + timedelta(minutes=self.uncached_poll_minutes)
 
     def _uncached_wait_started(self, item: MediaItem, stream: Stream) -> datetime:
         """When we first asked a provider to fetch this stream.

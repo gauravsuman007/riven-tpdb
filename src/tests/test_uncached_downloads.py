@@ -74,6 +74,7 @@ def make_downloader(services, poll=10, max_wait=24):
         uncached_poll_minutes=poll,
         uncached_max_wait_hours=max_wait,
         _uncached_since={},
+        UNCACHED_STREAMS_PER_PASS=3,
     )
     stub._request_uncached = Downloader._request_uncached.__get__(stub, Downloader)
     stub._uncached_wait_started = Downloader._uncached_wait_started.__get__(
@@ -214,6 +215,60 @@ def _test_queued_response_is_accepted():
     assert svc.added == ["abc123"], svc.added
 
 
+def _test_transient_provider_error_retries_not_gives_up():
+    """A provider error inside the budget must not strand the item.
+
+    TorBox intermittently answers 400 "Torrent file is not valid" for a magnet
+    whose metadata it has not resolved yet, then accepts the same hash moments
+    later. Treating that as terminal blacklisted good streams outright.
+    """
+
+    dl = make_downloader([StubService(add_raises=RuntimeError("[400] boom"))])
+
+    assert dl._request_uncached(_item(), [_stream()]) is not None
+
+
+def _test_gives_up_only_when_every_candidate_expired():
+    dl = make_downloader([StubService(add_raises=RuntimeError("boom"))], max_wait=24)
+    item = _item()
+    streams = [_stream("a"), _stream("b")]
+
+    for st in streams:
+        dl._uncached_since[(item.id, st.infohash)] = datetime.now() - timedelta(
+            hours=48
+        )
+
+    assert dl._request_uncached(item, streams) is None
+
+
+def _test_falls_through_to_next_stream():
+    """One unusable torrent must not hide the others."""
+
+    class PickyService(StubService):
+        def add_torrent(self, infohash):
+            self.added.append(infohash)
+            if infohash == "bad":
+                raise RuntimeError("[400] Torrent file is not valid")
+            return "t9"
+
+    svc = PickyService(
+        info=SimpleNamespace(progress=0.3, created_at=datetime.now())
+    )
+    dl = make_downloader([svc])
+
+    assert dl._request_uncached(_item(), [_stream("bad"), _stream("good")]) is not None
+    assert svc.added == ["bad", "good"], svc.added
+
+
+def _test_only_considers_top_n_streams():
+    svc = StubService(add_raises=RuntimeError("boom"))
+    dl = make_downloader([svc])
+
+    dl._request_uncached(_item(), [_stream(f"h{i}") for i in range(10)])
+
+    assert len(svc.added) == 3, svc.added
+
+
 def _test_wait_clock_is_stable_across_polls():
     """The clock must start once, not reset on every poll."""
 
@@ -249,11 +304,16 @@ def _test_falls_through_to_next_service():
     assert bad.added and good.added
 
 
-def _test_returns_none_when_no_service_accepts():
+def _test_no_service_accepts_still_reschedules():
+    """Inside the budget, "nobody took it" means try again, not give up.
+
+    Only the deadline is terminal -- see the all-expired test above.
+    """
+
     bad = StubService(key="a", add_raises=RuntimeError("nope"))
     dl = make_downloader([bad])
 
-    assert dl._request_uncached(_item(), [_stream()]) is None
+    assert dl._request_uncached(_item(), [_stream()]) is not None
 
 
 # --- get_infohash_from_url -------------------------------------------------
@@ -298,10 +358,14 @@ TESTS = [
     ("uncached: gives up when stalled", _test_gives_up_when_provider_stalled),
     ("uncached: old provider torrent does not expire us", _test_old_provider_torrent_does_not_expire_us),
     ("uncached: queued response is accepted", _test_queued_response_is_accepted),
+    ("uncached: transient provider error retries", _test_transient_provider_error_retries_not_gives_up),
+    ("uncached: gives up only when all expired", _test_gives_up_only_when_every_candidate_expired),
+    ("uncached: falls through to next stream", _test_falls_through_to_next_stream),
+    ("uncached: only considers top N streams", _test_only_considers_top_n_streams),
     ("uncached: wait clock stable across polls", _test_wait_clock_is_stable_across_polls),
     ("uncached: unreadable progress still waits", _test_unreadable_progress_still_waits),
     ("uncached: falls through to next service", _test_falls_through_to_next_service),
-    ("uncached: none when no service accepts", _test_returns_none_when_no_service_accepts),
+    ("uncached: no service accepts still reschedules", _test_no_service_accepts_still_reschedules),
     ("infohash: magnet needs no request", _test_infohash_from_url_needs_no_request),
     ("infohash: empty url", _test_infohash_from_url_empty),
 ]
