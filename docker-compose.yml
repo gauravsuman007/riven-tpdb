@@ -54,8 +54,10 @@ services:
     # build is required. Use the :dev tag: :latest is a much older build that
     # predates RivenVFS and fails on this schema.
     riven-frontend:
-        image: ghcr.io/rivenmedia/riven-frontend:dev
-        container_name: riven-frontend
+        # The fork: upstream's frontend browses TMDB and would show mainstream
+        # movies and TV regardless of what this backend serves.
+        image: ghcr.io/gauravsuman007/riven-tpdb-frontend:latest
+        container_name: riven-tpdb-frontend
         restart: unless-stopped
         tty: true
         environment:
