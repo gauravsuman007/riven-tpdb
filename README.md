@@ -129,15 +129,17 @@ these must be configured or nothing will ever play:
 | Real-Debrid | `RIVEN_DOWNLOADERS_REAL_DEBRID_*`   |
 | AllDebrid   | `RIVEN_DOWNLOADERS_ALL_DEBRID_*`    |
 | Debrid-Link | `RIVEN_DOWNLOADERS_DEBRID_LINK_*`   |
+| TorBox      | `RIVEN_DOWNLOADERS_TORBOX_*`        |
 
-> **TorBox is not supported.** Upstream Riven removed its TorBox downloader in
-> October 2025, before this fork branched, and the removed implementation
-> predates RivenVFS -- it has no `unrestrict_link`, which is how the VFS turns a
-> cached file into a stream. Supporting TorBox again means porting that
-> downloader to the current interface, not restoring the old file. Note also
-> that a qBittorrent-emulating bridge (decypharr, rdt-client) cannot stand in:
-> Riven talks to debrid providers over their own REST APIs, not a torrent
-> client API.
+TorBox support is specific to this fork -- upstream removed its downloader in
+October 2025, before RivenVFS, and this is a port to the current interface
+rather than a revert. TorBox mints playable URLs from a `(torrent_id, file_id)`
+pair and those URLs expire, so entries store a synthetic `torbox://` reference
+that is resolved to a fresh CDN URL whenever the VFS needs one.
+
+> A qBittorrent-emulating bridge (decypharr, rdt-client) is not a substitute for
+> any of these: Riven talks to debrid providers over their own REST APIs, not a
+> torrent client API.
 
 ### 5. Web UI (optional)
 
