@@ -73,8 +73,12 @@ def make_downloader(services, poll=10, max_wait=24):
         initialized_services=services,
         uncached_poll_minutes=poll,
         uncached_max_wait_hours=max_wait,
+        _uncached_since={},
     )
     stub._request_uncached = Downloader._request_uncached.__get__(stub, Downloader)
+    stub._uncached_wait_started = Downloader._uncached_wait_started.__get__(
+        stub, Downloader
+    )
     return stub
 
 
@@ -164,12 +168,64 @@ def _test_picks_best_ranked_stream():
 def _test_gives_up_when_provider_stalled():
     """Past the max wait the provider is not going to deliver."""
 
+    info = SimpleNamespace(progress=0.0, created_at=datetime.now())
+    dl = make_downloader([StubService(info=info)], max_wait=24)
+
+    item, stream = _item(), _stream()
+    # We first asked 48h ago.
+    dl._uncached_since[(item.id, stream.infohash)] = datetime.now() - timedelta(
+        hours=48
+    )
+
+    assert dl._request_uncached(item, [stream]) is None
+
+
+def _test_old_provider_torrent_does_not_expire_us():
+    """Re-adding an infohash returns the account's *existing* torrent.
+
+    If that torrent was added months ago -- or has since expired -- its
+    created_at is far past the deadline, and keying the wait on it would make
+    the very first attempt give up immediately.
+    """
+
     info = SimpleNamespace(
-        progress=0.0, created_at=datetime.now() - timedelta(hours=48)
+        progress=0.0, created_at=datetime.now() - timedelta(days=200)
     )
     dl = make_downloader([StubService(info=info)], max_wait=24)
 
-    assert dl._request_uncached(_item(), [_stream()]) is None
+    assert dl._request_uncached(_item(), [_stream()]) is not None
+
+
+def _test_queued_response_is_accepted():
+    """A brand-new torrent comes back queued, with no torrent id.
+
+    Treating that as an error made every genuinely new torrent look like an
+    immediate failure.
+    """
+
+    from program.services.downloaders.torbox import TorBoxQueued
+
+    svc = StubService(add_raises=TorBoxQueued(4067910))
+    dl = make_downloader([svc])
+
+    result = dl._request_uncached(_item(), [_stream()])
+
+    assert result is not None, "queued must count as accepted"
+    assert svc.added == ["abc123"], svc.added
+
+
+def _test_wait_clock_is_stable_across_polls():
+    """The clock must start once, not reset on every poll."""
+
+    dl = make_downloader(
+        [StubService(info=SimpleNamespace(progress=0.0, created_at=datetime.now()))]
+    )
+    item, stream = _item(), _stream()
+
+    first = dl._uncached_wait_started(item, stream)
+    second = dl._uncached_wait_started(item, stream)
+
+    assert first == second, (first, second)
 
 
 def _test_unreadable_progress_still_waits():
@@ -240,6 +296,9 @@ TESTS = [
     ("uncached: requests fetch and reschedules", _test_requests_fetch_and_reschedules),
     ("uncached: picks best-ranked stream", _test_picks_best_ranked_stream),
     ("uncached: gives up when stalled", _test_gives_up_when_provider_stalled),
+    ("uncached: old provider torrent does not expire us", _test_old_provider_torrent_does_not_expire_us),
+    ("uncached: queued response is accepted", _test_queued_response_is_accepted),
+    ("uncached: wait clock stable across polls", _test_wait_clock_is_stable_across_polls),
     ("uncached: unreadable progress still waits", _test_unreadable_progress_still_waits),
     ("uncached: falls through to next service", _test_falls_through_to_next_service),
     ("uncached: none when no service accepts", _test_returns_none_when_no_service_accepts),

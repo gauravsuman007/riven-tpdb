@@ -35,7 +35,7 @@ from program.core.runner import MediaItemGenerator, Runner, RunnerResult
 from .realdebrid import RealDebridDownloader
 from .debridlink import DebridLinkDownloader
 from .alldebrid import AllDebridDownloader
-from .torbox import TorBoxDownloader
+from .torbox import TorBoxDownloader, TorBoxQueued
 
 
 def _format_progress(progress: float) -> str:
@@ -104,6 +104,9 @@ class Downloader(Runner[None, DownloaderBase]):
             settings_manager.settings.post_processing.subtitle.enabled
         )
 
+        # (item id, infohash) -> when we first asked a provider to fetch it.
+        self._uncached_since = dict[tuple[int | None, str], datetime]()
+
         downloader_settings = settings_manager.settings.downloaders
         self.download_uncached = downloader_settings.download_uncached
         self.uncached_poll_minutes = downloader_settings.uncached_poll_minutes
@@ -130,8 +133,15 @@ class Downloader(Runner[None, DownloaderBase]):
         best = streams[0]
 
         for service in self.initialized_services:
+            torrent_id = None
+
             try:
                 torrent_id = service.add_torrent(best.infohash)
+            except TorBoxQueued:
+                # Accepted, just not started yet: it has a queue id rather than
+                # a torrent id. That is a normal first response for a torrent
+                # the provider has never seen, not a failure.
+                pass
             except Exception as e:
                 logger.debug(
                     f"Could not ask {service.key} to fetch {best.infohash} "
@@ -139,28 +149,30 @@ class Downloader(Runner[None, DownloaderBase]):
                 )
                 continue
 
-            progress = None
-            started_at = None
+            waited_for = self._uncached_wait_started(item, best)
 
-            try:
-                info = service.get_torrent_info(torrent_id)
-                progress = info.progress
-                started_at = info.created_at
-            except Exception as e:
-                # The torrent was accepted; not being able to read progress back
-                # is not a reason to abandon it.
-                logger.debug(
-                    f"Queued {best.infohash} on {service.key} but could not read "
-                    f"its progress for {item.log_string}: {e}"
-                )
-
-            if started_at and _has_expired(started_at, self.uncached_max_wait_hours):
+            if _has_expired(waited_for, self.uncached_max_wait_hours):
                 logger.warning(
                     f"{service.key} has been fetching '{best.raw_title}' for over "
                     f"{self.uncached_max_wait_hours}h without caching it; giving up "
                     f"on it for {item.log_string}"
                 )
+                self._uncached_since.pop((item.id, best.infohash), None)
+
                 continue
+
+            progress = None
+
+            if torrent_id is not None:
+                try:
+                    progress = service.get_torrent_info(torrent_id).progress
+                except Exception as e:
+                    # The torrent was accepted; not being able to read progress
+                    # back is not a reason to abandon it.
+                    logger.debug(
+                        f"Queued {best.infohash} on {service.key} but could not "
+                        f"read its progress for {item.log_string}: {e}"
+                    )
 
             logger.log(
                 "DEBRID",
@@ -173,6 +185,22 @@ class Downloader(Runner[None, DownloaderBase]):
             return datetime.now() + timedelta(minutes=self.uncached_poll_minutes)
 
         return None
+
+    def _uncached_wait_started(self, item: MediaItem, stream: Stream) -> datetime:
+        """When we first asked a provider to fetch this stream.
+
+        Deliberately not the provider's own ``created_at``: re-adding an
+        infohash the account already holds returns the *existing* torrent, and
+        for one added months ago (or since expired) that timestamp is long past
+        the deadline -- so the very first attempt would give up immediately.
+
+        Held in memory only. A restart restarts the clock, which errs towards
+        waiting longer rather than discarding a torrent that is still coming.
+        """
+
+        key = (item.id, stream.infohash)
+
+        return self._uncached_since.setdefault(key, datetime.now())
 
     def validate(self):
         if not self.initialized_services:
@@ -418,6 +446,10 @@ class Downloader(Runner[None, DownloaderBase]):
         else:
             # Clear service cooldowns on successful download
             self._service_cooldowns.clear()
+
+            # This item is done waiting on any uncached fetch.
+            for key in [k for k in self._uncached_since if k[0] == item.id]:
+                self._uncached_since.pop(key, None)
 
             yield RunnerResult(media_items=[item])
 

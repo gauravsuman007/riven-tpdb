@@ -43,6 +43,20 @@ class TorBoxError(Exception):
     """Raised when the TorBox API returns a failing status."""
 
 
+class TorBoxQueued(TorBoxError):
+    """The torrent was accepted but only queued, so it has no torrent id yet.
+
+    ``createtorrent`` answers in two shapes: an already-known torrent comes back
+    with ``data.torrent_id``, while a brand-new one is queued and comes back
+    with ``data.queued_id`` and no torrent id at all. Treating the second shape
+    as an error makes every genuinely new torrent look like a failure.
+    """
+
+    def __init__(self, queued_id: int | str) -> None:
+        super().__init__(f"Torrent queued by TorBox (queue id {queued_id})")
+        self.queued_id = queued_id
+
+
 class TorBoxFile(BaseModel):
     """A file inside a TorBox torrent."""
 
@@ -358,6 +372,15 @@ class TorBoxDownloader(DownloaderBase):
         )
 
         if not torrent_id:
+            queued_id = (
+                data.get("queued_id")
+                if isinstance(data, dict)
+                else getattr(data, "queued_id", None)
+            )
+
+            if queued_id:
+                raise TorBoxQueued(queued_id)
+
             raise TorBoxError("No torrent ID returned by TorBox")
 
         return str(torrent_id)
