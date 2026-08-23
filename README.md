@@ -224,7 +224,13 @@ Pull with: `ghcr.io/gauravsuman007/riven-tpdb:latest`.
 ## Development
 
 See [`AGENTS.md`](./AGENTS.md) for architecture decisions and the live TPDB API
-contract.
+contract, and [`MAINTAINING.md`](./MAINTAINING.md) for how to pull updates from
+upstream Riven into this fork.
+
+```bash
+# what would an upstream update actually touch here?
+./scripts/upstream-report.sh
+```
 
 ```bash
 uv sync
