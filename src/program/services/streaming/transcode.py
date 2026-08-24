@@ -606,8 +606,10 @@ def build_remux_command(url: str, start_time: float = 0.0) -> list[str]:
         "-ac",
         "2",
         # Fragmented MP4 so it can be streamed without a seekable output.
+        # The flag is `default_base_moof`, not `default_base_is_moof` -- ffmpeg
+        # rejects the latter as an undefined constant and writes nothing.
         "-movflags",
-        "frag_keyframe+empty_moov+default_base_is_moof",
+        "frag_keyframe+empty_moov+default_base_moof",
         "-f",
         "mp4",
         "-",

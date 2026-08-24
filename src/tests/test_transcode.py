@@ -224,7 +224,12 @@ remux = build_remux_command("https://cdn/x.mkv")
 check("remux copies the video stream", "copy" in remux)
 check("remux does not invoke x264", "libx264" not in remux)
 check("remux converts audio to aac", "aac" in remux)
-check("remux emits a fragmented mp4", "frag_keyframe+empty_moov+default_base_is_moof" in remux)
+check(
+    "remux emits a fragmented mp4",
+    "frag_keyframe+empty_moov+default_base_moof" in remux,
+    "ffmpeg rejects `default_base_is_moof` as an undefined constant, silently "
+    "producing a 200 response with zero bytes",
+)
 check("remux writes to stdout", remux[-1] == "-")
 check("remux without a seek omits -ss", "-ss" not in build_remux_command("https://cdn/x.mkv"))
 check(
