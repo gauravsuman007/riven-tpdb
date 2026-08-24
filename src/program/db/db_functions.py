@@ -299,17 +299,23 @@ def create_calendar(session: Session | None = None) -> dict[int, dict[str, Any]]
             if isinstance(item, Episode):
                 show_tvdb_id = item.parent.parent.tvdb_id
                 show_tmdb_id = item.parent.parent.tmdb_id
+                show_tpdb_id = item.parent.parent.tpdb_id
             elif isinstance(item, Season):
                 show_tvdb_id = item.parent.tvdb_id
                 show_tmdb_id = item.parent.tmdb_id
+                show_tpdb_id = item.parent.tpdb_id
             else:
                 show_tvdb_id = item.tvdb_id
                 show_tmdb_id = item.tmdb_id
+                show_tpdb_id = item.tpdb_id
 
             calendar[item.id] = {
                 "item_id": item.id,
                 "tvdb_id": show_tvdb_id,
                 "tmdb_id": show_tmdb_id,
+                # Adult titles carry no TMDB or TVDB id, so without this every
+                # one of them was an unclickable row in the calendar.
+                "tpdb_id": show_tpdb_id,
                 "show_title": title,
                 "item_type": item.type,
                 "aired_at": item.aired_at,
