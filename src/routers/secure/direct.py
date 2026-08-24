@@ -20,11 +20,10 @@ requests are passed through in both directions, so seeking still works.
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 
 from program.db.db import db_session
 from program.media.item import MediaItem
@@ -81,7 +80,6 @@ class DirectSourcesResponse(BaseModel):
 
 @router.get("/search", operation_id="direct_search")
 def direct_search(
-    _session: Annotated[Session, Depends(db_session)],
     query: Annotated[str | None, Query(description="Free-text search")] = None,
     item_id: Annotated[
         int | None,
@@ -95,10 +93,13 @@ def direct_search(
     search_term = (query or "").strip()
 
     if not search_term and item_id is not None:
-        item = _session.get(MediaItem, item_id)
-        if item is None:
-            raise HTTPException(status_code=404, detail="Item not found")
-        search_term = item.title or ""
+        # db_session is a context manager, not a FastAPI dependency: injecting
+        # it hands the route the manager object rather than a Session.
+        with db_session() as session:
+            item = session.get(MediaItem, item_id)
+            if item is None:
+                raise HTTPException(status_code=404, detail="Item not found")
+            search_term = item.title or ""
 
     if not search_term:
         raise HTTPException(
