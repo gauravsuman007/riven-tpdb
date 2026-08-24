@@ -14,6 +14,7 @@ from loguru import logger
 from program.services.directscrapers.base import DirectScraper
 from program.services.directscrapers.iporntv import IPornTVScraper
 from program.services.directscrapers.models import DirectSource, DirectVideo
+from program.services.directscrapers.ranking import best_matches, sort_key
 from program.services.directscrapers.upornia import UporniaScraper
 from program.services.directscrapers.xfreehd import XFreeHDScraper
 
@@ -34,18 +35,28 @@ class DirectScraperService:
         }
         self.initialized = True
 
+    #: How many results to pull from each site before ranking. Sites order by
+    #: their own idea of relevance, which for a multi-word title is "contains
+    #: any of these words", so the real match is often not in the first few.
+    #: Everything past the filter is discarded, so this costs one page load.
+    CANDIDATE_POOL = 30
+
     def search(
         self,
         query: str,
-        limit_per_site: int = 20,
+        limit_per_site: int = 2,
         sites: list[str] | None = None,
     ) -> tuple[list[DirectVideo], dict[str, str]]:
-        """Search every site at once.
+        """Search every site at once, keeping only the best few from each.
 
         Returns the results and a map of site key to error message. One site
         being down is normal -- these are not services with uptime guarantees --
         and must not cost the user the other two, so failures are reported
         alongside the results rather than raised.
+
+        Each site's results are ranked and filtered independently before being
+        merged. Filtering after the merge would let one site that returns
+        thirty loose matches crowd out another that returned two exact ones.
         """
 
         selected = {
@@ -59,19 +70,26 @@ class DirectScraperService:
 
         with ThreadPoolExecutor(max_workers=len(selected) or 1) as executor:
             futures = {
-                executor.submit(scraper.search, query, limit_per_site): key
+                executor.submit(scraper.search, query, self.CANDIDATE_POOL): key
                 for key, scraper in selected.items()
             }
             for future in as_completed(futures):
                 key = futures[future]
                 try:
-                    results[key] = future.result()
+                    found = future.result()
                 except Exception as exc:
                     logger.warning(f"Direct scraper {key} failed: {exc}")
                     errors[key] = str(exc)
                     results[key] = []
+                    continue
 
-        return _interleave(selected, results), errors
+                results[key] = best_matches(query, found, limit_per_site)
+                logger.debug(
+                    f"Direct scraper {key}: {len(found)} results, "
+                    f"{len(results[key])} kept for {query!r}"
+                )
+
+        return _merge_ranked(selected, results), errors
 
     def resolve(self, site: str, video_id: str) -> list[DirectSource]:
         """Resolve one video to playable URLs.
@@ -87,33 +105,37 @@ class DirectScraperService:
         return scraper.resolve(video_id)
 
 
-def _interleave(
+def _merge_ranked(
     selected: dict[str, DirectScraper], results: dict[str, list[DirectVideo]]
 ) -> list[DirectVideo]:
-    """Round-robin the per-site lists into one.
+    """Merge the per-site lists into one, best first.
 
-    Concatenating instead would bury the smaller sites: one site returns 60
-    results and the others 30, so the first two screens would be a single
-    source. Taking one from each in turn keeps every site visible from the top
-    while preserving each site's own relevance order.
+    Ranked globally rather than round-robined between sites. Round-robin keeps
+    every site visible, which mattered when each returned thirty results and
+    the list was long enough to bury one; now that each contributes at most a
+    couple, the whole list fits on screen and the only thing worth optimising
+    for is that the best video is at the top.
+
+    Position within a site breaks ties, so two results a site itself ranked in
+    an order do not get shuffled out of it.
     """
 
-    merged: list[DirectVideo] = []
+    ranked: list[tuple[tuple, int, DirectVideo]] = []
     seen: set[str] = set()
-    order = list(selected)
 
-    for index in range(max((len(v) for v in results.values()), default=0)):
-        for key in order:
-            bucket = results.get(key) or []
-            if index >= len(bucket):
-                continue
-            video = bucket[index]
+    for key in selected:
+        for position, video in enumerate(results.get(key) or []):
             if video.key() in seen:
                 continue
             seen.add(video.key())
-            merged.append(video)
+            ranked.append((sort_key(video), position, video))
 
-    return merged
+    # Descending on quality, ascending on the site's own position, which is why
+    # the two cannot be expressed as one reverse=True sort.
+    ranked.sort(key=lambda entry: entry[1])
+    ranked.sort(key=lambda entry: entry[0], reverse=True)
+
+    return [video for _, _, video in ranked]
 
 
 __all__ = ["DirectScraperService", "DirectSource", "DirectVideo"]

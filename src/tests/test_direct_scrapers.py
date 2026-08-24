@@ -8,7 +8,7 @@ this stays runnable when the sites are down or have changed.
 
 import sys
 
-from program.services.directscrapers import _interleave
+from program.services.directscrapers import _merge_ranked
 from program.services.directscrapers.base import (
     parse_count,
     parse_duration,
@@ -17,6 +17,11 @@ from program.services.directscrapers.base import (
 )
 from program.services.directscrapers.iporntv import _assemble_url, _video_id
 from program.services.directscrapers.models import DirectSource, DirectVideo
+from program.services.directscrapers.ranking import (
+    MIN_RELEVANCE,
+    best_matches,
+    relevance,
+)
 from program.services.directscrapers.upornia import _best_size, _deobfuscate
 from program.services.directscrapers.xfreehd import XFreeHDScraper
 
@@ -168,22 +173,150 @@ check("views are parsed", video.views == 1100)
 check("the HD badge is not reported as a resolution", video.resolution is None)
 check("private videos are excluded", all(p.video_id != "222" for p in parsed))
 
-print("\nresult merging")
-a = [DirectVideo(site="a", video_id=str(i), title=f"a{i}", page_url="") for i in range(3)]
-b = [DirectVideo(site="b", video_id=str(i), title=f"b{i}", page_url="") for i in range(1)]
-merged = _interleave({"a": None, "b": None}, {"a": a, "b": b})  # type: ignore[dict-item]
-# Concatenating would put every "a" first, so the smaller site never appears
-# above the fold.
+print("\nrelevance scoring")
+
+
+def video(title, **kwargs):
+    return DirectVideo(site="s", video_id=title, title=title, page_url="", **kwargs)
+
+
+query = "Deny It All You Want"
+# The real thing, as two different sites title it.
+check("exact title scores full", relevance(query, video(query)) == 1.0)
 check(
-    "sites are interleaved, not concatenated",
-    [v.title for v in merged] == ["a0", "b0", "a1", "a2"],
-    [v.title for v in merged],
+    "title with performers appended still scores full",
+    relevance(query, video("Deny It All You Want - Vanna Bardot")) == 1.0,
 )
-check("every result survives the merge", len(merged) == 4)
+check(
+    "site prefix does not dilute the match",
+    relevance(query, video("PureTaboo-Deny It All You Want")) == 1.0,
+)
+# The junk this module exists to remove: everything it shares is filler.
+for junk in (
+    "Oh i want this i want you",
+    "You don t want and i insist you cunnilingus",
+    "if you didn t want me to touch it...why is it there",
+):
+    check(f"filler-only match is rejected: {junk[:28]}", relevance(query, video(junk)) < MIN_RELEVANCE, relevance(query, video(junk)))
+
+check(
+    "a result sharing nothing scores zero",
+    relevance(query, video("Completely Unrelated Scene")) == 0.0,
+)
+# Filler words are worth a quarter, not nothing: scoring them zero would make
+# any title containing "deny" a perfect match for this query.
+check(
+    "one distinctive word alone is not a perfect match",
+    relevance(query, video("Deny")) < 1.0,
+    relevance(query, video("Deny")),
+)
+
+check(
+    "unrelated title with a shared distinctive word is filtered",
+    relevance("Brazzers University", video("18 year old university student"))
+    < MIN_RELEVANCE,
+)
+check(
+    "a query with nothing to match on accepts everything rather than nothing",
+    relevance("The And Of", video("Anything At All")) == 1.0,
+)
+
+print("\nvolume handling")
+# Adult series reuse one name across instalments, so the number is the title.
+check(
+    "matching volume is rewarded",
+    relevance("Daddy Issues 8", video("Step daddy Issues 8 Sc 2")) == 1.0,
+)
+check(
+    "a scene number is not mistaken for a volume",
+    relevance("Daddy Issues 8", video("Step daddy Issues 8 Sc 2")) == 1.0,
+)
+check(
+    "a different volume is penalised",
+    relevance("Daddy Issues 8", video("Daddy Issues 3"))
+    < relevance("Daddy Issues 8", video("Daddy Issues 8")),
+)
+check(
+    "an unnumbered result is not penalised, only unrewarded",
+    0 < relevance("Daddy Issues 8", video("Cute blonde works out her daddy issues")) < 1.0,
+)
+
+print("\nordering")
+short_hd = video("Deny It All You Want a", resolution="1080p", duration=300)
+long_sd = video("Deny It All You Want b", resolution="480p", duration=3600)
+ordered = best_matches(query, [long_sd, short_hd], 5)
+check(
+    "higher resolution wins at equal relevance",
+    ordered[0].title.endswith("a"),
+    [v.title for v in ordered],
+)
+
+long_hd = video("Deny It All You Want c", resolution="1080p", duration=3600)
+ordered = best_matches(query, [short_hd, long_hd], 5)
+check(
+    "at equal resolution the longer video wins",
+    ordered[0].title.endswith("c"),
+    [v.title for v in ordered],
+)
+
+# An HD badge is a claim, not a measurement, so it must not outrank a real
+# figure -- but it should still beat a result that reported nothing at all.
+badge = video("Deny It All You Want d", hd=True, duration=600)
+unknown = video("Deny It All You Want e", duration=600)
+measured = video("Deny It All You Want f", resolution="480p", duration=600)
+ordered = best_matches(query, [unknown, badge, measured], 5)
+check(
+    "a measured resolution outranks an HD badge, which outranks nothing",
+    [v.title[-1] for v in ordered] == ["f", "d", "e"],
+    [v.title[-1] for v in ordered],
+)
+
+# Scores are bucketed on purpose: 0.83 against 0.79 is not a real difference,
+# and letting it decide pushes a 45-minute scene below a 6-minute clip.
+near = video("Deny It All You Want Vanna", resolution="720p", duration=2700)
+exact_short = video(query, duration=120)
+ordered = best_matches(query, [exact_short, near], 5)
+check(
+    "a marginally better score does not beat a much better video",
+    ordered[0].title == near.title,
+    [(v.title, v.relevance) for v in ordered],
+)
+
+print("\nfiltering and capping")
+pool = [video(f"Deny It All You Want {i}", duration=100 + i) for i in range(10)]
+check("the per-site cap is honoured", len(best_matches(query, pool, 2)) == 2)
+check("junk is dropped entirely", best_matches(query, [video("Oh i want you")], 5) == [])
+
+# The same upload appears repeatedly under different ids; with two slots a
+# duplicate costs a genuinely different result.
+dupes = [
+    DirectVideo(site="s", video_id="1", title="Deny It All You Want", page_url="", duration=600),
+    DirectVideo(site="s", video_id="2", title="deny it all you want!", page_url="", duration=300),
+]
+deduped = best_matches(query, dupes, 5)
+check("duplicate uploads collapse to one", len(deduped) == 1, [v.video_id for v in deduped])
+check("the longer copy is the one kept", deduped[0].video_id == "1")
+
+print("\nresult merging")
+a = [
+    DirectVideo(site="a", video_id="1", title="Alpha Male", page_url="", duration=3600),
+    DirectVideo(site="a", video_id="2", title="Alpha Male", page_url="", duration=60),
+]
+b = [DirectVideo(site="b", video_id="1", title="Alpha Male", page_url="", resolution="1080p", duration=600)]
+scored = {
+    "a": [v.with_relevance(1.0) for v in a],
+    "b": [v.with_relevance(1.0) for v in b],
+}
+merged = _merge_ranked({"a": None, "b": None}, scored)  # type: ignore[dict-item]
+check(
+    "the merged list is ranked globally, not round-robined",
+    [f"{v.site}{v.video_id}" for v in merged] == ["b1", "a1", "a2"],
+    [f"{v.site}{v.video_id}" for v in merged],
+)
+check("every result survives the merge", len(merged) == 3)
 check(
     "a site that returned nothing is skipped",
-    [v.title for v in _interleave({"a": None, "b": None}, {"a": a, "b": []})]  # type: ignore[dict-item]
-    == ["a0", "a1", "a2"],
+    len(_merge_ranked({"a": None, "b": None}, {"a": scored["a"], "b": []})) == 2,  # type: ignore[dict-item]
 )
 
 print("\nsource defaults")

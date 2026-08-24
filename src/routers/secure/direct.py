@@ -52,6 +52,8 @@ class DirectVideoModel(BaseModel):
     resolution: str | None = None
     size: int | None = None
     views: int | None = None
+    hd: bool = False
+    relevance: float | None = None
 
 
 class DirectSearchResponse(BaseModel):
@@ -85,7 +87,14 @@ def direct_search(
         int | None,
         Query(description="Use this library item's title as the query"),
     ] = None,
-    limit: Annotated[int, Query(ge=1, le=60)] = 20,
+    limit: Annotated[
+        int,
+        Query(
+            ge=1,
+            le=20,
+            description="Maximum results kept per site, after ranking",
+        ),
+    ] = 2,
     sites: Annotated[
         str | None, Query(description="Comma-separated site keys")
     ] = None,
@@ -125,6 +134,8 @@ def direct_search(
                 resolution=video.resolution,
                 size=video.size,
                 views=video.views,
+                hd=video.hd,
+                relevance=video.relevance,
             )
             for video in results
         ],

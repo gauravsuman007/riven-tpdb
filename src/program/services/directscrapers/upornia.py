@@ -83,6 +83,7 @@ class UporniaScraper(DirectScraper):
                     ),
                     size=_best_size(entry.get("file_formats")),
                     views=parse_count(entry.get("video_viewed")),
+                    hd=str((entry.get("props") or {}).get("hd", "")) == "1",
                 )
             )
             if len(videos) >= limit:

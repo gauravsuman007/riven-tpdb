@@ -33,15 +33,14 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 
-# Tokens that carry no identifying information in an adult release title.
-_NOISE = frozenset({
-    "xxx", "the", "a", "an", "and", "of", "in", "on", "at", "to", "for", "with",
-    "vol", "volume", "part", "pt", "scene", "episode", "ep", "featuring", "feat",
-    "web", "dl", "webrip", "bluray", "brrip", "hdrip", "dvdrip", "dvd", "rip",
-    "mp4", "mkv", "avi", "wmv", "hevc", "x264", "x265", "h264", "h265", "aac",
-    "1080p", "2160p", "720p", "480p", "360p", "540p", "4k", "uhd", "sd", "hd",
-    "uncen", "decen", "uncensored", "censored", "split", "scenes", "new",
-})
+# Re-exported so existing callers keep importing these from here, while the
+# definitions stay usable without dragging in the scrapers package.
+from program.utils.text_matching import (  # noqa: F401
+    NOISE as _NOISE,
+    extract_volume,
+    normalise,
+    tokenise,
+)
 
 _YEAR = re.compile(r"\b(19|20)\d{2}\b")
 
@@ -49,63 +48,11 @@ _YEAR = re.compile(r"\b(19|20)\d{2}\b")
 # presence is positive evidence that a release belongs to something else.
 _EPISODIC = re.compile(r"\bS\d{1,2}\s?E\d{1,3}\b|\b\d{1,2}x\d{2}\b", re.I)
 
-# Series instalment number: "Vol. 3", "Volume 10", "Part 2", or a bare trailing
-# number as in "Daddy Issues 8". Adult series reuse one name across many
-# volumes, so getting this wrong hands over a different film entirely.
-_VOLUME = re.compile(r"\b(?:vol(?:ume)?|part|pt)\.?\s*(\d{1,3})\b", re.I)
-_TRAILING_NUMBER = re.compile(r"\b(\d{1,3})\s*$")
-
-
-def extract_volume(text: str) -> int | None:
-    """The instalment number a title refers to, if it states one."""
-
-    if not text:
-        return None
-
-    match = _VOLUME.search(text)
-
-    if match:
-        return int(match.group(1))
-
-    # Only trust a bare trailing number on the *item* title ("Daddy Issues 8"),
-    # never mid-string, where it is usually a year or a resolution.
-    trailing = _TRAILING_NUMBER.search(text.strip())
-
-    if trailing:
-        value = int(trailing.group(1))
-
-        # Years are not volume numbers.
-        if not (1900 <= value <= 2100):
-            return value
-
-    return None
-
 # Scene dates appear as 22.02.18 / 22 02 18 / 2022.02.18, occasionally reordered.
 _DATE_PATTERNS = (
     re.compile(r"\b(20\d{2})[.\-_ ](\d{2})[.\-_ ](\d{2})\b"),
     re.compile(r"\b(\d{2})[.\-_ ](\d{2})[.\-_ ](\d{2})\b"),
 )
-
-
-def normalise(text: str) -> str:
-    """Lowercase and strip everything that is not a letter or digit.
-
-    Site names are written every possible way -- "Pure Taboo", "PureTaboo",
-    "pure-taboo" -- so comparisons happen in this collapsed space.
-    """
-
-    return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
-
-
-def tokenise(text: str) -> list[str]:
-    """Split into meaningful lowercase word tokens, dropping release noise."""
-
-    words = re.split(r"[^a-zA-Z0-9]+", (text or "").lower())
-
-    # Digits are kept: the volume number is often the only thing separating
-    # "Daddy Issues 8" from "Daddy Issues", and dropping it made every
-    # instalment of a series look like every other one.
-    return [w for w in words if w and w not in _NOISE]
 
 
 def extract_dates(raw_title: str) -> list[tuple[int, int, int]]:

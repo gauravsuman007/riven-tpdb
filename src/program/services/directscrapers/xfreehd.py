@@ -84,8 +84,15 @@ class XFreeHDScraper(DirectScraper):
                     thumbnail=thumbnail or None,
                     duration=parse_duration(_text(link, "duration-new")),
                     # The HD badge is a claim about the file, not a
-                    # measurement, so it is not reported as a resolution.
+                    # measurement -- the same badge covers 720p and 4K -- so it
+                    # is recorded as a hint and never as a resolution.
                     resolution=None,
+                    hd=bool(
+                        link.xpath(
+                            ".//*[contains(concat(' ', normalize-space(@class),"
+                            " ' '), ' hd-text-icon ')]"
+                        )
+                    ),
                     views=parse_count(_text(link, "video-views-new")),
                 )
             )

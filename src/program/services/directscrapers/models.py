@@ -11,7 +11,7 @@ at search time would mean every link in the grid had expired by the time the
 user clicked one.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,9 +33,19 @@ class DirectVideo:
     size: int | None = None
     """Size in bytes of the best source, when the site reports it up front."""
     views: int | None = None
+    hd: bool = False
+    """The site showed an HD badge. Kept separate from ``resolution`` because
+    it is a claim rather than a measurement -- the same badge covers 720p and
+    4K -- but it still orders a result above one with no quality signal."""
+    relevance: float | None = None
+    """How well this matched the query, filled in by the ranker. ``None`` on a
+    result that has not been scored yet."""
 
     def key(self) -> str:
         return f"{self.site}:{self.video_id}"
+
+    def with_relevance(self, score: float) -> "DirectVideo":
+        return replace(self, relevance=score)
 
 
 @dataclass(frozen=True, slots=True)
