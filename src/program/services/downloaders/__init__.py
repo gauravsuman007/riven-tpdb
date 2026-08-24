@@ -280,7 +280,9 @@ class Downloader(Runner[None, DownloaderBase]):
 
         try:
             # Sort streams by resolution and rank (highest first) using simple, fast sorting
-            sorted_streams = sort_streams_by_quality(item.streams)
+            sorted_streams = sort_streams_by_quality(
+                item.streams, preferred_hash=item.preferred_stream_hash
+            )
 
             for stream in sorted_streams:
                 # Try each available service for this stream before blacklisting

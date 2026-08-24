@@ -637,18 +637,26 @@ class LibraryFile(BaseModel):
 
 
 class LibraryStream(BaseModel):
-    """A release found for an item but not yet downloaded.
+    """A release found for an item.
 
     There is no size here because Riven does not record one: indexers report
     sizes inconsistently and the value is not stored on the stream, so claiming
     a size would mean inventing it.
     """
 
+    infohash: Annotated[str, Field(description="Infohash, used to select this release")]
     raw_title: Annotated[str, Field(description="Release title as the indexer gave it")]
     resolution: Annotated[str | None, Field(description="Parsed resolution, when known")]
     rank: Annotated[int, Field(description="RTN rank; higher is preferred")]
     is_active: Annotated[
-        bool, Field(description="Whether this is the release Riven settled on")
+        bool,
+        Field(description="Whether this is the release that was actually downloaded"),
+    ]
+    is_preferred: Annotated[
+        bool, Field(description="Whether the user pinned this release")
+    ]
+    is_blacklisted: Annotated[
+        bool, Field(description="Whether this release was rejected and will be skipped")
     ]
 
 
@@ -729,17 +737,31 @@ def _library_files(item: MediaItem, mount_path: str) -> list[LibraryFile]:
 
 
 def _library_streams(item: MediaItem) -> list[LibraryStream]:
-    """Candidate releases for an item, best rank first."""
+    """Candidate releases for an item, best rank first.
+
+    Blacklisted releases are included rather than hidden: a user looking at this
+    list wants to know a release was tried and rejected, not to wonder why an
+    obvious candidate is missing.
+    """
 
     active_hash = item.active_stream.infohash if item.active_stream else None
+    preferred_hash = item.preferred_stream_hash
+    blacklisted = {s.infohash for s in item.blacklisted_streams or []}
+
+    # The two collections are meant to be disjoint, but a stream that appears
+    # in both would otherwise be rendered twice.
+    by_hash = {
+        stream.infohash: stream
+        for stream in list(item.streams or []) + list(item.blacklisted_streams or [])
+    }
 
     streams = sorted(
-        item.streams or [], key=lambda stream: stream.rank or 0, reverse=True
+        by_hash.values(), key=lambda stream: stream.rank or 0, reverse=True
     )
 
     return [
         LibraryStream(
-            raw_title=stream.raw_title,
+            infohash=stream.infohash,
             # RTN writes the literal string "unknown" when it cannot tell,
             # which is noise in a UI -- report nothing instead.
             resolution=(
@@ -747,10 +769,13 @@ def _library_streams(item: MediaItem) -> list[LibraryStream]:
                 if stream.resolution and stream.resolution != "unknown"
                 else None
             ),
+            raw_title=stream.raw_title,
             rank=stream.rank or 0,
             is_active=bool(active_hash and stream.infohash == active_hash),
+            is_preferred=bool(preferred_hash and stream.infohash == preferred_hash),
+            is_blacklisted=stream.infohash in blacklisted,
         )
-        for stream in streams[:10]
+        for stream in streams[:25]
     ]
 
 
@@ -1344,6 +1369,110 @@ async def get_item_streams(
         streams=[stream.to_dict() for stream in item.streams],
         blacklisted_streams=[stream.to_dict() for stream in item.blacklisted_streams],
     )
+
+
+def _clear_download(item: MediaItem) -> None:
+    """Undo an item's download while keeping its candidate releases.
+
+    Returns the item to `Scraped`, which is what the Downloader picks up.
+    `MediaItem.reset()` cannot be used for this: it also clears `streams`, so
+    the item would drop back to `Indexed` and need re-scraping.
+    """
+
+    from program.program import riven
+
+    if riven.services:
+        filesystem_service = riven.services.filesystem
+
+        # Remove VFS nodes before clearing the entries they are derived from.
+        if filesystem_service.riven_vfs:
+            filesystem_service.riven_vfs.remove(item)
+
+    item.filesystem_entries.clear()
+    item.subtitles.clear()
+    item.active_stream = None
+    item.updated = False
+    item.store_state()
+
+
+@router.post(
+    "/{item_id}/streams/{infohash}/select",
+    summary="Select a release for download",
+    description=(
+        "Pin a specific candidate release. The downloader will try it ahead of "
+        "its own quality ordering, replacing whatever is currently downloaded."
+    ),
+    operation_id="select_item_stream",
+    response_model=MessageResponse,
+)
+async def select_stream(
+    item_id: Annotated[int, Path(description="The ID of the media item", ge=1)],
+    infohash: Annotated[
+        str,
+        Path(description="Infohash of the release to download", min_length=8),
+    ],
+) -> MessageResponse:
+    """
+    Download a particular release instead of the one Riven chose.
+
+    Selecting un-blacklists the release first: a user picking something Riven
+    previously rejected is overriding that rejection, and leaving it blacklisted
+    would make the request silently do nothing.
+    """
+
+    with db_session() as session:
+        item = (
+            session.execute(select(MediaItem).where(MediaItem.id == item_id))
+            .unique()
+            .scalar_one_or_none()
+        )
+
+        if not item:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Item not found"
+            )
+
+        candidates = list(item.streams or []) + list(item.blacklisted_streams or [])
+        stream = next((s for s in candidates if s.infohash == infohash), None)
+
+        if not stream:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No such release for this item",
+            )
+
+        if item.active_stream and item.active_stream.infohash == infohash:
+            return MessageResponse(
+                message="That release is already the one downloaded",
+            )
+
+        def mutation(i: MediaItem, s: Session):
+            i.preferred_stream_hash = infohash
+
+            if stream in (i.blacklisted_streams or []):
+                i.unblacklist_stream(stream)
+
+            # Drop the current download so the downloader runs again. Note this
+            # is deliberately NOT MediaItem.reset(): reset clears `streams`,
+            # which would throw away the candidate list the user just picked
+            # from and force a fresh scrape. Only the download is undone here.
+            _clear_download(i)
+
+        apply_item_mutation(
+            di[Program],
+            session,
+            item,
+            mutation,
+            bubble_parents=True,
+        )
+
+        session.commit()
+
+        di[Program].em.add_event(Event("Downloader", item_id))
+
+        return MessageResponse(
+            message=f"Selected {stream.raw_title}; it will be downloaded shortly",
+        )
 
 
 @router.post(

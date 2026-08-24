@@ -181,11 +181,23 @@ def get_resolution(torrent: Stream) -> Resolution:
     return RESOLUTION_MAP.get(resolution, Resolution.UNKNOWN)
 
 
-def sort_streams_by_quality(streams: list[Stream]) -> list[Stream]:
-    """Sort streams by resolution (highest first) and then by rank (highest first)."""
+def sort_streams_by_quality(
+    streams: list[Stream], preferred_hash: str | None = None
+) -> list[Stream]:
+    """
+    Sort streams by resolution (highest first) and then by rank (highest first).
+
+    `preferred_hash` pins one release to the front. A user who picks a specific
+    candidate on the detail page means it, so the choice outranks quality --
+    otherwise picking a 720p release when a 1080p one exists would do nothing.
+    """
 
     return sorted(
         streams,
-        key=lambda stream: (get_resolution(stream).value, stream.rank),
+        key=lambda stream: (
+            stream.infohash == preferred_hash,
+            get_resolution(stream).value,
+            stream.rank,
+        ),
         reverse=True,
     )

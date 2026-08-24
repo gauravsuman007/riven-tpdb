@@ -82,6 +82,11 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         ActiveStreamDecorator,
         default=None,
     )
+    # A release the user pinned from the detail page. The downloader tries it
+    # ahead of its own quality ordering; None means "use the ordering".
+    preferred_stream_hash: Mapped[str | None] = mapped_column(
+        sqlalchemy.String, default=None
+    )
     streams: Mapped[list[Stream]] = relationship(
         secondary="StreamRelation",
         back_populates="parents",
