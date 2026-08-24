@@ -69,6 +69,65 @@ Whisparr dependency. Regular movies/TV must never appear.
 - Full app boot requires `pyfuse3` (needs system FUSE headers + pkg-config),
   which `uv sync` cannot install in this sandbox.
 
+## Collections and AVN awards
+- A **Collection** is a browsable list beside the library, not inside it.
+  `CollectionEntry.media_item_id` is null until an entry is actually requested,
+  and that null is the whole design: 8,815 award entries exist as catalogue rows
+  while the library holds only what was asked for. Models:
+  `src/program/media/collection.py`; migration `...b7e4a2f19c05_add_collections`.
+- Award corpus: `services/awards/avn.py` parses Wikipedia's per-ceremony
+  articles (4th/1987 through the current one, auto-detected by probing upward).
+  Verified live: 39 collections, 11,672 entries, 8,815 naming a work, 2,792
+  winners, 6,943 distinct titles, ~2.4s to build.
+- Only **winners** are persisted by default (`content.awards.include_nominees`
+  is False). Nominees are ~9,000 of the ~11,700 entries and most of the
+  resolution cost. Turning the flag off prunes nominees already stored, except
+  any that were already requested -- deleting those would orphan a title that
+  is in the library.
+- Three article layouts exist and all three are needed: `{{Award category|...}}`
+  inline cells (39th+); `!` header rows with entries in the *following* row
+  (older, needs positional cell mapping -- hence `awards/wikitable.py`); and
+  "Additional award winners" bullet lists *outside* any table, which alone carry
+  2,595 winners across 33 ceremonies.
+- Parser traps, all of which produced wrong data before being fixed:
+  a `<ref name="AVN-mag" />` citation parses as a quoted work title unless refs
+  are stripped first; bold/italic quote markers survive into titles unless
+  stripped *after* studio extraction (studio detection needs those markers);
+  older person categories write "Person, Title" bare, which is only safe to
+  comma-split once the category is known to be a person award.
+- Matching (`services/awards/matching.py`) is the *reverse* of
+  `scrapers/adult_matching.py`: catalogue-vs-catalogue, not release-vs-catalogue.
+  Bar is `ACCEPT_SCORE = 6.0`, and title similarity alone maxes at 5.0, so a
+  bare title match can never be accepted on its own.
+- IMPORTANT: resolution needs TWO passes per entry. `/movies?q=` returns the
+  flat shape (no nested `site`, no `performers`), so scoring search results
+  directly leaves studio and cast permanently unset and nothing ever matches.
+  `_resolve_one` shortlists on title, then fetches `/movies/{id}` for the top 3.
+- Resumability is a property of the rows: `match_state` *is* the checkpoint.
+  Every batch commits, so a restart resumes at the first pending entry. A TPDB
+  outage breaks out of the loop rather than marking the backlog unmatched.
+- Only winners are auto-requested (`content.awards.auto_request_winners`), and
+  `request_matched_winners` is bounded per run so the first sync trickles into
+  the pipeline instead of flooding it.
+- Frontend (separate repo, `../riven-tpdb-frontend`): shelf on the library page
+  (`lib/components/collections-shelf.svelte`), detail at
+  `(protected)/collections/[key]/`. The collections endpoints are hand-typed in
+  `lib/collections.ts` because `providers/riven.ts` is OpenAPI-generated and
+  needs a running backend to regenerate.
+- Tests: `src/tests/test_awards.py` (parser + matcher, stdlib-only) and
+  `src/tests/test_awards_service.py` (service against real SQLite, skips without
+  sqlalchemy).
+
+## Sources evaluated and rejected for ranking/awards
+- TPDB has no ranking of any kind: `rating` is 0 on every record, `order_by`
+  and `sort` are accepted but ignored, and there is no popularity or view field.
+  Do not try to build "top rated" or "trending" on it.
+- `awards.avn.com` is authoritative but only covers 2019+ and its year switcher
+  is client-side, so each year needs a browser.
+- Wikidata's AVN statements are almost entirely performers (221 humans against
+  21 films) -- useless for titles.
+- XBIZ has no per-ceremony articles, only one summary page.
+
 ## Next phases (planned)
 - Recommendations (TPDB-based) + performer/tag catalogs (TPDB public list
   endpoint only filters by `site`, so performer/tag catalogs need another

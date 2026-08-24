@@ -662,7 +662,64 @@ class TpdbContentModel(Updatable):
     )
 
 
+class AwardsModel(Observable):
+    """AVN award collections built from Wikipedia's per-ceremony articles.
+
+    Observable, not Updatable: ``update_interval`` is only read by the
+    scheduler's content-service loop, and these jobs are registered directly.
+    Inheriting it would put a field in the settings UI that does nothing.
+    """
+
+    enabled: bool = Field(
+        default=False, description="Build AVN award collections in the library"
+    )
+    include_nominees: bool = Field(
+        default=False,
+        description=(
+            "Store losing nominees alongside winners. Off by default: winners "
+            "alone are ~2,800 entries against ~11,700 with nominees, and "
+            "resolving nominees against TPDB is most of the work. Turning this "
+            "off removes nominees already stored on the next sync."
+        ),
+    )
+    auto_request_winners: bool = Field(
+        default=True,
+        description=(
+            "Request award winners automatically once they resolve to a TPDB "
+            "title. Nominees, if stored, are never auto-requested."
+        ),
+    )
+    first_year: int = Field(
+        default=1987,
+        ge=1987,
+        description="Earliest ceremony year to build a collection for",
+    )
+    resolve_batch_size: int = Field(
+        default=40,
+        ge=1,
+        le=500,
+        description=(
+            "Entries to resolve against TPDB per run. TPDB allows 2 requests a "
+            "second, so a large batch makes one run long rather than fast."
+        ),
+    )
+    refresh_interval: int = Field(
+        default=60 * 60 * 24 * 7,
+        ge=3600,
+        description="How often to re-fetch the award corpus, in seconds",
+    )
+    resolve_interval: int = Field(
+        default=300,
+        ge=60,
+        description="How often to resolve another batch of pending entries",
+    )
+
+
 class ContentModel(Observable):
+    awards: AwardsModel = Field(
+        default_factory=lambda: AwardsModel(),
+        description="AVN award collections",
+    )
     tpdb: TpdbContentModel = Field(
         default_factory=lambda: TpdbContentModel(),
         description="TPDB adult content subscriptions",

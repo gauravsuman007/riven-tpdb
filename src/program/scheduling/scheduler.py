@@ -29,6 +29,7 @@ from schemas.tvdb.models.series_airs_days import SeriesAirsDays
 
 if TYPE_CHECKING:
     from program.program import Program
+    from program.services.awards.service import AwardsService
 
 
 class ScheduledFunctionConfig(TypedDict):
@@ -46,6 +47,9 @@ class ProgramScheduler:
     def __init__(self, program: "Program") -> None:
         self.program = program
         self.scheduler = BackgroundScheduler()
+        # Built on first use: constructing it eagerly would validate TPDB
+        # settings even when award collections are switched off.
+        self._awards: "AwardsService | None" = None
 
     def start(self) -> None:
         """Create and start the background scheduler with all jobs registered."""
@@ -82,6 +86,19 @@ class ProgramScheduler:
 
         if clean_interval > 0:
             scheduled_functions[log_cleaner] = {"interval": clean_interval}
+
+        # AVN award collections: the corpus refresh is cheap and weekly, while
+        # resolution runs often in small batches because TPDB allows only two
+        # requests a second and the backlog is thousands of entries.
+        awards = settings_manager.settings.content.awards
+
+        if awards.enabled:
+            scheduled_functions[self._sync_awards] = {
+                "interval": awards.refresh_interval
+            }
+            scheduled_functions[self._resolve_awards] = {
+                "interval": awards.resolve_interval
+            }
 
         # Add scheduler processing and monitoring
         scheduled_functions[self._process_scheduled_tasks] = {"interval": 60}
@@ -157,6 +174,50 @@ class ProgramScheduler:
             logger.debug(
                 f"Scheduled {service_name} to run every {update_interval} seconds."
             )
+
+    def _awards_service(self):
+        """The awards service, built lazily so a disabled one costs nothing."""
+
+        from program.services.awards.service import AwardsService
+
+        if self._awards is None:
+            self._awards = AwardsService()
+
+        return self._awards
+
+    def _sync_awards(self) -> None:
+        """Refresh the AVN corpus into collections."""
+
+        service = self._awards_service()
+
+        if not service.initialized:
+            return
+
+        try:
+            service.sync_corpus()
+        except Exception as exc:
+            logger.error(f"AVN corpus sync failed: {exc}")
+
+    def _resolve_awards(self) -> None:
+        """Resolve one batch of pending entries, then queue any new winners.
+
+        Requesting is bounded per run and happens only after resolution, so the
+        pipeline receives a steady trickle rather than thousands of items the
+        first time the corpus lands.
+        """
+
+        service = self._awards_service()
+
+        if not service.initialized:
+            return
+
+        try:
+            matched, _ = service.resolve_batch()
+
+            if matched:
+                service.request_matched_winners()
+        except Exception as exc:
+            logger.error(f"AVN award resolution failed: {exc}")
 
     def _retry_library(self) -> None:
         """Retry items that failed to download by emitting events into the EM."""

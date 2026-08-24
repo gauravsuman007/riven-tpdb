@@ -4,6 +4,7 @@ from fastapi.routing import APIRouter
 from auth import resolve_api_key, resolve_ws_api_key
 from program.settings import settings_manager
 from routers.models.shared import RootResponse
+from routers.secure.collections import router as collections_router
 from routers.secure.database import router as database_router
 from routers.secure.direct import router as direct_router
 from routers.secure.default import router as default_router
@@ -27,6 +28,7 @@ async def root(_: Request) -> RootResponse:
     )
 
 
+app_router.include_router(collections_router, dependencies=[Depends(resolve_api_key)])
 app_router.include_router(database_router, dependencies=[Depends(resolve_api_key)])
 app_router.include_router(default_router, dependencies=[Depends(resolve_api_key)])
 app_router.include_router(direct_router, dependencies=[Depends(resolve_api_key)])
