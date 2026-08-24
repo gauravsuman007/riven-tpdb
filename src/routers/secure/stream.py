@@ -132,31 +132,35 @@ async def stream_file(
 
             try:
                 upstream_response = await client.send(req, stream=True)
+            except httpx.HTTPStatusError as e:
+                # AsyncClient raises on 4xx/5xx via an event hook rather than
+                # returning the response, so the rejection arrives here.
+                status_code = e.response.status_code
+                await e.response.aclose()
+                upstream_response = None
+
+                if attempt == 0 and status_code < 500:
+                    # 400/401/403/404/410 from a debrid CDN all mean the same
+                    # thing in practice: this link is spent. Mint a new one.
+                    logger.debug(
+                        f"Upstream rejected the stored link for item {item_id} "
+                        f"({status_code}); re-minting"
+                    )
+                    media = playback_url.resolve(item_id, force=True)
+                    continue
+
+                raise HTTPException(
+                    status_code=502, detail=f"Upstream error: {status_code}"
+                )
             except Exception as e:
+                # The message can embed the provider URL, token and all.
                 logger.error(
-                    f"Failed to connect to upstream {playback_url.redact(media.url)}: {e}"
+                    f"Failed to connect to upstream "
+                    f"{playback_url.redact(media.url)}: {playback_url.redact(str(e))}"
                 )
                 raise HTTPException(status_code=502, detail="Upstream connection failed")
 
-            if upstream_response.status_code < 400:
-                break
-
-            await upstream_response.aclose()
-
-            if attempt == 0:
-                # 400/401/403/404/410 from a debrid CDN all mean the same thing
-                # in practice: this link is spent. Mint a new one and retry.
-                logger.debug(
-                    f"Upstream rejected the stored link for item {item_id} "
-                    f"({upstream_response.status_code}); re-minting"
-                )
-                media = playback_url.resolve(item_id, force=True)
-                continue
-
-            raise HTTPException(
-                status_code=502,
-                detail=f"Upstream error: {upstream_response.status_code}",
-            )
+            break
 
         assert upstream_response is not None
 
@@ -204,7 +208,7 @@ async def get_playback_info(item_id: int) -> PlaybackInfo:
     canPlayType.
     """
 
-    media = playback_url.resolve(item_id)
+    media = playback_url.resolve(item_id, check=True)
     result = transcode.probe(media.url, cache_key=media.filename)
     mode, reason = transcode.decide(result)
 
@@ -227,7 +231,7 @@ async def stream_remux(item_id: int, t: float = 0.0) -> StreamingResponse:
     range-requested.
     """
 
-    media = playback_url.resolve(item_id)
+    media = playback_url.resolve(item_id, check=True)
     cmd = transcode.build_remux_command(media.url, start_time=t)
 
     process = await asyncio.create_subprocess_exec(
@@ -266,7 +270,7 @@ async def get_hls_playlist(item_id: int):
     actually produces.
     """
 
-    media = playback_url.resolve(item_id)
+    media = playback_url.resolve(item_id, check=True)
     result = transcode.probe(media.url, cache_key=media.filename)
 
     return Response(
@@ -289,7 +293,7 @@ async def get_hls_segment(item_id: int, seq: int) -> Response:
     if seq < 0:
         raise HTTPException(status_code=400, detail="Invalid segment")
 
-    media = playback_url.resolve(item_id)
+    media = playback_url.resolve(item_id, check=True)
     result = transcode.probe(media.url, cache_key=media.filename)
 
     data = await _session_manager.segment(

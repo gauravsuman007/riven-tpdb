@@ -63,6 +63,22 @@ check(
 )
 check("None redacts to a placeholder", redact(None) == "<none>")
 
+print("\n-- redaction of provider errors --")
+# httpx embeds the failing URL in its exception message, so the token leaks
+# through error paths even when the URL itself is logged redacted.
+_httpx_message = (
+    "Client error '400 Bad Request' for url "
+    "'https://nexus-070.ceur.tb-cdn.st/dld/f323d61f?token=7b0e6d30-634f-46ba'"
+)
+check(
+    "a token inside an httpx error message is redacted",
+    "7b0e6d30" not in redact(_httpx_message),
+)
+check(
+    "the status code survives redaction",
+    "400 Bad Request" in redact(_httpx_message),
+)
+
 print("\n-- playback mode: the regression that caused this work --")
 check(
     "h264/aac mp4 plays directly",

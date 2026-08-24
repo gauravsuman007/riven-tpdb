@@ -137,7 +137,33 @@ def mint_url(original_filename: str) -> str | None:
         return minted.download
 
 
-def resolve(item_id: int, *, force: bool = False) -> PlayableMedia:
+def verify(url: str) -> bool:
+    """
+    Cheaply check that `url` still serves data.
+
+    A stored CDN link can be well-formed and still be spent -- TorBox answers
+    those with 400. Callers that hand the URL to ffmpeg need to know before they
+    do, because ffmpeg cannot come back and ask for a fresh one.
+    """
+
+    import httpx
+
+    try:
+        with httpx.Client(follow_redirects=True, timeout=15) as client:
+            # One byte is enough to learn whether the link is alive, and avoids
+            # pulling a gigabyte to find out.
+            response = client.get(url, headers={"Range": "bytes=0-0"})
+
+            return response.status_code < 400
+    except Exception as e:
+        logger.debug(f"Could not verify {redact(url)}: {redact(str(e))}")
+
+        return False
+
+
+def resolve(
+    item_id: int, *, force: bool = False, check: bool = False
+) -> PlayableMedia:
     """
     Resolve a media item to a URL that can be fetched right now.
 
@@ -145,6 +171,9 @@ def resolve(item_id: int, *, force: bool = False) -> PlayableMedia:
         item_id: MediaItem id.
         force: Mint a new URL even when the stored one looks usable. Callers
             pass this after the stored URL has been rejected upstream.
+        check: Verify the stored URL before returning it, minting a new one if
+            it is dead. Callers that pass the URL to ffmpeg want this: ffmpeg
+            gets one attempt and cannot retry through this module.
 
     Raises:
         HTTPException: 404 when the item has no media, 502 when no playable URL
@@ -170,11 +199,14 @@ def resolve(item_id: int, *, force: bool = False) -> PlayableMedia:
 
     # A stored URL is only worth trying when it is a real HTTP URL. An internal
     # reference has to be minted regardless of `force`.
-    if not force and is_playable(stored):
+    if not force and is_playable(stored) and (not check or verify(stored)):
         return PlayableMedia(url=stored, provider=provider, filename=filename)
 
     if minted := mint_url(filename):
         return PlayableMedia(url=minted, provider=provider, filename=filename)
+
+    # Minting produced nothing usable. A stored URL that just failed `check` is
+    # no better, so only fall back to one that was never tested.
 
     if is_playable(stored):
         # Minting failed but the stored URL is at least well-formed; let the
