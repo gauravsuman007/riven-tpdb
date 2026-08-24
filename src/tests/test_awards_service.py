@@ -569,6 +569,34 @@ def test_nominees_stored_when_explicitly_enabled():
     assert titles == {"A Winner", "A Nominee"}, titles
 
 
+def test_resolver_ignores_other_sources():
+    """A self-sourced catalogue owes TPDB nothing and must not be resolved here."""
+
+    _fresh_service(a={"title": "Strip", "studio": "Dorcel", "winner": True,
+                      "category": "One"})
+
+    with Session(ENGINE) as s:
+        other = coll.Collection(key="adultempire-trending", source="adultempire",
+                                name="Trending")
+        s.add(other)
+        s.flush()
+        s.add(coll.CollectionEntry(collection_id=other.id, title="Some Title",
+                                   external_source="adultempire", external_id="1",
+                                   match_state=coll.MATCH_PENDING))
+        s.commit()
+
+    svc = service_mod.AwardsService()
+    svc.api = FakeApi()
+    svc.resolve_batch(limit=50)
+
+    with Session(ENGINE) as s:
+        brochure_entry = s.query(coll.CollectionEntry).filter_by(
+            external_source="adultempire").one()
+
+    assert brochure_entry.match_state == coll.MATCH_PENDING, (
+        "the awards resolver spent TPDB calls on another source's entries")
+
+
 def test_progress_counts_by_state():
     svc = _fresh_service(
         a={"title": "Strip", "studio": "Dorcel", "winner": True, "category": "One"},

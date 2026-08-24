@@ -103,8 +103,15 @@ def evaluate_candidate(
     tpdb_date: str | None,
     tpdb_performers: list[str] | None,
     tpdb_poster: str | None = None,
+    year_offset: int = 1,
 ) -> Match:
-    """Score one TPDB record against one award entry."""
+    """Score one TPDB record against one catalogue entry.
+
+    ``year_offset`` is subtracted from ``entry_year`` to get the year the work
+    is expected to have been released. It defaults to 1 because an award
+    ceremony honours the previous year's output; pass 0 when ``entry_year`` is
+    already the release year, as it is for a storefront listing.
+    """
 
     match = Match(
         tpdb_id=tpdb_id,
@@ -153,9 +160,7 @@ def evaluate_candidate(
             released = None
 
         if released:
-            # Ceremony year N honours work released in N-1, so compare against
-            # that rather than the ceremony year itself.
-            match.year_delta = abs(released - (entry_year - 1))
+            match.year_delta = abs(released - (entry_year - year_offset))
             match.reasons.append(f"year:{released}")
 
     return match

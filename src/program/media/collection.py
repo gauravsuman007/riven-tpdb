@@ -81,6 +81,36 @@ class CollectionEntry(Base):
         sqlalchemy.ForeignKey("Collection.id", ondelete="CASCADE"), index=True
     )
 
+    # Identity at the source, for catalogues that are self-sufficient. An
+    # Adult Empire entry carries title, studio, year and cast already, so it is
+    # requestable without ever resolving a TPDB id -- ``external_id`` is what
+    # the request and scrape paths address it by.
+    external_source: Mapped[str | None] = mapped_column(
+        sqlalchemy.String, nullable=True, index=True
+    )
+    external_id: Mapped[str | None] = mapped_column(
+        sqlalchemy.String, nullable=True, index=True
+    )
+
+    # Position in a ranked listing, 1-based. Null for unordered collections
+    # such as an award ballot, where no ranking exists to record.
+    rank: Mapped[int | None] = mapped_column(sqlalchemy.Integer, nullable=True)
+
+    # Audience score at the source, on that source's own scale (Adult Empire
+    # rates out of 5). Not comparable across sources, so it is stored raw
+    # rather than normalised into something that looks universal.
+    rating: Mapped[float | None] = mapped_column(sqlalchemy.Float, nullable=True)
+
+    duration_minutes: Mapped[int | None] = mapped_column(
+        sqlalchemy.Integer, nullable=True
+    )
+
+    # Exact release date where the source gives one. ``year`` alone is enough
+    # for a feature, but the scrapers' date check is sharper with the real day.
+    released_at: Mapped[datetime | None] = mapped_column(
+        sqlalchemy.DateTime, nullable=True
+    )
+
     # Source metadata, kept verbatim so a re-match can be retried later without
     # re-fetching the source.
     title: Mapped[str] = mapped_column(sqlalchemy.String)
@@ -133,6 +163,18 @@ class CollectionEntry(Base):
     def requested(self) -> bool:
         return self.media_item_id is not None
 
+    @property
+    def actionable(self) -> bool:
+        """Whether this entry can be requested as it stands.
+
+        Two ways to qualify, and they are genuinely different: a TPDB id means
+        the indexer can resolve full metadata, while an ``external_id`` means
+        the source already gave us enough (title, studio, year, cast) to start
+        a download without asking anyone else first.
+        """
+
+        return bool(self.tpdb_id or self.external_id)
+
     def __repr__(self) -> str:
         return f"<CollectionEntry {self.title!r} [{self.match_state}]>"
 
@@ -142,3 +184,7 @@ MATCH_PENDING = "pending"
 MATCH_MATCHED = "matched"
 MATCH_UNMATCHED = "unmatched"
 MATCH_SKIPPED = "skipped"
+
+# The source supplied enough metadata to act on, so no TPDB lookup is owed.
+# Distinct from "matched", which asserts a TPDB record was actually found.
+MATCH_SELF_SOURCED = "self_sourced"

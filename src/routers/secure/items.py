@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, HTTPException, Path, status, Query
 from kink import di
 from loguru import logger
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, object_session
 
 from program.db import db_functions
@@ -837,19 +837,27 @@ def _item_resolution(item: MediaItem, files: list[LibraryFile]) -> str | None:
 
 @router.get(
     "/library_states",
-    summary="Library State by TPDB ID",
-    description="Look up which of the given TPDB uuids already exist in the library",
+    summary="Library State by TPDB or Adult Empire ID",
+    description="Look up which of the given adult ids already exist in the library",
     operation_id="get_library_states",
     response_model=LibraryStatesResponse,
 )
 async def get_library_states(
     tpdb_ids: Annotated[
-        list[str],
+        list[str] | None,
         Query(
             description="TPDB uuids to look up. Ids not in the library are omitted.",
-            min_length=1,
         ),
-    ],
+    ] = None,
+    adultempire_ids: Annotated[
+        list[str] | None,
+        Query(
+            description=(
+                "Adult Empire product ids to look up. Brochure titles carry no "
+                "TPDB id, so this is how they are addressed."
+            ),
+        ),
+    ] = None,
     detailed: Annotated[
         bool,
         Query(
@@ -866,16 +874,27 @@ async def get_library_states(
     does not know -- absence is the answer for those, not an error.
     """
 
-    # Bound the set so a hand-written query string cannot turn into an
+    # Bound each set so a hand-written query string cannot turn into an
     # unbounded IN clause.
-    wanted = [tpdb_id for tpdb_id in dict.fromkeys(tpdb_ids) if tpdb_id][:200]
+    wanted = [tpdb_id for tpdb_id in dict.fromkeys(tpdb_ids or ()) if tpdb_id][:200]
+    wanted_ae = [
+        ae_id for ae_id in dict.fromkeys(adultempire_ids or ()) if ae_id
+    ][:200]
 
-    if not wanted:
+    if not wanted and not wanted_ae:
         return LibraryStatesResponse(states={})
 
     with db_session() as session:
+        conditions = []
+
+        if wanted:
+            conditions.append(MediaItem.tpdb_id.in_(wanted))
+
+        if wanted_ae:
+            conditions.append(MediaItem.adultempire_id.in_(wanted_ae))
+
         items = (
-            session.execute(select(MediaItem).where(MediaItem.tpdb_id.in_(wanted)))
+            session.execute(select(MediaItem).where(or_(*conditions)))
             .unique()
             .scalars()
             .all()
@@ -886,7 +905,16 @@ async def get_library_states(
         mount_path = str(settings_manager.settings.filesystem.mount_path)
 
         for item in items:
-            if not item.tpdb_id:
+            # Keyed by whichever id the caller asked for. A title that has been
+            # enriched carries both, so it must answer to the Adult Empire id
+            # the brochure knows it by as well as its TPDB one.
+            keys = [
+                key
+                for key in (item.tpdb_id, item.adultempire_id)
+                if key and (key in wanted or key in wanted_ae)
+            ]
+
+            if not keys:
                 continue
 
             state = item.last_state or item.state
@@ -896,7 +924,7 @@ async def get_library_states(
             entries = list(item.filesystem_entries or [])
             total_size = sum(entry.file_size or 0 for entry in entries) or None
 
-            states[item.tpdb_id] = LibraryStateEntry(
+            entry = LibraryStateEntry(
                 riven_id=item.id,
                 state=state.name if state else States.Unknown.name,
                 title=item.title,
@@ -905,6 +933,9 @@ async def get_library_states(
                 files=files,
                 streams=streams,
             )
+
+            for key in keys:
+                states[key] = entry
 
     return LibraryStatesResponse(states=states)
 

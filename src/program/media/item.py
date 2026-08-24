@@ -62,6 +62,10 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
     tvdb_id: Mapped[str | None]
     tmdb_id: Mapped[str | None]
     tpdb_id: Mapped[str | None]
+    # Adult Empire product id. A second, independent identifier: titles found
+    # in the brochure carry enough metadata to be downloaded without a TPDB
+    # record, and TPDB details are filled in afterwards if a match turns up.
+    adultempire_id: Mapped[str | None]
     site_id: Mapped[str | None]
     site_name: Mapped[str | None]
     title: Mapped[str]
@@ -611,9 +615,15 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
 
     @property
     def is_adult(self) -> bool:
-        """Return True if this item is adult content (has a TPDB id)."""
+        """Whether this item is adult content.
 
-        return bool(self.tpdb_id)
+        Either identifier qualifies. This gates the XXX indexer category, so
+        missing the Adult Empire case would send brochure titles to the
+        scrapers as though they were mainstream films -- searched in the wrong
+        categories, on indexers that do not carry them.
+        """
+
+        return bool(self.tpdb_id or self.adultempire_id)
 
     # Filesystem entry properties
     @property

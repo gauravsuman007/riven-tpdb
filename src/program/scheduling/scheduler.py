@@ -30,6 +30,8 @@ from schemas.tvdb.models.series_airs_days import SeriesAirsDays
 if TYPE_CHECKING:
     from program.program import Program
     from program.services.awards.service import AwardsService
+    from program.services.recommendations.brochure import BrochureService
+    from program.services.recommendations.enrichment import TpdbEnricher
 
 
 class ScheduledFunctionConfig(TypedDict):
@@ -50,6 +52,8 @@ class ProgramScheduler:
         # Built on first use: constructing it eagerly would validate TPDB
         # settings even when award collections are switched off.
         self._awards: "AwardsService | None" = None
+        self._brochure: "BrochureService | None" = None
+        self._tpdb_enricher: "TpdbEnricher | None" = None
 
     def start(self) -> None:
         """Create and start the background scheduler with all jobs registered."""
@@ -98,6 +102,19 @@ class ProgramScheduler:
             }
             scheduled_functions[self._resolve_awards] = {
                 "interval": awards.resolve_interval
+            }
+
+        # Adult Empire brochure: listings are cheap and re-read twice a day;
+        # enrichment is one rate-limited request per title so it runs often in
+        # small batches.
+        brochure = settings_manager.settings.content.brochure
+
+        if brochure.enabled:
+            scheduled_functions[self._sync_brochure] = {
+                "interval": brochure.refresh_interval
+            }
+            scheduled_functions[self._enrich_brochure] = {
+                "interval": brochure.enrich_interval
             }
 
         # Add scheduler processing and monitoring
@@ -218,6 +235,56 @@ class ProgramScheduler:
                 service.request_matched_winners()
         except Exception as exc:
             logger.error(f"AVN award resolution failed: {exc}")
+
+    def _brochure_service(self):
+        from program.services.recommendations.brochure import BrochureService
+
+        if self._brochure is None:
+            self._brochure = BrochureService()
+
+        return self._brochure
+
+    def _sync_brochure(self) -> None:
+        """Re-read Adult Empire's ranked listings."""
+
+        service = self._brochure_service()
+
+        if not service.initialized:
+            return
+
+        try:
+            service.sync_listings()
+        except Exception as exc:
+            logger.error(f"Adult Empire brochure sync failed: {exc}")
+
+    def _enrich_brochure(self) -> None:
+        """Fill in ratings and cast, then backfill TPDB for owned titles.
+
+        The TPDB pass runs here rather than on its own timer because it is
+        purely additive: brochure titles are already downloadable, so there is
+        nothing to hurry.
+        """
+
+        service = self._brochure_service()
+
+        if not service.initialized:
+            return
+
+        try:
+            service.enrich_batch()
+        except Exception as exc:
+            logger.error(f"Adult Empire enrichment failed: {exc}")
+
+        try:
+            from program.services.recommendations.enrichment import TpdbEnricher
+
+            if self._tpdb_enricher is None:
+                self._tpdb_enricher = TpdbEnricher()
+
+            if self._tpdb_enricher.initialized:
+                self._tpdb_enricher.run()
+        except Exception as exc:
+            logger.error(f"TPDB backfill failed: {exc}")
 
     def _retry_library(self) -> None:
         """Retry items that failed to download by emitting events into the EM."""

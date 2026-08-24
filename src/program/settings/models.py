@@ -715,7 +715,60 @@ class AwardsModel(Observable):
     )
 
 
+class BrochureModel(Observable):
+    """Adult Empire's ranked listings, browsed as a brochure.
+
+    Observable rather than Updatable for the same reason as AwardsModel: its
+    jobs are registered directly, so an inherited ``update_interval`` would be
+    a settings field that does nothing.
+    """
+
+    enabled: bool = Field(
+        default=False, description="Mirror Adult Empire's ranked listings"
+    )
+    pages_per_listing: int = Field(
+        default=3,
+        ge=1,
+        le=50,
+        description=(
+            "Pages to read per shelf, 48 titles each. Three is enough to fill "
+            "a browsing row without a long sync."
+        ),
+    )
+    enrich_batch_size: int = Field(
+        default=25,
+        ge=1,
+        le=200,
+        description=(
+            "Titles to fetch full details for per run. Ratings, studio and "
+            "cast only exist on the detail page, which is one request each."
+        ),
+    )
+    refresh_interval: int = Field(
+        default=60 * 60 * 12,
+        ge=3600,
+        description="How often to re-read the ranked listings, in seconds",
+    )
+    enrich_interval: int = Field(
+        default=600,
+        ge=60,
+        description="How often to enrich another batch of titles",
+    )
+    enrich_from_tpdb: bool = Field(
+        default=True,
+        description=(
+            "After a brochure title is in the library, try to attach a TPDB "
+            "record for artwork and tags. Purely additive -- the title is "
+            "already downloadable without it."
+        ),
+    )
+
+
 class ContentModel(Observable):
+    brochure: BrochureModel = Field(
+        default_factory=lambda: BrochureModel(),
+        description="Adult Empire brochure",
+    )
     awards: AwardsModel = Field(
         default_factory=lambda: AwardsModel(),
         description="AVN award collections",

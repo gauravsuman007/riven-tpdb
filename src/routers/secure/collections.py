@@ -41,9 +41,17 @@ class CollectionEntryResponse(BaseModel):
     winner: bool
     tpdb_id: str | None
     tpdb_kind: str | None
+    external_source: str | None
+    external_id: str | None
+    rank: int | None
+    rating: float | None
+    duration_minutes: int | None
     match_state: str
     poster_path: str | None
     requested: bool
+    # Whether this entry can be requested as it stands -- either it resolved to
+    # a TPDB title, or its source gave enough metadata to act on directly.
+    actionable: bool
     media_item_id: int | None
     state: str | None
 
@@ -78,6 +86,35 @@ class RequestResponse(BaseModel):
     message: str
     entry_id: int
     media_item_id: int | None
+
+
+def _entry_response(
+    entry: CollectionEntry, states: dict[int, str]
+) -> "CollectionEntryResponse":
+    """Map one entry to its API shape."""
+
+    return CollectionEntryResponse(
+        id=entry.id,
+        title=entry.title,
+        studio=entry.studio,
+        performers=entry.performers,
+        category=entry.category,
+        year=entry.year,
+        winner=entry.winner,
+        tpdb_id=entry.tpdb_id,
+        tpdb_kind=entry.tpdb_kind,
+        external_source=entry.external_source,
+        external_id=entry.external_id,
+        rank=entry.rank,
+        rating=entry.rating,
+        duration_minutes=entry.duration_minutes,
+        match_state=entry.match_state,
+        poster_path=entry.poster_path,
+        requested=entry.media_item_id is not None,
+        actionable=entry.actionable,
+        media_item_id=entry.media_item_id,
+        state=states.get(entry.media_item_id) if entry.media_item_id else None,
+    )
 
 
 def _summaries(
@@ -179,7 +216,11 @@ def get_collection(
         query = (
             select(CollectionEntry)
             .where(CollectionEntry.collection_id == collection.id)
+            # Ranked listings sort by rank; an award ballot has no rank, so
+            # nulls fall through to the winner/category/title ordering.
             .order_by(
+                CollectionEntry.rank.is_(None),
+                CollectionEntry.rank,
                 CollectionEntry.winner.desc(),
                 CollectionEntry.category,
                 CollectionEntry.title,
@@ -215,25 +256,7 @@ def get_collection(
 
         return CollectionDetail(
             **summary.model_dump(),
-            entries=[
-                CollectionEntryResponse(
-                    id=e.id,
-                    title=e.title,
-                    studio=e.studio,
-                    performers=e.performers,
-                    category=e.category,
-                    year=e.year,
-                    winner=e.winner,
-                    tpdb_id=e.tpdb_id,
-                    tpdb_kind=e.tpdb_kind,
-                    match_state=e.match_state,
-                    poster_path=e.poster_path,
-                    requested=e.media_item_id is not None,
-                    media_item_id=e.media_item_id,
-                    state=states.get(e.media_item_id) if e.media_item_id else None,
-                )
-                for e in entries
-            ],
+            entries=[_entry_response(e, states) for e in entries],
         )
 
 
@@ -262,15 +285,27 @@ def request_entry(
                 media_item_id=entry.media_item_id,
             )
 
-        if not entry.tpdb_id:
+        if not entry.actionable:
             raise HTTPException(
                 status_code=409,
                 detail=f"{entry.title!r} has not been matched to a TPDB title",
             )
 
-        existing = session.execute(
-            select(MediaItem).where(MediaItem.tpdb_id == entry.tpdb_id)
-        ).scalar_one_or_none()
+        # Prefer TPDB when the entry has been resolved: it indexes to richer
+        # metadata. Otherwise go on the source's own id, which is the whole
+        # point of a self-sourced entry -- no TPDB round trip before download.
+        if entry.tpdb_id:
+            existing = session.execute(
+                select(MediaItem).where(MediaItem.tpdb_id == entry.tpdb_id)
+            ).scalar_one_or_none()
+            payload = {"tpdb_id": entry.tpdb_id}
+        else:
+            existing = session.execute(
+                select(MediaItem).where(
+                    MediaItem.adultempire_id == entry.external_id
+                )
+            ).scalar_one_or_none()
+            payload = {"adultempire_id": entry.external_id}
 
         if existing is not None:
             entry.media_item_id = existing.id
@@ -284,7 +319,7 @@ def request_entry(
 
         item = MediaItem(
             {
-                "tpdb_id": entry.tpdb_id,
+                **payload,
                 "requested_by": "collections",
                 "requested_at": datetime.now(),
             }
@@ -302,6 +337,118 @@ def request_entry(
         session.commit()
 
     return RequestResponse(message="Requested", entry_id=entry_id, media_item_id=None)
+
+
+class BrochureShelf(BaseModel):
+    """One row of the brochure: a listing plus the titles to show in it."""
+
+    key: str
+    name: str
+    description: str | None
+    refreshed_at: datetime | None
+    total: int
+    entries: list[CollectionEntryResponse]
+
+
+@router.get("/brochure/shelves", operation_id="get_brochure")
+def brochure(
+    per_shelf: Annotated[int, Query(ge=1, le=100)] = 24,
+    source: Annotated[str, Query()] = "adultempire",
+) -> list[BrochureShelf]:
+    """Every shelf with its top entries, in one request.
+
+    The brochure is a browsing surface, so it is served whole rather than a
+    request per row: four shelves would otherwise be four round trips before
+    the page paints. Entries come back in rank order and are capped per shelf,
+    since a shelf shows a row, not a catalogue.
+    """
+
+    with db_session() as session:
+        collections = (
+            session.execute(
+                select(Collection)
+                .where(Collection.source == source)
+                .order_by(Collection.id)
+            )
+            .scalars()
+            .all()
+        )
+
+        if not collections:
+            return []
+
+        shelves: list[BrochureShelf] = []
+
+        for collection in collections:
+            total = session.scalar(
+                select(func.count(CollectionEntry.id)).where(
+                    CollectionEntry.collection_id == collection.id
+                )
+            )
+
+            entries = (
+                session.execute(
+                    select(CollectionEntry)
+                    .where(CollectionEntry.collection_id == collection.id)
+                    .order_by(
+                        CollectionEntry.rank.is_(None),
+                        CollectionEntry.rank,
+                        CollectionEntry.title,
+                    )
+                    .limit(per_shelf)
+                )
+                .scalars()
+                .all()
+            )
+
+            item_ids = [e.media_item_id for e in entries if e.media_item_id]
+            states: dict[int, str] = {}
+
+            if item_ids:
+                for item_id, state in session.execute(
+                    select(MediaItem.id, MediaItem.last_state).where(
+                        MediaItem.id.in_(item_ids)
+                    )
+                ).all():
+                    states[item_id] = state.value if state else "Unknown"
+
+            shelves.append(
+                BrochureShelf(
+                    key=collection.key,
+                    name=collection.name,
+                    description=collection.description,
+                    refreshed_at=collection.refreshed_at,
+                    total=total or 0,
+                    entries=[_entry_response(e, states) for e in entries],
+                )
+            )
+
+        return shelves
+
+
+@router.get("/entries/{entry_id}", operation_id="get_collection_entry")
+def get_entry(entry_id: Annotated[int, Path()]) -> CollectionEntryResponse:
+    """One entry, for a brochure detail page."""
+
+    with db_session() as session:
+        entry = session.get(CollectionEntry, entry_id)
+
+        if entry is None:
+            raise HTTPException(status_code=404, detail="No such entry")
+
+        states: dict[int, str] = {}
+
+        if entry.media_item_id:
+            row = session.execute(
+                select(MediaItem.id, MediaItem.last_state).where(
+                    MediaItem.id == entry.media_item_id
+                )
+            ).first()
+
+            if row:
+                states[row[0]] = row[1].value if row[1] else "Unknown"
+
+        return _entry_response(entry, states)
 
 
 @router.get("/{key}/categories", operation_id="list_collection_categories")

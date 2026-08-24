@@ -16,11 +16,17 @@ from loguru import logger
 from PTT import parse_title  # pyright: ignore[reportUnknownVariableType]
 from pydantic import BaseModel, Field, Json, RootModel
 from RTN import ParsedData
+from sqlalchemy import select
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
 
 from program.db import db_functions
 from program.db.db import db_session
+from program.media.collection import CollectionEntry
+from program.services.indexers.adultempire_indexer import (
+    SOURCE as ADULTEMPIRE_SOURCE,
+    build_movie as build_adultempire_movie,
+)
 from program.media.item import (
     Episode,
     MediaItem,
@@ -417,6 +423,7 @@ def resolve_media_item(
     tvdb_id: str | None = None,
     imdb_id: str | None = None,
     tpdb_id: str | None = None,
+    adultempire_id: str | None = None,
     media_type: Literal["movie", "tv"] | None = None,
     raise_on_not_found: bool = True,
 ) -> MediaItem | None:
@@ -435,6 +442,11 @@ def resolve_media_item(
     if item_id:
         item = db_functions.get_item_by_id(item_id, session=session)
 
+    if not item and adultempire_id:
+        item = session.execute(
+            select(MediaItem).where(MediaItem.adultempire_id == adultempire_id)
+        ).scalars().first()
+
     if not item and (tmdb_id or tvdb_id or imdb_id or tpdb_id):
         try:
             item = db_functions.get_item_by_external_id(
@@ -446,6 +458,21 @@ def resolve_media_item(
             )
         except ValueError:
             pass
+
+    # An Adult Empire title that is not in the library yet: build a transient
+    # Movie from the cached brochure entry. This is what lets the candidates
+    # list work on a brochure page before anything has been requested, and it
+    # costs no network call because the brochure already holds the metadata.
+    if not item and adultempire_id:
+        entry = session.execute(
+            select(CollectionEntry).where(
+                CollectionEntry.external_source == ADULTEMPIRE_SOURCE,
+                CollectionEntry.external_id == adultempire_id,
+            )
+        ).scalars().first()
+
+        if entry is not None:
+            item = build_adultempire_movie(entry)
 
     # If item not found locally, try to create it via Indexer if external IDs are provided
     if not item and (tmdb_id or tvdb_id or imdb_id or tpdb_id):
@@ -577,6 +604,10 @@ def scrape_item(
         str | None,
         Query(description="The TPDB UUID of the media item"),
     ] = None,
+    adultempire_id: Annotated[
+        str | None,
+        Query(description="The Adult Empire product id of the media item"),
+    ] = None,
     media_type: Annotated[
         Literal["movie", "tv"] | None,
         Query(description="The media type"),
@@ -640,6 +671,9 @@ def scrape_item(
                 # is the mode the UI actually uses. Not tied to a media_type:
                 # a TPDB uuid may name either a movie or a scene.
                 tpdb_id,
+                # Brochure titles carry no TPDB id at all, and the candidates
+                # list has to work before one has been requested.
+                adultempire_id,
             ]
         ):
             raise HTTPException(status_code=400, detail="No valid ID provided")
@@ -653,6 +687,7 @@ def scrape_item(
                     tvdb_id=tvdb_id,
                     imdb_id=imdb_id,
                     tpdb_id=tpdb_id,
+                    adultempire_id=adultempire_id,
                     media_type=target_media_type,
                 )
 
@@ -778,6 +813,7 @@ def scrape_item(
             tvdb_id=tvdb_id,
             imdb_id=imdb_id,
             tpdb_id=tpdb_id,
+            adultempire_id=adultempire_id,
             media_type=target_media_type,
         )
         assert item
@@ -857,6 +893,10 @@ async def start_manual_session(
         str | None,
         Query(description="The TPDB UUID of the media item"),
     ] = None,
+    adultempire_id: Annotated[
+        str | None,
+        Query(description="The Adult Empire product id of the media item"),
+    ] = None,
     media_type: Annotated[
         Literal["movie", "tv"] | None,
         Query(description="The media type"),
@@ -891,6 +931,7 @@ async def start_manual_session(
             tvdb_id=tvdb_id,
             imdb_id=imdb_id,
             tpdb_id=tpdb_id,
+            adultempire_id=adultempire_id,
             media_type=target_media_type,
         )
 
@@ -1342,7 +1383,6 @@ async def auto_scrape(
                 raise HTTPException(status_code=400, detail="Item is not a TV show")
 
             # Re-query with eager loading to ensure seasons and episodes are available
-            from sqlalchemy import select
             from sqlalchemy.orm import selectinload
 
             item = session.execute(

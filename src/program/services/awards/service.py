@@ -217,7 +217,16 @@ class AwardsService:
             pending = (
                 session.execute(
                     select(CollectionEntry)
-                    .where(CollectionEntry.match_state == MATCH_PENDING)
+                    .join(Collection)
+                    # Scoped to this source on purpose. Other catalogues are
+                    # self-sourced and owe TPDB nothing; without this filter a
+                    # future source that used "pending" would silently have its
+                    # entries resolved here, spending the rate limit on lookups
+                    # nobody asked for.
+                    .where(
+                        Collection.source == SOURCE,
+                        CollectionEntry.match_state == MATCH_PENDING,
+                    )
                     .order_by(
                         CollectionEntry.winner.desc(),
                         CollectionEntry.year.desc(),
@@ -396,7 +405,9 @@ class AwardsService:
             eligible = (
                 session.execute(
                     select(CollectionEntry)
+                    .join(Collection)
                     .where(
+                        Collection.source == SOURCE,
                         CollectionEntry.winner.is_(True),
                         CollectionEntry.match_state == MATCH_MATCHED,
                         CollectionEntry.media_item_id.is_(None),

@@ -393,9 +393,16 @@ def parse_results(
 
 
 def _is_adult_item(item: MediaItem) -> bool:
-    """Whether this item came from TPDB, and so expects adult releases."""
+    """Whether this item is adult, and so expects adult releases.
 
-    return bool(getattr(item, "tpdb_id", None))
+    Covers both identifiers: an Adult Empire title has no TPDB id but is every
+    bit as adult, and treating it as mainstream would apply the wrong match
+    rules to its releases.
+    """
+
+    return bool(
+        getattr(item, "tpdb_id", None) or getattr(item, "adultempire_id", None)
+    )
 
 
 def _match_evidence(item: MediaItem, torrent: Torrent) -> MatchEvidence:

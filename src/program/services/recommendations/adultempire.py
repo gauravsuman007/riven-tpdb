@@ -56,12 +56,19 @@ LISTINGS = {
 
 ITEMS_PER_PAGE = 48
 
-_CARD = re.compile(
-    r'<div class="product-card" id="card(?P<id>\d+)">.*?'
-    r'<div class="product-details__item-title"><a href="(?P<href>[^"]+)"[^>]*\s*'
-    r'title="(?P<title>[^"]*)"',
+# Cards are located first and their fields extracted from the slice, rather
+# than matched in one expression: an optional poster group inside a lazy match
+# is simply skipped by the engine, which silently yielded no posters at all.
+_CARD_START = re.compile(r'<div class="product-card" id="card(\d+)">')
+_CARD_TITLE = re.compile(
+    r'<div class="product-details__item-title"><a href="([^"]+)"[^>]*\s*title="([^"]*)"',
     re.S,
 )
+_CARD_POSTER = re.compile(r'src="(https://[^"]+?/products/[^"]+?\.jpg)"')
+
+# Boxcovers come in sized variants; "m" is the grid thumbnail and "h" the large
+# one. Asking for the large art up front avoids a second fetch per title.
+_POSTER_SIZE = re.compile(r"(\d+)m\.jpg$")
 _RATING = re.compile(r'rating-stars-avg">\s*([\d.]+)\s*<')
 _STUDIO = re.compile(r'/\d+/studio/[a-z0-9-]+\.html"[^>]*>\s*([^<]+?)\s*</a>')
 _YEAR = re.compile(r"<small>Production Year:</small>\s*(\d{4})")
@@ -84,6 +91,7 @@ class RankedTitle:
 
     # Filled in by :func:`fetch_detail`; all optional because a listing alone
     # cannot supply them.
+    poster: str | None = None
     studio: str | None = None
     year: int | None = None
     released: str | None = None
@@ -185,39 +193,57 @@ class AdultEmpireClient:
 def parse_listing(html: str, listing: str, start_rank: int = 1) -> list[RankedTitle]:
     """Extract ranked items from a listing page.
 
-    Rank is position, which is the only place the ordering exists -- the page
-    carries no explicit rank number.
+    Rank is position: the page carries no explicit rank number anywhere.
     """
 
     out: list[RankedTitle] = []
     seen: set[str] = set()
+    starts = [(m.start(), m.group(1)) for m in _CARD_START.finditer(html)]
 
-    for match in _CARD.finditer(html):
-        product_id = match.group("id")
-
+    for index, (offset, product_id) in enumerate(starts):
         if product_id in seen:
             continue
 
-        href = match.group("href").strip()
-        slug = _MOVIE_HREF.match(href)
+        end = starts[index + 1][0] if index + 1 < len(starts) else len(html)
+        block = html[offset:end]
+        title_match = _CARD_TITLE.search(block)
 
-        # Listings mix in sex toys and performer cards; only movies have the
-        # -porn-movies slug.
-        if not slug:
+        if not title_match:
             continue
+
+        href = title_match.group(1).strip()
+        # Listings mix in sex toys and performer cards; only movies carry the
+        # -porn-movies slug.
+        if not _MOVIE_HREF.match(href):
+            continue
+
+        poster = None
+
+        for candidate in _CARD_POSTER.findall(block):
+            # Blank placeholder gifs stand in for lazy-loaded covers.
+            if "blank" not in candidate:
+                poster = large_poster(candidate)
+                break
 
         seen.add(product_id)
         out.append(
             RankedTitle(
                 product_id=product_id,
-                title=_unescape(match.group("title").strip()),
+                title=_unescape(title_match.group(2).strip()),
                 rank=start_rank + len(out),
                 listing=listing,
                 url=href,
+                poster=poster,
             )
         )
 
     return out
+
+
+def large_poster(url: str) -> str:
+    """Upgrade a grid thumbnail URL to the large boxcover."""
+
+    return _POSTER_SIZE.sub(r"\1h.jpg", url)
 
 
 def parse_detail(html: str, item: RankedTitle) -> RankedTitle:
@@ -264,6 +290,14 @@ def parse_detail(html: str, item: RankedTitle) -> RankedTitle:
             cast.append(clean)
 
     item.performers = cast
+
+    if not item.poster:
+        cover = re.search(
+            r'src="(https://[^"]+?/products/[^"]+?\.jpg)"', html
+        )
+
+        if cover:
+            item.poster = large_poster(cover.group(1))
 
     anchor = html.find('name="alsobought"')
 

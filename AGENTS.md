@@ -154,6 +154,48 @@ Whisparr dependency. Regular movies/TV must never appear.
 - No JSON-LD anywhere; parsing is regex over the card and detail markup.
 - Tests: `src/tests/test_adultempire.py` (stdlib only, trimmed fixtures).
 
+## The brochure (Adult Empire as a first-class source)
+- `/brochure` is a browsing surface: one horizontally scrolling shelf per
+  ranked listing, served whole by `GET /collections/brochure/shelves` so the
+  page paints in one round trip rather than one per row.
+- Listings are MIRRORED locally, not fetched on page load -- the client is rate
+  limited to 1 req/s, so a live fetch per shelf would make the page unusable.
+  `services/recommendations/brochure.py` syncs listings (cheap, 48/request) and
+  enriches details (one request per title, resumable: `rating is null` is the
+  marker).
+- KEY ARCHITECTURAL POINT: a brochure title needs no TPDB record to be usable.
+  `MediaItem.adultempire_id` is a second, independent identifier, and
+  `services/indexers/adultempire_indexer.py` builds a full `Movie` from the
+  cached entry with ZERO network calls -- title, studio (as `site_name`), year,
+  release date, runtime and cast are all the scrapers need. TPDB enrichment
+  (`recommendations/enrichment.py`) runs later and is purely additive.
+- `IndexerService` routes on the identifier: `tpdb_id` first (richer), then
+  `adultempire_id`. TPDB wins when both are present so a reindex never falls
+  back to the sparser brochure data.
+- TRAP: `MediaItem.is_adult` and `scrapers/shared._is_adult_item` must BOTH
+  accept `adultempire_id`. They gate the Newznab XXX category; missing the
+  Adult Empire case sends brochure titles to the indexers as mainstream films,
+  in the wrong categories, and they silently find nothing.
+- TRAP: enrichment must request `"/{id}/"`, NOT `"/{id}/{slug}.html"`. A wrong
+  slug still answers 200 but serves a page with none of the product markup, so
+  enrichment quietly finds nothing at all.
+- The detail page at `/brochure/[id]` carries the same controls as a TPDB
+  title: Play, Request, candidate releases (`ItemManualScrape`, addressed by
+  `adultempire_id`) and direct-site search (`DirectSearch`, which already
+  matched on title alone). `resolve_media_item` builds a transient Movie from
+  the cached entry, so candidates list BEFORE anything is requested.
+- `GET /items/library_states` takes `adultempire_ids` as well as `tpdb_ids`, so
+  the brochure page renders files, sizes and releases from the same shape the
+  TPDB page uses. An enriched title answers to both ids.
+- `CollectionEntry` gained `external_source`/`external_id` (identity at the
+  source), `rank`, `rating`, `duration_minutes`, `released_at`. `match_state`
+  is `self_sourced` for these: distinct from `matched`, which asserts a TPDB
+  record was actually found. `entry.actionable` is the requestable test.
+- The AVN resolver must stay scoped to `Collection.source == "avn"` or it will
+  burn TPDB calls resolving brochure entries that never needed it.
+- `providers/riven.ts` is OpenAPI-generated; the new query params were added to
+  it by hand. Regenerating against a running backend produces the same thing.
+
 ## Sources evaluated and rejected for ranking/awards
 - TPDB has no ranking of any kind: `rating` is 0 on every record, `order_by`
   and `sort` are accepted but ignored, and there is no popularity or view field.
