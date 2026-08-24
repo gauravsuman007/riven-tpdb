@@ -122,6 +122,20 @@ check("empty release title is safe", not ev("", "Alpha Male", site="Pure Taboo")
 check("missing metadata does not raise",
       ev("Anything At All", None, site=None, performers=None, aired=None) is not None)
 
+print("\nscene filenames RTN parses as the site")
+# The exact release that vanished from "Deny It All You Want": RTN parses the
+# leading site as the title and scores 0.0 against the real one, so
+# remove_trash discarded it before this module could judge it.
+e = ev("PureTaboo.21.07.13.Vanna.Bardot.Deny.It.All.You.Want.XXX.1080p.HEVC.x265.PRT",
+       "Deny It All You Want", site="Pure Taboo", performers=["Vanna Bardot"],
+       aired=datetime(2021, 7, 13))
+check("site-led scene filename is accepted on its own evidence", e.accepted,
+      f"reasons={e.reasons}")
+check("  ...on all four signals", e.site and e.date and e.performers and e.title_ratio == 1.0,
+      f"site={e.site} date={e.date} performers={e.performers} title={e.title_ratio}")
+check("site-led filename outscores a bare title match",
+      e.score > ev("Deny It All You Want", "Deny It All You Want", site="Pure Taboo").score)
+
 print("\nordering signal")
 strong = ev("PureTaboo 20 10 06 Whitney Wright Alpha Male XXX 1080p", "Alpha Male",
             site="Pure Taboo", performers=["Whitney Wright"], aired=datetime(2020, 10, 6))

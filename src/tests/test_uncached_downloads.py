@@ -74,6 +74,11 @@ def make_downloader(services, poll=10, max_wait=24):
         uncached_poll_minutes=poll,
         uncached_max_wait_hours=max_wait,
         _uncached_since={},
+        # The stall counter the give-up-on-dead-torrents path keeps between
+        # polls. Absent here, every test that reached that path died on an
+        # AttributeError rather than exercising it.
+        _uncached_stalled={},
+        UNCACHED_STALL_POLLS=Downloader.UNCACHED_STALL_POLLS,
         UNCACHED_STREAMS_PER_PASS=3,
     )
     stub._request_uncached = Downloader._request_uncached.__get__(stub, Downloader)
@@ -83,8 +88,13 @@ def make_downloader(services, poll=10, max_wait=24):
     return stub
 
 
-def _stream(infohash="abc123", raw_title="Some Release 1080p"):
-    return SimpleNamespace(infohash=infohash, raw_title=raw_title)
+def _stream(infohash="abc123", raw_title="Some Release 1080p", seeders=None):
+    # `seeders` defaults to None -- unknown -- which is what a stream scraped
+    # before the column existed reports, and what the sorter must not read as
+    # zero.
+    return SimpleNamespace(
+        infohash=infohash, raw_title=raw_title, seeders=seeders
+    )
 
 
 def _item():

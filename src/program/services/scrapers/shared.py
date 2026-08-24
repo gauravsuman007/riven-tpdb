@@ -144,6 +144,28 @@ def parse_results(
         else {}
     )
 
+    # RTN's `remove_trash` does two jobs at once: it drops releases matching
+    # known trash patterns, and it drops releases whose parsed title is not
+    # close enough to the one we asked for. The second is actively wrong for
+    # adult releases. A scene filename leads with the site, so RTN parses
+    # "PureTaboo.21.07.13.Vanna.Bardot.Deny.It.All.You.Want.XXX.1080p" as the
+    # title "PureTaboo" and scores it 0.0 against "Deny It All You Want" --
+    # discarding the best available release of that title before the adult
+    # matcher, which scores the same release 9.5 on site, date, performer and
+    # a 5/5 title match, ever gets to see it.
+    #
+    # So for adult items the title check is skipped and `data.trash` is
+    # enforced by hand below, keeping the pattern filter while letting
+    # `_filter_adult_torrents` be the thing that decides identity. It demands
+    # corroboration from site, cast or date, which is a far stronger test than
+    # a Levenshtein ratio against a filename that never contained the title in
+    # the first place.
+    adult_item = _is_adult_item(item)
+    remove_trash = (
+        False if (manual or adult_item) else active_settings.options["remove_all_trash"]
+    )
+    enforce_trash_flag = adult_item and not manual
+
     logger.debug(f"Processing {len(results)} results for {item.log_string}")
 
     for infohash, result in results.items():
@@ -157,11 +179,16 @@ def parse_results(
                 raw_title=raw_title,
                 infohash=infohash,
                 correct_title=correct_title,
-                remove_trash=active_settings.options[
-                    "remove_all_trash"
-                ] if not manual else False,
+                remove_trash=remove_trash,
                 aliases=aliases,
             )
+
+            if enforce_trash_flag and torrent.data.trash:
+                # The half of remove_trash worth keeping for adult releases.
+                logger.trace(
+                    f"Skipping trash release for {item.log_string}: {raw_title}"
+                )
+                continue
 
             if isinstance(item, Movie):
                 # If movie item, disregard torrents with seasons and episodes
@@ -311,7 +338,6 @@ def parse_results(
         logger.debug(f"Found {len(torrents)} streams for {item.log_string}")
 
         evidence_by_hash = dict[str, MatchEvidence]()
-        adult_item = _is_adult_item(item)
 
         if adult_item:
             torrents, evidence_by_hash = _filter_adult_torrents(item, torrents)
