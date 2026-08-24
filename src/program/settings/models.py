@@ -1046,10 +1046,58 @@ class TpdbModel(Observable):
         "recently used entries are evicted once this is exceeded.",
     )
     cache_ttl_seconds: int = Field(
-        default=300,
+        default=6 * 60 * 60,
         ge=0,
         description="How long a cached TPDB response stays fresh, in seconds. "
-        "0 disables expiry and relies on the size limit alone.",
+        "0 disables expiry and relies on the size limit alone. TPDB catalogue "
+        "records barely change, and its /similar endpoint answers in 10-16 "
+        "seconds, so a short TTL is paid for in page load time rather than "
+        "freshness.",
+    )
+
+
+class LocalAccessModel(Observable):
+    """Skip the login screen for clients on your own network.
+
+    This is an authentication bypass, so it is off by default and the networks
+    it trusts must be stated explicitly -- there is no "detect my LAN" mode,
+    because guessing wrong here means guessing the whole library open.
+
+    The frontend applies this against the address of the socket the request
+    arrived on. If Riven sits behind a reverse proxy, every request appears to
+    come from the proxy, so either leave this off or trust nothing wider than
+    the proxy's own address and accept that the proxy is then the only thing
+    authenticating anyone.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Let clients on the trusted networks below use the web UI without "
+            "signing in. This is an authentication bypass -- anything that can "
+            "reach the site from those addresses gets full access."
+        ),
+    )
+    networks: list[str] = Field(
+        default_factory=lambda: [
+            "127.0.0.1/32",
+            "::1/128",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+        ],
+        description=(
+            "CIDR ranges allowed to skip the login screen. Bare addresses are "
+            "accepted and treated as a single host."
+        ),
+    )
+    username: str = Field(
+        default="",
+        description=(
+            "The existing account trusted clients are signed in as. Leave "
+            "empty to use the first admin account. Permissions still apply -- "
+            "this decides who they are, not that they are unrestricted."
+        ),
     )
 
 
@@ -1074,6 +1122,10 @@ class AppModel(Observable):
     )
     tracemalloc: bool = Field(
         default=False, description="Enable Python memory tracking (debug)"
+    )
+    local_access: LocalAccessModel = Field(
+        default_factory=lambda: LocalAccessModel(),
+        description="Passwordless access for trusted local networks",
     )
     filesystem: FilesystemModel = Field(
         default_factory=lambda: FilesystemModel(),

@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from program.media.item import Episode, MediaItem, Season, Show
 from program.services.scrapers.base import ScraperService
+from program.services.scrapers.results import ScrapeResult
 from program.settings import settings_manager
 from program.utils.request import SmartSession, get_hostname_from_url
 from program.settings.models import ZileanConfig
@@ -75,7 +76,7 @@ class Zilean(ScraperService[ZileanConfig]):
             logger.error(f"Zilean failed to initialize: {e}")
             return False
 
-    def run(self, item: MediaItem) -> dict[str, str]:
+    def run(self, item: MediaItem) -> dict[str, ScrapeResult]:
         """Scrape the Zilean site for the given media items and update the object with scraped items"""
 
         try:
@@ -109,7 +110,7 @@ class Zilean(ScraperService[ZileanConfig]):
             episode=episode,
         )
 
-    def scrape(self, item: MediaItem) -> dict[str, str]:
+    def scrape(self, item: MediaItem) -> dict[str, ScrapeResult]:
         """Wrapper for `Zilean` scrape method"""
 
         url = f"{self.settings.url}/dmm/filtered"
@@ -133,13 +134,18 @@ class Zilean(ScraperService[ZileanConfig]):
             logger.log("NOT_FOUND", f"No streams found for {item.log_string}")
             return {}
 
-        torrents = dict[str, str]()
+        torrents = dict[str, ScrapeResult]()
 
         for result in data:
             if not result.raw_title or not result.info_hash:
                 continue
 
-            torrents[result.info_hash] = result.raw_title
+            # Zilean indexes DebridMediaManager hash lists, not a tracker --
+            # there is no swarm behind a result, so seeders and size are
+            # genuinely unknown rather than merely unreported.
+            torrents[result.info_hash] = ScrapeResult(
+                raw_title=result.raw_title, indexer="Zilean"
+            )
 
         if torrents:
             logger.log(

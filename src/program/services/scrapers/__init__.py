@@ -14,6 +14,7 @@ from program.media.stream import Stream
 from program.services.scrapers.base import ScraperService
 from program.services.scrapers.jackett import Jackett
 from program.services.scrapers.prowlarr import Prowlarr
+from program.services.scrapers.results import ScrapeResult
 from program.services.scrapers.shared import parse_results
 from program.services.scrapers.zilean import Zilean
 from program.settings import settings_manager
@@ -139,7 +140,7 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
             manual: If True, bypass content filters for manual scraping.
         """
 
-        results = dict[str, str]()
+        results = dict[str, ScrapeResult]()
         results_lock = threading.RLock()
 
         def run_service(svc: "ScraperService[Observable]", item: MediaItem) -> None:
@@ -215,8 +216,8 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
         Yields:
             Tuples of (service_name, parsed_streams_dict) as each service completes.
         """
-        results_queue: Queue[tuple[str, dict[str, str]]] = Queue()
-        all_raw_results = dict[str, str]()
+        results_queue: Queue[tuple[str, dict[str, ScrapeResult]]] = Queue()
+        all_raw_results = dict[str, ScrapeResult]()
         results_lock = threading.RLock()
 
         def run_service_streaming(

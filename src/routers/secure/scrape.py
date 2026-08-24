@@ -57,6 +57,12 @@ class Stream(BaseModel):
     parsed_data: ParsedData
     rank: int
     lev_ratio: float
+    # As the indexer reported them. None means the indexer did not say, which
+    # for seeders is meaningfully different from saying zero.
+    seeders: int | None = None
+    leechers: int | None = None
+    size: int | None = None
+    indexer: str | None = None
     is_cached: bool = False
 
 
@@ -725,6 +731,10 @@ def scrape_item(
                                         parsed_data=s.parsed_data,
                                         rank=s.rank,
                                         lev_ratio=s.lev_ratio,
+                                        seeders=s.seeders,
+                                        leechers=s.leechers,
+                                        size=s.size,
+                                        indexer=s.indexer,
                                     )
                                     all_streams[infohash] = stream_obj
                                     new_streams[infohash] = stream_obj
@@ -801,6 +811,10 @@ def scrape_item(
                     parsed_data=s.parsed_data,
                     rank=s.rank,
                     lev_ratio=s.lev_ratio,
+                    seeders=s.seeders,
+                    leechers=s.leechers,
+                    size=s.size,
+                    indexer=s.indexer,
                     is_cached=s.is_cached,
                 )
                 for s in streams.values()

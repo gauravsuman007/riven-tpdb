@@ -15,6 +15,7 @@ from typing import cast
 
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.media.stream import Stream
+from program.services.scrapers.results import ScrapeResult
 from program.settings import settings_manager
 from program.services.scrapers.adult_matching import MatchEvidence, evaluate
 from program.settings.models import RTNSettingsModel, ScraperModel
@@ -109,7 +110,7 @@ def _volume_mismatch(correct_title: str, raw_title: str) -> bool:
 
 def parse_results(
     item: MediaItem,
-    results: dict[str, str],
+    results: dict[str, ScrapeResult],
     log_msg: bool = True,
     manual: bool = False,
 ) -> dict[str, Stream]:
@@ -117,7 +118,7 @@ def parse_results(
 
     Args:
         item: The media item to parse results for.
-        results: Dict mapping infohash to raw title.
+        results: Dict mapping infohash to what the indexer reported.
         manual: If True, bypass content filters (for manual scraping).
     """
 
@@ -145,9 +146,11 @@ def parse_results(
 
     logger.debug(f"Processing {len(results)} results for {item.log_string}")
 
-    for infohash, raw_title in results.items():
+    for infohash, result in results.items():
         if infohash in processed_infohashes:
             continue
+
+        raw_title = result.raw_title
 
         try:
             torrent = rtn_instance.rank(
@@ -329,8 +332,15 @@ def parse_results(
         if adult_item:
             ordered = _order_adult_torrents(ordered, evidence_by_hash)
 
+        # Carry the indexer's own numbers onto the stream. `results` is keyed
+        # by the infohash as the scraper gave it, which is not always the same
+        # case as RTN's, so look both up rather than silently losing the data.
+        def _reported(infohash: str) -> ScrapeResult | None:
+            return results.get(infohash) or results.get(infohash.lower())
+
         torrent_stream_map = {
-            torrent.infohash.lower(): Stream(torrent) for torrent in ordered
+            torrent.infohash.lower(): Stream(torrent, _reported(torrent.infohash))
+            for torrent in ordered
         }
 
         logger.debug(

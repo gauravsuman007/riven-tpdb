@@ -8,6 +8,7 @@ from requests import ReadTimeout
 
 from program.media.item import MediaItem, Movie
 from program.services.scrapers.base import ScraperService
+from program.services.scrapers.results import ScrapeResult
 from program.settings import settings_manager
 from program.utils.request import SmartSession, get_hostname_from_url
 from program.utils.torrent import extract_infohash, normalize_infohash
@@ -24,6 +25,12 @@ class JackettScrapeResponse(BaseModel):
         link: str | None = Field(alias="Link")
         info_hash: str | None = Field(alias="InfoHash")
         magnet_uri: str | None = Field(alias="MagnetUri")
+        # Torznab reports these on most indexers but not all, so every one is
+        # optional and stays unknown rather than defaulting to zero.
+        seeders: int | None = Field(alias="Seeders", default=None)
+        leechers: int | None = Field(alias="Peers", default=None)
+        size: int | None = Field(alias="Size", default=None)
+        tracker: str | None = Field(alias="Tracker", default=None)
 
     results: list[JackettTorrentResult] = Field(alias="Results")
 
@@ -84,7 +91,7 @@ class Jackett(ScraperService[JackettConfig]):
 
         return False
 
-    def run(self, item: MediaItem) -> dict[str, str]:
+    def run(self, item: MediaItem) -> dict[str, ScrapeResult]:
         """
         Scrape the Jackett site for the given media items
         and update the object with scraped streams
@@ -100,10 +107,10 @@ class Jackett(ScraperService[JackettConfig]):
 
         return {}
 
-    def scrape(self, item: MediaItem) -> dict[str, str]:
+    def scrape(self, item: MediaItem) -> dict[str, ScrapeResult]:
         """Scrape the given media item"""
 
-        torrents = dict[str, str]()
+        torrents = dict[str, ScrapeResult]()
         query = item.log_string
 
         # Adult scenes are indexed by exact title; appending the release year
@@ -127,6 +134,25 @@ class Jackett(ScraperService[JackettConfig]):
                 tuple[JackettScrapeResponse.JackettTorrentResult, str]
             ]()
 
+            def described(
+                result: JackettScrapeResponse.JackettTorrentResult,
+            ) -> ScrapeResult:
+                """What Jackett reported about a release."""
+
+                return ScrapeResult(
+                    raw_title=result.title,
+                    seeders=result.seeders,
+                    # Torznab's "Peers" counts everyone in the swarm, seeders
+                    # included, so the leecher count is the difference.
+                    leechers=(
+                        max(result.leechers - (result.seeders or 0), 0)
+                        if result.leechers is not None
+                        else None
+                    ),
+                    size=result.size,
+                    indexer=result.tracker,
+                )
+
             # First pass: extract infohashes from available fields and collect URLs that need fetching
             for result in data.results:
                 infohash = None
@@ -145,7 +171,7 @@ class Jackett(ScraperService[JackettConfig]):
 
                 elif infohash:
                     # We already have an infohash, add it directly
-                    torrents[infohash] = result.title
+                    torrents[infohash] = described(result)
 
             # Fetch URLs in parallel
             if urls_to_fetch:
@@ -174,7 +200,7 @@ class Jackett(ScraperService[JackettConfig]):
                             infohash = future.result()
 
                             if infohash:
-                                torrents[infohash] = title
+                                torrents[infohash] = described(result)
                         except Exception as e:
                             logger.debug(
                                 f"Failed to get infohash from Link for {title}: {e}"

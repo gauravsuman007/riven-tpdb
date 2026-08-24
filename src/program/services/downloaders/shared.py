@@ -190,12 +190,24 @@ def sort_streams_by_quality(
     `preferred_hash` pins one release to the front. A user who picks a specific
     candidate on the detail page means it, so the choice outranks quality --
     otherwise picking a 720p release when a 1080p one exists would do nothing.
+
+    A release the indexer said has no seeders sorts behind everything else. It
+    is not excluded: providers cache torrents independently of the public swarm,
+    so a 0-seeder release can still be an instant hit -- but it is the last
+    thing worth waiting on, and trying those first is what made a title with
+    nine candidates look permanently stuck.
     """
+
+    def has_swarm(stream: Stream) -> bool:
+        # Unknown is not the same as zero: an indexer that reports no seeder
+        # count at all must not have its whole catalogue demoted.
+        return stream.seeders is None or stream.seeders > 0
 
     return sorted(
         streams,
         key=lambda stream: (
             stream.infohash == preferred_hash,
+            has_swarm(stream),
             get_resolution(stream).value,
             stream.rank,
         ),

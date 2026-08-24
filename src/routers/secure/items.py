@@ -43,6 +43,10 @@ class SortOrderEnum(str, Enum):
         return "title" if self.value.startswith("title") else "date"
 
 
+# How many candidate releases a detail view gets by rank. Releases that were
+# tried, pinned or downloaded are always shown on top of this.
+STREAM_LIST_LIMIT = 25
+
 router = APIRouter(
     prefix="/items",
     tags=["items"],
@@ -639,15 +643,27 @@ class LibraryFile(BaseModel):
 class LibraryStream(BaseModel):
     """A release found for an item.
 
-    There is no size here because Riven does not record one: indexers report
-    sizes inconsistently and the value is not stored on the stream, so claiming
-    a size would mean inventing it.
+    The swarm and size figures are what the indexer claimed at scrape time, not
+    a live measurement -- they are reported as `None` when the indexer did not
+    say, because "unknown seeders" and "no seeders" mean very different things.
     """
 
     infohash: Annotated[str, Field(description="Infohash, used to select this release")]
     raw_title: Annotated[str, Field(description="Release title as the indexer gave it")]
     resolution: Annotated[str | None, Field(description="Parsed resolution, when known")]
     rank: Annotated[int, Field(description="RTN rank; higher is preferred")]
+    seeders: Annotated[
+        int | None, Field(description="Seeders the indexer reported, when it did")
+    ]
+    leechers: Annotated[
+        int | None, Field(description="Leechers the indexer reported, when it did")
+    ]
+    size: Annotated[
+        int | None, Field(description="Size in bytes the indexer reported, when it did")
+    ]
+    indexer: Annotated[
+        str | None, Field(description="Indexer this release came from, when known")
+    ]
     is_active: Annotated[
         bool,
         Field(description="Whether this is the release that was actually downloaded"),
@@ -759,6 +775,19 @@ def _library_streams(item: MediaItem) -> list[LibraryStream]:
         by_hash.values(), key=lambda stream: stream.rank or 0, reverse=True
     )
 
+    # Truncate by rank, but never let the cap hide a release that was actually
+    # tried. A blacklisted release is precisely the one a user comes here to
+    # retry, and the pinned or downloaded one has to be visible to be changed.
+    kept = streams[:STREAM_LIST_LIMIT]
+    kept_hashes = {stream.infohash for stream in kept}
+    must_show = blacklisted | {h for h in (active_hash, preferred_hash) if h}
+
+    kept.extend(
+        stream
+        for stream in streams[STREAM_LIST_LIMIT:]
+        if stream.infohash in must_show and stream.infohash not in kept_hashes
+    )
+
     return [
         LibraryStream(
             infohash=stream.infohash,
@@ -771,11 +800,15 @@ def _library_streams(item: MediaItem) -> list[LibraryStream]:
             ),
             raw_title=stream.raw_title,
             rank=stream.rank or 0,
+            seeders=stream.seeders,
+            leechers=stream.leechers,
+            size=stream.size,
+            indexer=stream.indexer,
             is_active=bool(active_hash and stream.infohash == active_hash),
             is_preferred=bool(preferred_hash and stream.infohash == preferred_hash),
             is_blacklisted=stream.infohash in blacklisted,
         )
-        for stream in streams[:25]
+        for stream in kept
     ]
 
 

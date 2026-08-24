@@ -238,8 +238,15 @@ class TpdbApi:
         digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
         return self._cache_dir / f"{digest}.json"
 
-    def _cache_get(self, url: str) -> dict[str, Any] | None:
-        """Return a cached body for `url`, or None when absent or stale."""
+    def _cache_get(
+        self, url: str, *, allow_stale: bool = False
+    ) -> dict[str, Any] | None:
+        """Return a cached body for `url`, or None when absent or stale.
+
+        `allow_stale` ignores the TTL. It is used only when the live call has
+        already failed: an out-of-date title beats a 502 on a catalogue whose
+        records barely change.
+        """
 
         if not self.cache_enabled:
             return None
@@ -250,7 +257,7 @@ class TpdbApi:
             if hit is not None:
                 stored_at, body = hit
 
-                if self._is_fresh(stored_at):
+                if allow_stale or self._is_fresh(stored_at):
                     return body
 
                 self._memory.pop(url, None)
@@ -275,8 +282,12 @@ class TpdbApi:
             return None
 
         if not self._is_fresh(stored_at):
-            self._discard(path)
-            return None
+            # Keep the file when a stale read was asked for -- it is the only
+            # copy of the answer, and discarding it would turn the next outage
+            # into a hard failure.
+            if not allow_stale:
+                self._discard(path)
+                return None
 
         if not isinstance(body, dict):
             self._discard(path)
@@ -393,22 +404,50 @@ class TpdbApi:
         if cached is not None:
             return cached
 
+        def stale_or_raise(exc: Exception) -> dict[str, Any]:
+            """Fall back to an expired entry when the live call fails."""
+
+            fallback = self._cache_get(url, allow_stale=True)
+
+            if fallback is not None:
+                logger.warning(
+                    f"TPDB request for {url} failed ({exc}); serving a stale "
+                    "cached response instead"
+                )
+                return fallback
+
+            raise exc
+
         # TPDB is rate limited to a couple of requests a second, so a page that
         # fans out over the collection spends most of its time waiting in the
         # bucket rather than on the wire. Timing every call makes that visible
         # instead of leaving "the UI is slow" unattributable.
         started = time.monotonic()
-        response = self.session.get(url)
+
+        try:
+            response = self.session.get(url)
+        except Exception as exc:
+            return stale_or_raise(
+                TpdbApiError(f"TPDB request failed: {exc}")
+            )
+
         elapsed = time.monotonic() - started
 
         if elapsed > self.SLOW_REQUEST_SECONDS:
             logger.debug(f"TPDB GET {url} took {elapsed:.2f}s")
 
         if response.status_code >= 400:
-            raise TpdbApiError(
+            error = TpdbApiError(
                 f"TPDB request failed ({response.status_code}): {response.text[:200]}",
                 status_code=response.status_code,
             )
+
+            # A 404 is a real answer -- the title does not exist -- so it must
+            # propagate. Only outages fall back to stale data.
+            if response.status_code == 404:
+                raise error
+
+            return stale_or_raise(error)
 
         try:
             data = response.json()
@@ -664,10 +703,17 @@ class TpdbApi:
         )
 
         if response.status_code >= 400:
-            raise TpdbApiError(
+            error = TpdbApiError(
                 f"TPDB request failed ({response.status_code}): {response.text[:200]}",
                 status_code=response.status_code,
             )
+
+            # A 404 is a real answer -- the title does not exist -- so it must
+            # propagate. Only outages fall back to stale data.
+            if response.status_code == 404:
+                raise error
+
+            return stale_or_raise(error)
 
         # Adding invalidates every cached read: the collection lists change,
         # `is_collected` flips, and recommendations are derived from both. A

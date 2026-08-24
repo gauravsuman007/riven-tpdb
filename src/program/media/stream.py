@@ -10,6 +10,9 @@ from program.db.base_model import Base
 
 if TYPE_CHECKING:
     from program.media.item import MediaItem
+    # Imported for typing only: the scrapers package imports
+    # program.media.item, which imports this module.
+    from program.services.scrapers.results import ScrapeResult
 
 
 class StreamRelation(Base):
@@ -56,6 +59,13 @@ class Stream(Base):
     rank: Mapped[int]
     lev_ratio: Mapped[float]
     resolution: Mapped[str | None]
+    # What the indexer said about the release. All nullable: a scraper that
+    # does not report a field leaves it unknown rather than claiming zero,
+    # which for `seeders` is the difference between "slow" and "dead".
+    seeders: Mapped[int | None] = mapped_column(sqlalchemy.Integer, nullable=True)
+    leechers: Mapped[int | None] = mapped_column(sqlalchemy.Integer, nullable=True)
+    size: Mapped[int | None] = mapped_column(sqlalchemy.BigInteger, nullable=True)
+    indexer: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True)
     is_cached: bool = False
     parents: Mapped[list["MediaItem"]] = relationship(
         secondary="StreamRelation", back_populates="streams", lazy="selectin"
@@ -74,7 +84,7 @@ class Stream(Base):
         Index("ix_stream_resolution", "resolution"),
     )
 
-    def __init__(self, torrent: Torrent):
+    def __init__(self, torrent: Torrent, result: "ScrapeResult | None" = None):
         self.raw_title = torrent.raw_title
         self.infohash = torrent.infohash
         self.parsed_title = torrent.data.parsed_title
@@ -86,6 +96,15 @@ class Stream(Base):
         )
         self.is_cached = False
         # is_cached is handled by its default value in the mapped_column definition
+
+        # `result` is optional so existing callers that only have a ranked
+        # Torrent keep working; they simply get a stream with no indexer
+        # metadata rather than a TypeError.
+        if result is not None:
+            self.seeders = result.seeders
+            self.leechers = result.leechers
+            self.size = result.size
+            self.indexer = result.indexer
 
     def __hash__(self):
         return hash(self.infohash)
@@ -104,5 +123,9 @@ class Stream(Base):
             "rank": self.rank,
             "lev_ratio": self.lev_ratio,
             "resolution": self.resolution,
+            "seeders": self.seeders,
+            "leechers": self.leechers,
+            "size": self.size,
+            "indexer": self.indexer,
             "is_cached": self.is_cached,
         }

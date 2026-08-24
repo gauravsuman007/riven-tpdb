@@ -9,11 +9,12 @@ from program.utils.request import SmartSession
 from program.utils.torrent import extract_infohash
 from program.core.runner import Runner
 from program.settings.models import Observable
+from program.services.scrapers.results import ScrapeResult
 
 T = TypeVar("T", bound=Observable, covariant=True)
 
 
-class ScraperService(Runner[T, "ScraperService", dict[str, str]]):
+class ScraperService(Runner[T, "ScraperService", dict[str, ScrapeResult]]):
     """Base class for all scraper services.
 
     Implementations should set:
@@ -41,7 +42,7 @@ class ScraperService(Runner[T, "ScraperService", dict[str, str]]):
     def validate(self) -> bool: ...
 
     @abstractmethod
-    def scrape(self, item: MediaItem) -> dict[str, str]: ...
+    def scrape(self, item: MediaItem) -> dict[str, ScrapeResult]: ...
 
     @staticmethod
     def get_stremio_identifier(

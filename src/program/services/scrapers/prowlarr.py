@@ -10,6 +10,7 @@ from requests import ReadTimeout, RequestException
 
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.services.scrapers.base import ScraperService
+from program.services.scrapers.results import ScrapeResult
 from program.services.scrapers.categories import is_adult_category, select_category_ids
 from program.settings import settings_manager
 from program.utils.request import SmartSession
@@ -329,7 +330,7 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                     f"Next scan will be at {next_scan_time.strftime('%Y-%m-%d %H:%M')}"
                 )
 
-    def run(self, item: MediaItem) -> dict[str, str]:
+    def run(self, item: MediaItem) -> dict[str, ScrapeResult]:
         """
         Scrape the Prowlarr site for the given media items
         and update the object with scraped streams
@@ -346,12 +347,12 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                 logger.exception(f"Prowlarr failed to scrape item with error: {e}")
         return {}
 
-    def scrape(self, item: MediaItem) -> dict[str, str]:
+    def scrape(self, item: MediaItem) -> dict[str, ScrapeResult]:
         """Scrape a single item from all indexers at the same time, return a list of streams"""
 
         self._periodic_indexer_scan()
 
-        torrents = dict[str, str]()
+        torrents = dict[str, ScrapeResult]()
         start_time = time.time()
 
         with concurrent.futures.ThreadPoolExecutor(
@@ -480,7 +481,7 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
             limit=limit,
         )
 
-    def scrape_indexer(self, indexer: Indexer, item: MediaItem) -> dict[str, str]:
+    def scrape_indexer(self, indexer: Indexer, item: MediaItem) -> dict[str, ScrapeResult]:
         """Scrape from a single indexer"""
 
         if (
@@ -526,7 +527,23 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
             return {}
 
         data = ScrapeResponse.model_validate({"items": response.json()}).items
-        streams = dict[str, str]()
+        streams = dict[str, ScrapeResult]()
+
+        def described(release: ReleaseResource, title: str) -> ScrapeResult:
+            """What Prowlarr reported about a release.
+
+            `indexer` falls back to the indexer we asked, because Prowlarr
+            leaves the field null on some definitions even though the search
+            was scoped to a single one.
+            """
+
+            return ScrapeResult(
+                raw_title=title,
+                seeders=release.seeders,
+                leechers=release.leechers,
+                size=release.size,
+                indexer=release.indexer or indexer.name,
+            )
 
         # List of (torrent, title) tuples that need URL fetching
         urls_to_fetch = list[tuple[ReleaseResource, str]]()
@@ -549,7 +566,7 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                 urls_to_fetch.append((torrent, title))
             elif infohash and title:
                 # We already have an infohash, add it directly
-                streams[infohash] = title
+                streams[infohash] = described(torrent, title)
 
         # Fetch URLs in parallel.
         #
@@ -604,7 +621,7 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                         try:
                             infohash = future.result()
                             if infohash:
-                                streams[infohash] = title
+                                streams[infohash] = described(torrent, title)
                         except Exception as e:
                             logger.debug(
                                 f"Failed to get infohash from downloadUrl for {title}: {e}"

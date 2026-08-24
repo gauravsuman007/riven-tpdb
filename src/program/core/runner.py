@@ -25,7 +25,7 @@ TItemType = TypeVar("TItemType", bound=MediaItem, default=MediaItem, covariant=T
 
 TRunnerReturnType = TypeVar(
     "TRunnerReturnType",
-    bound=MediaItemGenerator | dict[str, str] | bool | None,
+    bound=MediaItemGenerator | dict[str, Any] | bool | None,
     default=MediaItemGenerator,
 )
 

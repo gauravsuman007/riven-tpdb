@@ -29,6 +29,7 @@ endpoints below are therefore split into two groups:
 """
 
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Path, Query
@@ -54,6 +55,11 @@ router = APIRouter(prefix="/tpdb", tags=["tpdb"])
 
 # Scene pages are cheap but rate limited; keep sampling bounded.
 MAX_SAMPLE_PAGES = 5
+
+# How many /similar lookups to have in flight at once. The rate limiter, not
+# this number, decides the request rate -- this only bounds how many threads
+# sit waiting on TPDB's very slow responses.
+SIMILAR_FANOUT = 8
 DEFAULT_PER_PAGE = 20
 
 
@@ -322,18 +328,42 @@ def _recommend_from_collection(
     scenes: list[TpdbScene],
     limit: int,
 ) -> RecommendationsResponse:
-    """Expand each collected title through TPDB's own related list."""
+    """Expand each collected title through TPDB's own related list.
+
+    The `/similar` calls run concurrently. TPDB answers a single one in 10-16
+    seconds, so doing them in sequence made this endpoint cost roughly thirteen
+    seconds per collected title -- 35s at a five-title collection, and growing
+    linearly with the collection forever. The session's own token bucket still
+    holds the request rate to what TPDB allows; concurrency only stops each
+    call's latency from being paid one after another.
+    """
 
     owned = {item.id for item in [*movies, *scenes] if item.id}
     votes: Counter[str] = Counter()
     because: dict[str, list[str]] = {}
     found: dict[str, TpdbMovie] = {}
 
-    for movie in movies:
-        if not movie.id:
-            continue
+    def expand(seeds, fetch):
+        """Fetch each seed's related list, preserving seed order in the output.
 
-        for similar in _call(api.get_similar_movies, movie.id):
+        Order matters: `because_of` and the vote tally are user-visible, and a
+        thread pool's completion order would make the same collection produce a
+        different feed on every call.
+        """
+
+        seeds = [seed for seed in seeds if seed.id]
+
+        if not seeds:
+            return []
+
+        with ThreadPoolExecutor(
+            thread_name_prefix="TpdbSimilar",
+            max_workers=min(len(seeds), SIMILAR_FANOUT),
+        ) as executor:
+            return list(zip(seeds, executor.map(lambda s: _call(fetch, s.id), seeds)))
+
+    for movie, similars in expand(movies, api.get_similar_movies):
+        for similar in similars:
             if not similar.id or similar.id in owned:
                 continue
 
@@ -344,11 +374,8 @@ def _recommend_from_collection(
     scene_suggestions: list[TpdbScene] = []
     seen_scenes: set[str] = set()
 
-    for scene in scenes:
-        if not scene.id:
-            continue
-
-        for similar in _call(api.get_similar_scenes, scene.id):
+    for _scene, similars in expand(scenes, api.get_similar_scenes):
+        for similar in similars:
             if not similar.id or similar.id in owned or similar.id in seen_scenes:
                 continue
 
