@@ -305,10 +305,33 @@ class Program(threading.Thread):
             self.display_top_allocators(snapshot)
 
     def run(self):
+        # A stalled pipeline used to be completely silent: the loop spun on
+        # `is_valid` forever without saying so, and every symptom appeared
+        # downstream as "items stuck in Scraped". Say which service is holding
+        # things up, repeatedly, because nothing else will.
+        stall_reported_at = 0.0
+
         while self.initialized:
             if not self.is_valid:
+                now = time.monotonic()
+
+                if now - stall_reported_at > 60:
+                    stall_reported_at = now
+                    blocked = [
+                        s.__class__.__name__
+                        for s in (self.services.enabled_services if self.services else [])
+                        if not s.initialized
+                    ]
+                    logger.error(
+                        "Pipeline halted: no events will be processed while these "
+                        f"enabled services are uninitialized: {', '.join(blocked) or 'unknown'}. "
+                        "Disable them or fix their configuration."
+                    )
+
                 time.sleep(1)
                 continue
+
+            stall_reported_at = 0.0
 
             try:
                 event = self.em.next()

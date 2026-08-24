@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, HttpUrl
 from sqlalchemy import Date, cast, func, select
 
 from program.db import db_functions
+from datetime import datetime
 from program.db.db import db_session
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.media.state import States
@@ -486,6 +487,107 @@ async def fetch_calendar() -> CalendarResponse:
 
     with db_session() as session:
         return CalendarResponse(data=db_functions.create_calendar(session))
+
+
+class PipelineEvent(BaseModel):
+    """One event, queued or in flight."""
+
+    item_id: Annotated[int | None, Field(description="Media item the event targets")]
+    title: Annotated[str | None, Field(description="Item title, when it has one")]
+    emitted_by: Annotated[str, Field(description="What produced this event")]
+    item_state: Annotated[str | None, Field(description="State cached on the event")]
+    run_at: Annotated[str, Field(description="When the event becomes eligible")]
+    ready: Annotated[bool, Field(description="Whether run_at has passed")]
+
+
+class PipelineResponse(BaseModel):
+    """
+    A snapshot of the event pipeline.
+
+    Exists because a stalled pipeline is otherwise invisible: items simply sit
+    in Scraped with nothing in the log. `blocked_by` and `running` are the two
+    things worth looking at -- an enabled-but-uninitialized service halts every
+    event, and an event stuck in `running` silently suppresses every later
+    event for the same item, since new ones are deduped against it.
+    """
+
+    healthy: Annotated[bool, Field(description="Whether the loop is processing events")]
+    blocked_by: Annotated[
+        list[str],
+        Field(description="Enabled services that are not initialized; any entry halts everything"),
+    ]
+    queued: Annotated[list[PipelineEvent], Field(description="Events waiting to run")]
+    running: Annotated[list[PipelineEvent], Field(description="Events in flight")]
+    executors: Annotated[
+        dict[str, int], Field(description="Per-service worker pools and their pending futures")
+    ]
+
+
+@router.get(
+    "/pipeline",
+    summary="Inspect the event pipeline",
+    operation_id="get_pipeline",
+    response_model=PipelineResponse,
+)
+async def get_pipeline() -> PipelineResponse:
+    """Report what the event loop is doing, and what is stopping it."""
+
+    from program.media.item import MediaItem
+
+    program = di[Program]
+    now = datetime.now()
+
+    blocked = [
+        service.__class__.__name__
+        for service in (program.services.enabled_services if program.services else [])
+        if not service.initialized
+    ]
+
+    def describe(events) -> list[PipelineEvent]:
+        described = list[PipelineEvent]()
+
+        with db_session() as session:
+            for event in list(events):
+                title = None
+
+                if event.item_id:
+                    item = session.get(MediaItem, event.item_id)
+                    title = item.log_string if item else None
+                elif event.content_item:
+                    title = event.content_item.log_string
+
+                emitted = event.emitted_by
+
+                described.append(
+                    PipelineEvent(
+                        item_id=event.item_id,
+                        title=title,
+                        emitted_by=(
+                            emitted
+                            if isinstance(emitted, str)
+                            else getattr(emitted, "__name__", None)
+                            or emitted.__class__.__name__
+                        ),
+                        item_state=event.item_state.name if event.item_state else None,
+                        run_at=event.run_at.isoformat(),
+                        ready=event.run_at <= now,
+                    )
+                )
+
+        return described
+
+    return PipelineResponse(
+        healthy=not blocked,
+        blocked_by=blocked,
+        queued=describe(program.em._queued_events),
+        running=describe(program.em._running_events),
+        executors={
+            executor.service_name: len(
+                [f for f in program.em._futures if not f.future.done()]
+            )
+            for executor in program.em._executors
+        },
+    )
 
 
 class VFSStatsResponse(BaseModel):

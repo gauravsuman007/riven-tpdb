@@ -79,6 +79,13 @@ class Downloader(Runner[None, DownloaderBase]):
     # pass. One is too few: a single rejected torrent would strand the item.
     UNCACHED_STREAMS_PER_PASS = 3
 
+    # How many candidate releases to work through in a single pass before
+    # handing the item back to the queue. The old value was 3 and, worse, it
+    # only yielded instead of stopping -- so a fourth candidate was tried
+    # anyway and each one after it yielded again, re-queuing the same item
+    # repeatedly. An item with a dozen candidates deserves to reach them.
+    MAX_STREAMS_PER_PASS = 10
+
     def __init__(self):
         super().__init__()
 
@@ -423,8 +430,15 @@ class Downloader(Runner[None, DownloaderBase]):
 
                 tried_streams += 1
 
-                if tried_streams >= 3:
-                    yield RunnerResult(media_items=[item])
+                # Stop the pass, rather than yielding and carrying on. The item
+                # is handed back so the next pass picks up where this one left
+                # off, with the streams that failed here now blacklisted.
+                if tried_streams >= self.MAX_STREAMS_PER_PASS:
+                    logger.debug(
+                        f"Tried {tried_streams} streams for {item.log_string} "
+                        f"without success; handing back for another pass"
+                    )
+                    break
 
         except Exception as e:
             logger.error(
