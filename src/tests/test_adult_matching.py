@@ -99,6 +99,19 @@ check("wrong volume rejected even with full evidence",
              "Daddy Issues 8", site="Brazzers", performers=["Gizelle Blanco"],
              aired=datetime(2021, 5, 14)).accepted)
 
+print("\nsubstring traps")
+check("a digit in a date is not a volume match",
+      not ev("BrattySis 25 08 01 Daisy Fox You Gave Me Daddy Issues XXX 2160p",
+             "Daddy Issues 8", site="Diabolic Video",
+             performers=["Gizelle Blanco"], aired=datetime(2021, 5, 14)).accepted,
+      "the 8 of 'Daddy Issues 8' must not match the 08 inside '25 08 01'")
+check("title ratio is token-wise, not substring",
+      ev("BrattySis 25 08 01 Daddy Issues XXX", "Daddy Issues 8",
+         site="Diabolic Video").title_ratio < 1.0)
+check("a real volume token still matches",
+      ev("Diabolic Video Daddy Issues 8 XXX 1080p", "Daddy Issues 8",
+         site="Diabolic Video").accepted)
+
 print("\nweak evidence must not pass")
 check("title alone, not adult-flagged, rejected",
       not ev("Daddy Issues", "Daddy Issues 8", site="Diabolic Video", adult=False).accepted)

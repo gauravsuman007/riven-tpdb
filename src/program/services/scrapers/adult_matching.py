@@ -280,7 +280,12 @@ def evaluate(
     wanted = tokenise(item_title or "")
 
     if wanted:
-        present = sum(1 for token in wanted if token in flat)
+        # Compare token to token, not token to the flattened string. Substring
+        # matching let the "8" of "Daddy Issues 8" match the "08" inside a
+        # release date ("BrattySis 25 08 01 ..."), scoring a perfect title hit
+        # for an unrelated studio's scene.
+        release_tokens = set(tokenise(raw_title))
+        present = sum(1 for token in wanted if token in release_tokens)
         evidence.title_ratio = present / len(wanted)
 
         if evidence.title_ratio:
