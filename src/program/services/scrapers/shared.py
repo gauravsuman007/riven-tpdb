@@ -16,6 +16,7 @@ from typing import cast
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.media.stream import Stream
 from program.settings import settings_manager
+from program.services.scrapers.adult_matching import MatchEvidence, evaluate
 from program.settings.models import RTNSettingsModel, ScraperModel
 
 scraping_settings: ScraperModel = settings_manager.settings.scraping
@@ -306,10 +307,16 @@ def parse_results(
     if torrents:
         logger.debug(f"Found {len(torrents)} streams for {item.log_string}")
 
-        if _is_adult_item(item):
-            torrents = _filter_adult_torrents(item, torrents)
+        evidence_by_hash = dict[str, MatchEvidence]()
+        adult_item = _is_adult_item(item)
+
+        if adult_item:
+            torrents, evidence_by_hash = _filter_adult_torrents(item, torrents)
 
             if not torrents:
+                logger.debug(
+                    f"No release matched {item.log_string} on site, cast or date"
+                )
                 return {}
 
         sorted_torrents = sort_torrents(
@@ -319,8 +326,8 @@ def parse_results(
 
         ordered = list(sorted_torrents.values())
 
-        if _is_adult_item(item):
-            ordered = _order_adult_torrents(ordered)
+        if adult_item:
+            ordered = _order_adult_torrents(ordered, evidence_by_hash)
 
         torrent_stream_map = {
             torrent.infohash.lower(): Stream(torrent) for torrent in ordered
@@ -335,18 +342,18 @@ def parse_results(
     return {}
 
 
-# --- Adult ranking -----------------------------------------------------------
+# --- Adult relevance and ranking --------------------------------------------
 #
 # RTN scores mainstream quality markers: BluRay, DTS-HD, H.265, remux. Adult
-# releases carry almost none of them, so a scrape for an adult title ranked an
-# unrelated mainstream film ("Fight.Club.1999.1080p.BluRay...") at 2600 while
-# the correct releases sat at 0. Rank alone is therefore not a usable ordering
-# here, and it is also not safe as a filter.
-
-# How close a non-adult release's title must be before it is believed. Adult
-# titles collide with mainstream ones often ("Daddy Issues", "Alpha Male"), so
-# a release that is not flagged adult has to match almost exactly to survive.
-_ADULT_TITLE_MATCH_FLOOR = 0.85
+# releases carry almost none of them, so rank alone is neither a usable
+# ordering nor a safe filter.
+#
+# An earlier version of this compensated by accepting anything RTN flagged
+# ``adult``. Measured against real Prowlarr output that was much worse than it
+# sounds: for eight library titles it accepted 829 of 1386 results, of which a
+# whole indexer's worth -- 283 unrelated JAV releases matching only the word
+# "daddy" -- were noise. Relevance is now decided from the TPDB metadata the
+# item actually carries: site, performers and release date.
 
 
 def _is_adult_item(item: MediaItem) -> bool:
@@ -355,65 +362,80 @@ def _is_adult_item(item: MediaItem) -> bool:
     return bool(getattr(item, "tpdb_id", None))
 
 
-def _torrent_similarity(torrent: Torrent) -> float:
-    """RTN's title match for a torrent, 0.0 when it did not record one."""
+def _match_evidence(item: MediaItem, torrent: Torrent) -> MatchEvidence:
+    """Evidence linking one release to this item."""
 
-    try:
-        return float(getattr(torrent, "lev_ratio", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
+    return evaluate(
+        torrent.raw_title,
+        item_title=item.title,
+        site_name=getattr(item, "site_name", None),
+        performers=list(getattr(item, "performers", None) or []),
+        aired_at=getattr(item, "aired_at", None),
+        is_adult_release=bool(getattr(torrent.data, "adult", False)),
+    )
 
 
-def _filter_adult_torrents(item: MediaItem, torrents: set[Torrent]) -> set[Torrent]:
-    """Drop mainstream collisions from an adult item's results.
-
-    A release parsed as adult is kept regardless of rank. Anything else has to
-    clear a high title-similarity bar, which is what separates "Daddy Issues 8"
-    the adult title from the 2018 film that shares its name.
-    """
+def _filter_adult_torrents(
+    item: MediaItem, torrents: set[Torrent]
+) -> tuple[set[Torrent], dict[str, MatchEvidence]]:
+    """Keep only releases with corroborated evidence of being this title."""
 
     kept = set[Torrent]()
+    evidence_by_hash = dict[str, MatchEvidence]()
 
     for torrent in torrents:
-        if getattr(torrent.data, "adult", False):
-            kept.add(torrent)
-            continue
+        evidence = _match_evidence(item, torrent)
 
-        if _torrent_similarity(torrent) >= _ADULT_TITLE_MATCH_FLOOR:
+        if evidence.accepted:
             kept.add(torrent)
-            continue
-
-        logger.trace(
-            f"Skipping non-adult release for {item.log_string}: {torrent.raw_title}"
-        )
+            evidence_by_hash[torrent.infohash.lower()] = evidence
+        else:
+            logger.trace(
+                f"Rejecting unrelated release for {item.log_string}: {torrent.raw_title}"
+            )
 
     dropped = len(torrents) - len(kept)
 
     if dropped:
         logger.debug(
-            f"Dropped {dropped} non-adult release(s) for {item.log_string}"
+            f"Dropped {dropped} unrelated release(s) for {item.log_string}"
         )
 
-    return kept
+    return kept, evidence_by_hash
 
 
-def _order_adult_torrents(torrents: list[Torrent]) -> list[Torrent]:
-    """Re-order an adult item's results so relevance beats mainstream polish.
+def _order_adult_torrents(
+    torrents: list[Torrent], evidence_by_hash: dict[str, MatchEvidence]
+) -> list[Torrent]:
+    """Order by how well a release is identified, then by quality.
 
-    Adult-flagged releases first, then how well the title matched, and only
-    then RTN's rank -- which still does useful work as a tie-break between two
-    releases of the same title.
+    Evidence first: a release proven to be this scene beats a better-encoded
+    one that merely might be. Resolution then decides between genuine matches,
+    with RTN's rank as the final tie-break.
     """
 
-    return sorted(
-        torrents,
-        key=lambda torrent: (
-            bool(getattr(torrent.data, "adult", False)),
-            _torrent_similarity(torrent),
+    def key(torrent: Torrent) -> tuple[float, int, int]:
+        evidence = evidence_by_hash.get(torrent.infohash.lower())
+        resolution = getattr(torrent.data, "resolution", None) or ""
+
+        return (
+            evidence.score if evidence else 0.0,
+            _RESOLUTION_ORDER.get(resolution, 0),
             getattr(torrent, "rank", 0) or 0,
-        ),
-        reverse=True,
-    )
+        )
+
+    return sorted(torrents, key=key, reverse=True)
+
+
+# Higher is better. "unknown" sits below every known resolution but above
+# nothing, because adult releases frequently omit it from the title entirely.
+_RESOLUTION_ORDER = {
+    "2160p": 5,
+    "1080p": 4,
+    "720p": 3,
+    "540p": 2,
+    "480p": 1,
+}
 
 
 # helper functions
