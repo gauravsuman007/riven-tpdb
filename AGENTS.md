@@ -118,12 +118,54 @@ Whisparr dependency. Regular movies/TV must never appear.
   `src/tests/test_awards_service.py` (service against real SQLite, skips without
   sqlalchemy).
 
+## Adult Empire (the ranking source TPDB cannot provide)
+- `services/recommendations/adultempire.py`. A storefront knows what TPDB does
+  not: what sells, what is trending, what customers scored, and what they
+  bought together.
+- ACCESS RULES, these are not incidental:
+  - The site shows an age/terms interstitial to *browser* user agents. Do NOT
+    click it -- that button accepts the site's Terms & Conditions, which is not
+    ours to accept. The client identifies honestly as `Riven-TPDB-Crawler/1.0`
+    and the site serves the real page. `_get` raises if it ever sees the
+    interstitial, so swapping in a browser UA fails loudly instead of
+    silently routing through a terms acceptance.
+  - Do not impersonate Googlebot. It works, but it is impersonation; the
+    site's robots.txt is `User-agent: *`, so an honest bot is already welcome.
+  - robots.txt disallows every `/Search` path. Nothing here searches -- the
+    sitemap and browse listings give the same reach and are allowed.
+  - One request/second, single threaded. It is a shop, not an API.
+- Surfaces, all verified live:
+  - `/all-time-bestselling-porn-movies.html` -- 48/page, 579 pages (~27,800
+    titles). Rank 1 is *Pirates*, which is correct, so the order is real.
+  - `/best-selling-porn-movies.html`, `/trending-porn-movies.html` -- 490 pages
+    each; what is moving now.
+  - `/new-release-porn-movies.html`.
+  - Detail pages carry `rating-stars-avg` (a real audience score), studio,
+    production year, release date, length and full cast.
+  - "Customers Who Bought This Product Also Bought" -- collaborative
+    filtering, behaviourally different from TPDB `/similar` (metadata
+    similarity).
+- Cost model: listings are cheap (1 request per 48 titles, rank is position and
+  appears nowhere else in the markup); ratings/studio/cast need one detail
+  request per title. Top 1,000 all-time is ~21 + 1,000 requests, ~17 min.
+- IMPORTANT for matching: studio coverage here is ~100%, against ~2% in the AVN
+  winners corpus. Adult Empire titles therefore clear the matcher's bar far
+  more easily (title + studio + year + cast, versus title + year alone).
+- No JSON-LD anywhere; parsing is regex over the card and detail markup.
+- Tests: `src/tests/test_adultempire.py` (stdlib only, trimmed fixtures).
+
 ## Sources evaluated and rejected for ranking/awards
 - TPDB has no ranking of any kind: `rating` is 0 on every record, `order_by`
   and `sort` are accepted but ignored, and there is no popularity or view field.
   Do not try to build "top rated" or "trending" on it.
 - `awards.avn.com` is authoritative but only covers 2019+ and its year switcher
   is client-side, so each year needs a browser.
+- XBIZ and XRCO are each ONE Wikipedia page using a fourth layout
+  (`=== Category ===` headings, `* YEAR: Winner, ''Title'' (Studio)` bullets),
+  winners only. XBIZ: 361 titles, 84% not already AVN winners. XRCO: 259
+  titles, 61% new. Both worth adding as new `Collection.source` values.
+- Grabby / Venus / Hot d'Or / Feminist Porn Awards: one sparse page each
+  (6-31 bullets); not worth a parser.
 - Wikidata's AVN statements are almost entirely performers (221 humans against
   21 films) -- useless for titles.
 - XBIZ has no per-ceremony articles, only one summary page.
