@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from kink import di
 from loguru import logger
 from PTT import parse_title  # pyright: ignore[reportUnknownVariableType]
-from pydantic import BaseModel, Json, RootModel
+from pydantic import BaseModel, Field, Json, RootModel
 from RTN import ParsedData
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
@@ -42,6 +42,7 @@ from program.services.downloaders.models import (
 from program.services.scrapers import Scraping
 from program.services.scrapers.shared import get_ranking_overrides
 from program.settings import settings_manager
+from program.utils.request import SmartSession
 from program.settings.models import RTNSettingsModel
 from program.types import Event
 from program.utils.torrent import extract_infohash
@@ -627,6 +628,12 @@ def scrape_item(
                 tmdb_id and media_type == "movie",
                 tvdb_id and media_type == "tv",
                 imdb_id,
+                # TPDB ids were missing here while `resolve_media_item` below
+                # accepted them, so a manual scrape of an adult title was
+                # rejected before it began -- and only in streaming mode, which
+                # is the mode the UI actually uses. Not tied to a media_type:
+                # a TPDB uuid may name either a movie or a scene.
+                tpdb_id,
             ]
         ):
             raise HTTPException(status_code=400, detail="No valid ID provided")
@@ -1445,3 +1452,91 @@ async def parse_torrent_titles(
         return ParseTorrentTitleResponse(message="No titles could be parsed", data=[])
     else:
         return ParseTorrentTitleResponse(message="No titles provided", data=[])
+
+
+class ProwlarrIndexer(BaseModel):
+    """One indexer Prowlarr has configured."""
+
+    id: Annotated[int, Field(description="Prowlarr indexer id")]
+    name: Annotated[str, Field(description="Indexer name")]
+    enabled: Annotated[bool, Field(description="Whether Prowlarr has it enabled")]
+    protocol: Annotated[str, Field(description="usenet or torrent")]
+
+
+class ProwlarrIndexersResponse(BaseModel):
+    indexers: Annotated[list[ProwlarrIndexer], Field(description="Configured indexers")]
+    selected: Annotated[
+        list[int],
+        Field(description="Currently selected ids; empty means all are searched"),
+    ]
+
+
+@router.get(
+    "/indexers",
+    summary="List Prowlarr Indexers",
+    description="Indexers configured in Prowlarr, for choosing which to search",
+    operation_id="list_prowlarr_indexers",
+    response_model=ProwlarrIndexersResponse,
+)
+def list_prowlarr_indexers() -> ProwlarrIndexersResponse:
+    """Ask Prowlarr what it has, so the UI can offer a real choice.
+
+    This deliberately reports every configured indexer rather than only the
+    ones Riven would currently use: a user picking indexers needs to see the
+    ones being skipped too.
+    """
+
+    settings = settings_manager.settings.scraping.prowlarr
+
+    if not settings.enabled:
+        raise HTTPException(status_code=409, detail="Prowlarr scraper is disabled")
+
+    session = SmartSession(base_url=str(settings.url).rstrip("/") + "/api/v1")
+
+    try:
+        response = session.get(
+            "/indexer",
+            timeout=15,
+            headers={"X-Api-Key": settings.api_key},
+        )
+
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Prowlarr returned {response.status_code}",
+            )
+
+        payload = response.json()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Could not list Prowlarr indexers: {exc}")
+        raise HTTPException(
+            status_code=502, detail="Could not reach Prowlarr"
+        ) from exc
+    finally:
+        close = getattr(session, "close", None)
+
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
+    indexers = [
+        ProwlarrIndexer(
+            id=entry.get("id"),
+            name=entry.get("name") or f"Indexer {entry.get('id')}",
+            enabled=bool(entry.get("enable")),
+            protocol=entry.get("protocol") or "unknown",
+        )
+        for entry in payload
+        if entry.get("id") is not None
+    ]
+
+    indexers.sort(key=lambda indexer: indexer.name.lower())
+
+    return ProwlarrIndexersResponse(
+        indexers=indexers,
+        selected=list(settings.indexer_ids or []),
+    )

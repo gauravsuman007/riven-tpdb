@@ -22,8 +22,12 @@ Endpoints used here:
     GET /sites/{id}                                       -> Site
 """
 
+import hashlib
+import json
+import os
 import threading
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
@@ -156,12 +160,12 @@ class TpdbApi:
 
     BASE_URL = "https://api.theporndb.net"
 
-    # Reads are cached for a short window. Catalogue and similar-title lists
-    # barely move minute to minute, but a single home or detail page can ask
-    # for the same ones several times over, and every miss is charged against
-    # a 2-per-second rate limit.
-    CACHE_TTL_SECONDS = 300.0
-    CACHE_MAX_ENTRIES = 512
+    # Catalogue and similar-title lists barely move minute to minute, but a
+    # single home or detail page can ask for the same ones several times over,
+    # and every miss is charged against a 2-per-second rate limit. The disk
+    # tier is the real cache; the memory tier just avoids re-reading files
+    # within one request.
+    MEMORY_MAX_ENTRIES = 512
     SLOW_REQUEST_SECONDS = 1.0
 
     def __init__(
@@ -169,6 +173,9 @@ class TpdbApi:
         api_base_url: str | None = None,
         api_token: str = "",
         cache_ttl: float | None = None,
+        cache_dir: Path | str | None = None,
+        cache_max_size_mb: int | None = None,
+        cache_enabled: bool = True,
     ):
         base_url = (api_base_url or self.BASE_URL).rstrip("/")
 
@@ -189,43 +196,184 @@ class TpdbApi:
 
         self._site_id_cache: dict[str, int | None] = {}
 
-        self.cache_ttl = self.CACHE_TTL_SECONDS if cache_ttl is None else cache_ttl
-        # url -> (monotonic stored_at, body)
-        self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self.cache_enabled = cache_enabled
+        self.cache_ttl = 300.0 if cache_ttl is None else float(cache_ttl)
+        self.cache_max_bytes = (
+            250 if cache_max_size_mb is None else cache_max_size_mb
+        ) * 1024 * 1024
+
+        # url -> (wall-clock stored_at, body). Wall clock, not monotonic, so a
+        # disk entry written by an earlier process can be aged consistently.
+        self._memory: dict[str, tuple[float, dict[str, Any]]] = {}
         self._cache_lock = threading.Lock()
+        self._cache_dir: Path | None = None
+
+        if self.cache_enabled and cache_dir:
+            candidate = Path(cache_dir)
+
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+                self._cache_dir = candidate
+            except OSError as exc:
+                # An unwritable directory must degrade to memory-only rather
+                # than take the whole integration down.
+                logger.warning(
+                    f"TPDB cache directory {candidate} is unusable ({exc}); "
+                    "falling back to an in-memory cache"
+                )
+
+    def _is_fresh(self, stored_at: float) -> bool:
+        """Whether an entry stored at `stored_at` (wall clock) is still fresh.
+
+        A ttl of 0 means "never expires" -- the size limit is then the only
+        thing that evicts, which is what a size-managed cache implies.
+        """
+
+        if self.cache_ttl <= 0:
+            return True
+
+        return (time.time() - stored_at) <= self.cache_ttl
+
+    def _cache_path(self, url: str) -> Path:
+        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
+        return self._cache_dir / f"{digest}.json"
 
     def _cache_get(self, url: str) -> dict[str, Any] | None:
         """Return a cached body for `url`, or None when absent or stale."""
 
-        if self.cache_ttl <= 0:
+        if not self.cache_enabled:
             return None
 
         with self._cache_lock:
-            hit = self._cache.get(url)
+            hit = self._memory.get(url)
 
-            if hit is None:
-                return None
+            if hit is not None:
+                stored_at, body = hit
 
-            stored_at, body = hit
+                if self._is_fresh(stored_at):
+                    return body
 
-            if (time.monotonic() - stored_at) > self.cache_ttl:
-                self._cache.pop(url, None)
-                return None
+                self._memory.pop(url, None)
 
-            return body
+        if self._cache_dir is None:
+            return None
 
-    def _cache_put(self, url: str, body: dict[str, Any]) -> None:
-        if self.cache_ttl <= 0:
-            return
+        path = self._cache_path(url)
+
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                entry = json.load(handle)
+
+            stored_at = float(entry["stored_at"])
+            body = entry["body"]
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            # A truncated or hand-edited entry is not worth failing a page for.
+            logger.debug(f"Discarding unreadable TPDB cache entry {path.name}: {exc}")
+            self._discard(path)
+            return None
+
+        if not self._is_fresh(stored_at):
+            self._discard(path)
+            return None
+
+        if not isinstance(body, dict):
+            self._discard(path)
+            return None
+
+        # Touch so size eviction treats this as recently used.
+        try:
+            os.utime(path, None)
+        except OSError:
+            pass
 
         with self._cache_lock:
-            # Cheap bound: the cache exists to collapse a burst of identical
-            # reads within one page load, not to be a long-lived store, so
-            # dropping the whole thing beats tracking per-entry LRU order.
-            if len(self._cache) >= self.CACHE_MAX_ENTRIES:
-                self._cache.clear()
+            self._memory[url] = (stored_at, body)
 
-            self._cache[url] = (time.monotonic(), body)
+        return body
+
+    def _cache_put(self, url: str, body: dict[str, Any]) -> None:
+        if not self.cache_enabled:
+            return
+
+        stored_at = time.time()
+
+        with self._cache_lock:
+            if len(self._memory) >= self.MEMORY_MAX_ENTRIES:
+                # The memory tier is only a read-through shortcut; the disk
+                # tier is the real cache, so clearing it costs a file read at
+                # worst and beats tracking per-entry LRU order in memory.
+                self._memory.clear()
+
+            self._memory[url] = (stored_at, body)
+
+        if self._cache_dir is None:
+            return
+
+        path = self._cache_path(url)
+        payload = {"url": url, "stored_at": stored_at, "body": body}
+
+        try:
+            # Write via a temporary file so a crash mid-write cannot leave a
+            # half-written entry that every later read has to discard.
+            tmp = path.with_suffix(".tmp")
+
+            with tmp.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+
+            tmp.replace(path)
+        except (OSError, TypeError, ValueError) as exc:
+            logger.debug(f"Could not write TPDB cache entry: {exc}")
+            return
+
+        self._enforce_size_limit()
+
+    @staticmethod
+    def _discard(path: Path) -> None:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+    def _enforce_size_limit(self) -> None:
+        """Evict least recently used entries until the cache fits its budget."""
+
+        if self._cache_dir is None or self.cache_max_bytes <= 0:
+            return
+
+        try:
+            entries = list[tuple[float, int, Path]]()
+            total = 0
+
+            for path in self._cache_dir.glob("*.json"):
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+
+                entries.append((stat.st_mtime, stat.st_size, path))
+                total += stat.st_size
+
+            if total <= self.cache_max_bytes:
+                return
+
+            # Oldest touch first: least recently used goes first.
+            entries.sort(key=lambda entry: entry[0])
+
+            for _, size, path in entries:
+                if total <= self.cache_max_bytes:
+                    break
+
+                self._discard(path)
+                total -= size
+
+            logger.debug(
+                f"TPDB cache trimmed to {total // 1024} KiB "
+                f"(limit {self.cache_max_bytes // 1024} KiB)"
+            )
+        except OSError as exc:
+            logger.debug(f"TPDB cache size enforcement failed: {exc}")
 
     def _get(
         self,
@@ -482,7 +630,16 @@ class TpdbApi:
         """Drop every cached read. Called after a write that changes them."""
 
         with self._cache_lock:
-            self._cache.clear()
+            self._memory.clear()
+
+        if self._cache_dir is None:
+            return
+
+        try:
+            for path in self._cache_dir.glob("*.json"):
+                self._discard(path)
+        except OSError as exc:
+            logger.debug(f"Could not clear TPDB cache directory: {exc}")
 
     def is_collected(self, numeric_id: int | str) -> bool:
         """Whether one title is in the collection.

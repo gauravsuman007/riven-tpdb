@@ -24,9 +24,15 @@ def __setup_tvdb():
 
 
 def __setup_tpdb():
+    tpdb_settings = settings_manager.settings.tpdb
+
     di[TpdbApi] = TpdbApi(
-        api_base_url=settings_manager.settings.tpdb.api_base_url,
-        api_token=settings_manager.settings.tpdb.api_token,
+        api_base_url=tpdb_settings.api_base_url,
+        api_token=tpdb_settings.api_token,
+        cache_enabled=tpdb_settings.cache_enabled,
+        cache_dir=tpdb_settings.cache_dir,
+        cache_ttl=tpdb_settings.cache_ttl_seconds,
+        cache_max_size_mb=tpdb_settings.cache_max_size_mb,
     )
 
 

@@ -267,10 +267,15 @@ class FilesystemModel(Observable):
 
     library_profiles: dict[str, LibraryProfile] = Field(
         default_factory=lambda: {
+            # Anime is upstream's default profile and is disabled here: this
+            # fork serves adult content only, so the profile matches nothing
+            # and its /anime directory is dead weight in the library root.
+            # Left defined rather than deleted so upstream merges stay clean
+            # and anyone who wants it can switch it back on.
             "anime": LibraryProfile(
                 name="Anime",
                 library_path="/anime",
-                enabled=True,
+                enabled=False,
                 filter_rules=LibraryProfileFilterRules(is_anime=True),
             ),
             # Example profile (disabled by default) - enable or customize as needed
@@ -790,6 +795,14 @@ class ProwlarrConfig(Observable):
     limiter_seconds: int = Field(
         default=60, ge=1, description="Rate limiter cooldown in seconds"
     )
+    # A scrape queries every enabled indexer and waits for the slowest, so a
+    # Prowlarr with dozens of indexers configured makes every search as slow as
+    # its worst member. Naming indexers here restricts the search to them.
+    indexer_ids: list[int] = Field(
+        default_factory=list,
+        description="Prowlarr indexer ids to search. Empty means search all of "
+        "them, which is slow when many are configured.",
+    )
 
 
 class RarbgConfig(Observable):
@@ -1012,6 +1025,31 @@ class TpdbModel(Observable):
     api_token: str = Field(default="", description="ThePornDB API token (Bearer)")
     api_base_url: str = Field(
         default="https://api.theporndb.net", description="ThePornDB API base URL"
+    )
+
+    # TPDB is rate limited to a couple of requests a second and pages here fan
+    # out over the collection, so responses are cached. The cache is on disk so
+    # it survives a restart -- a cold home page otherwise costs seconds of pure
+    # rate-limit wait every time the container comes back up.
+    cache_enabled: bool = Field(
+        default=True, description="Cache TPDB API responses"
+    )
+    cache_dir: Path = Field(
+        default=Path("/riven/data/tpdb_cache"),
+        description="Directory for the TPDB response cache. Put it on fast local "
+        "storage; it holds small JSON files, not media.",
+    )
+    cache_max_size_mb: int = Field(
+        default=250,
+        ge=0,
+        description="Maximum size of the TPDB response cache in MB. Least "
+        "recently used entries are evicted once this is exceeded.",
+    )
+    cache_ttl_seconds: int = Field(
+        default=300,
+        ge=0,
+        description="How long a cached TPDB response stays fresh, in seconds. "
+        "0 disables expiry and relies on the size limit alone.",
     )
 
 

@@ -162,8 +162,20 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
 
         indexers = list[Indexer]()
 
+        # An explicit selection restricts the search; empty means "all of them",
+        # which is the upstream behaviour and is slow once many are configured.
+        selected = set(self.settings.indexer_ids or [])
+
+        if selected:
+            logger.debug(
+                f"Prowlarr search restricted to {len(selected)} selected indexer(s)"
+            )
+
         for indexer_data in data:
             id = indexer_data.id
+
+            if selected and id not in selected:
+                continue
 
             if statuses:
                 status = next(
