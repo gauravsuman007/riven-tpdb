@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from program.media.item import ProcessedItemType
 from program.services.downloaders.models import (
@@ -76,8 +76,21 @@ class TorBoxTorrent(BaseModel):
     cached: bool | None = None
     progress: float | None = None
     download_state: str | None = None
+    seeds: int | None = None
     created_at: datetime | None = None
+    # TorBox reports `"files": null` while a torrent is still being fetched --
+    # it has no file list until it finishes. A bare `list[TorBoxFile]` rejects
+    # that outright, so every attempt to read a torrent's progress raised a
+    # validation error, and any caller that was not catching it treated the
+    # torrent as unavailable.
     files: list[TorBoxFile] = Field(default_factory=list)
+
+    @field_validator("files", mode="before")
+    @classmethod
+    def _null_files_are_empty(cls, value: object) -> object:
+        """Treat a null file list as an empty one, so `files` is always a list."""
+
+        return [] if value is None else value
 
 
 class TorBoxAPI:
@@ -445,6 +458,7 @@ class TorBoxDownloader(DownloaderBase):
                 infohash=torrent.hash,
                 bytes=torrent.size,
                 progress=torrent.progress,
+                seeders=torrent.seeds,
                 created_at=torrent.created_at,
                 files=files,
             )

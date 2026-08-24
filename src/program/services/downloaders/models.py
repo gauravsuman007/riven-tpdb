@@ -197,6 +197,10 @@ class TorrentInfo(BaseModel):
     expires_at: datetime | None = None
     completed_at: datetime | None = None
     alternative_filename: str | None = None
+    # Peers currently offering the torrent. A torrent with no seeders is not
+    # slow, it is dead: waiting on it costs the item its whole uncached budget
+    # while a working candidate sits untried.
+    seeders: int | None = None
 
     # Real-Debrid only
     files: dict[int, TorrentFile] = Field(default_factory=dict[int, TorrentFile])

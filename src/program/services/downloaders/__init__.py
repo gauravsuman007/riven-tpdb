@@ -79,6 +79,13 @@ class Downloader(Runner[None, DownloaderBase]):
     # pass. One is too few: a single rejected torrent would strand the item.
     UNCACHED_STREAMS_PER_PASS = 3
 
+    # Consecutive polls a torrent may sit with no seeders and no progress
+    # before it is abandoned for the next candidate. At the default 10-minute
+    # poll that is half an hour, against the 24-hour budget it would otherwise
+    # consume -- and a torrent nobody is seeding will not start after 24 hours
+    # either.
+    UNCACHED_STALL_POLLS = 3
+
     # How many candidate releases to work through in a single pass before
     # handing the item back to the queue. The old value was 3 and, worse, it
     # only yielded instead of stopping -- so a fourth candidate was tried
@@ -117,6 +124,10 @@ class Downloader(Runner[None, DownloaderBase]):
 
         # (item id, infohash) -> when we first asked a provider to fetch it.
         self._uncached_since = dict[tuple[int | None, str], datetime]()
+
+        # (item id, infohash) -> consecutive polls seen with no seeders and no
+        # progress. Used to give up on dead torrents early.
+        self._uncached_stalled = dict[tuple[int | None, str], int]()
 
         downloader_settings = settings_manager.settings.downloaders
         self.download_uncached = downloader_settings.download_uncached
@@ -174,10 +185,13 @@ class Downloader(Runner[None, DownloaderBase]):
                     continue
 
                 progress = None
+                seeders = None
 
                 if torrent_id is not None:
                     try:
-                        progress = service.get_torrent_info(torrent_id).progress
+                        info = service.get_torrent_info(torrent_id)
+                        progress = info.progress
+                        seeders = info.seeders
                     except Exception as e:
                         # The torrent was accepted; not being able to read
                         # progress back is not a reason to abandon it.
@@ -186,12 +200,40 @@ class Downloader(Runner[None, DownloaderBase]):
                             f"not read its progress for {item.log_string}: {e}"
                         )
 
+                # A torrent with no seeders and no progress is not slow, it is
+                # dead. Waiting out the full budget on one of those leaves
+                # working candidates untried for a day.
+                if seeders == 0 and not progress:
+                    key = (item.id, stream.infohash)
+                    stalled = self._uncached_stalled.get(key, 0) + 1
+                    self._uncached_stalled[key] = stalled
+
+                    if stalled >= self.UNCACHED_STALL_POLLS:
+                        logger.log(
+                            "DEBRID",
+                            f"Giving up on '{stream.raw_title}' for {item.log_string}: "
+                            f"no seeders and no progress after {stalled} checks. "
+                            f"Trying the next release.",
+                        )
+
+                        item.blacklist_stream(stream)
+                        self._uncached_since.pop(key, None)
+                        self._uncached_stalled.pop(key, None)
+
+                        # Move on to the next candidate in this same pass
+                        # rather than waiting another poll interval.
+                        break
+                else:
+                    self._uncached_stalled.pop((item.id, stream.infohash), None)
+
                 logger.log(
                     "DEBRID",
                     f"Waiting on {service.key} to cache '{stream.raw_title}' for "
                     f"{item.log_string}"
                     + (
-                        f" ({_format_progress(progress)} done)"
+                        f" ({_format_progress(progress)} done"
+                        + (f", {seeders} seeders" if seeders is not None else "")
+                        + ")"
                         if progress is not None
                         else ""
                     )
