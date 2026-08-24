@@ -14,7 +14,12 @@ from loguru import logger
 from program.services.directscrapers.base import DirectScraper
 from program.services.directscrapers.iporntv import IPornTVScraper
 from program.services.directscrapers.models import DirectSource, DirectVideo
-from program.services.directscrapers.ranking import best_matches, sort_key
+from program.services.directscrapers.ranking import (
+    MatchTarget,
+    best_matches,
+    sort_key,
+    strip_punctuation,
+)
 from program.services.directscrapers.upornia import UporniaScraper
 from program.services.directscrapers.xfreehd import XFreeHDScraper
 
@@ -43,8 +48,8 @@ class DirectScraperService:
 
     def search(
         self,
-        query: str,
-        limit_per_site: int = 2,
+        target: MatchTarget | str,
+        limit_per_site: int = 3,
         sites: list[str] | None = None,
     ) -> tuple[list[DirectVideo], dict[str, str]]:
         """Search every site at once, keeping only the best few from each.
@@ -54,42 +59,97 @@ class DirectScraperService:
         and must not cost the user the other two, so failures are reported
         alongside the results rather than raised.
 
-        Each site's results are ranked and filtered independently before being
-        merged. Filtering after the merge would let one site that returns
-        thirty loose matches crowd out another that returned two exact ones.
+        Each site is searched with several phrasings rather than one, because
+        the sites do not agree on what a query means. xfreehd ANDs the terms,
+        so a full scene title matches nothing and only a short "series +
+        performer" finds anything; the other two OR them, so every extra word
+        adds noise instead. One phrasing cannot serve both, and measuring
+        showed each site's hit arriving under a different one.
+
+        Results are pooled across phrasings, then ranked and filtered per site.
+        Filtering after the merge would let one site returning thirty loose
+        matches crowd out another that returned two exact ones.
         """
+
+        if isinstance(target, str):
+            target = MatchTarget.build(target)
 
         selected = {
             key: scraper
             for key, scraper in self.services.items()
             if not sites or key in sites
         }
+        queries = self.query_ladder(target)
 
-        results: dict[str, list[DirectVideo]] = {}
+        results: dict[str, list[DirectVideo]] = {key: [] for key in selected}
         errors: dict[str, str] = {}
+        jobs = [(key, query) for key in selected for query in queries]
 
-        with ThreadPoolExecutor(max_workers=len(selected) or 1) as executor:
+        with ThreadPoolExecutor(max_workers=min(len(jobs), 8) or 1) as executor:
             futures = {
-                executor.submit(scraper.search, query, self.CANDIDATE_POOL): key
-                for key, scraper in selected.items()
+                executor.submit(
+                    selected[key].search, query, self.CANDIDATE_POOL
+                ): (key, query)
+                for key, query in jobs
             }
             for future in as_completed(futures):
-                key = futures[future]
+                key, query = futures[future]
                 try:
-                    found = future.result()
+                    results[key].extend(future.result())
                 except Exception as exc:
-                    logger.warning(f"Direct scraper {key} failed: {exc}")
+                    logger.warning(
+                        f"Direct scraper {key} failed for {query!r}: {exc}"
+                    )
+                    # Only the last failure is kept: the UI reports that a site
+                    # could not be reached, not which phrasing tripped it.
                     errors[key] = str(exc)
-                    results[key] = []
-                    continue
 
-                results[key] = best_matches(query, found, limit_per_site)
-                logger.debug(
-                    f"Direct scraper {key}: {len(found)} results, "
-                    f"{len(results[key])} kept for {query!r}"
-                )
+        for key, found in results.items():
+            pooled = _unique_by_id(found)
+            results[key] = best_matches(target, pooled, limit_per_site)
+            logger.debug(
+                f"Direct scraper {key}: {len(pooled)} candidates across "
+                f"{len(queries)} queries, {len(results[key])} kept "
+                f"for {target.title!r}"
+            )
+            # A site that answered every phrasing is not in trouble, whatever
+            # one of them did.
+            if results[key]:
+                errors.pop(key, None)
 
         return _merge_ranked(selected, results), errors
+
+    @staticmethod
+    def query_ladder(target: MatchTarget) -> list[str]:
+        """The phrasings to try, in descending order of specificity.
+
+        Measured against the library rather than guessed. The studio was
+        dropped: TPDB records the network ("Nubiles", "Diabolic Video") while
+        uploads are labelled with the series, so pairing it with a performer
+        never once surfaced the target and cost a request every time.
+        """
+
+        lead = target.performers[0] if target.performers else ""
+        candidates = [
+            target.title,
+            f"{strip_punctuation(target.title)} {lead}".strip(),
+            # The series on its own, not paired with a performer. The library
+            # lists a scene's cast alphabetically, and the first name is rarely
+            # the one a tube upload puts in its title -- searching "Bratty Sis"
+            # finds the series' scenes and lets the ranker pick out whichever
+            # of the credited cast actually appears.
+            target.series,
+        ]
+
+        ladder: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            candidate = candidate.strip()
+            key = candidate.casefold()
+            if candidate and key not in seen:
+                seen.add(key)
+                ladder.append(candidate)
+        return ladder
 
     def resolve(self, site: str, video_id: str) -> list[DirectSource]:
         """Resolve one video to playable URLs.
@@ -103,6 +163,19 @@ class DirectScraperService:
         if scraper is None:
             raise ValueError(f"Unknown direct scraper: {site}")
         return scraper.resolve(video_id)
+
+
+def _unique_by_id(videos: list[DirectVideo]) -> list[DirectVideo]:
+    """Collapse the same video arriving from more than one phrasing."""
+
+    unique: list[DirectVideo] = []
+    seen: set[str] = set()
+    for video in videos:
+        if video.key() in seen:
+            continue
+        seen.add(video.key())
+        unique.append(video)
+    return unique
 
 
 def _merge_ranked(
@@ -138,4 +211,4 @@ def _merge_ranked(
     return [video for _, _, video in ranked]
 
 
-__all__ = ["DirectScraperService", "DirectSource", "DirectVideo"]
+__all__ = ["DirectScraperService", "DirectSource", "DirectVideo", "MatchTarget"]

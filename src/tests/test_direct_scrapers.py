@@ -8,7 +8,7 @@ this stays runnable when the sites are down or have changed.
 
 import sys
 
-from program.services.directscrapers import _merge_ranked
+from program.services.directscrapers import DirectScraperService, _merge_ranked
 from program.services.directscrapers.base import (
     parse_count,
     parse_duration,
@@ -19,8 +19,10 @@ from program.services.directscrapers.iporntv import _assemble_url, _video_id
 from program.services.directscrapers.models import DirectSource, DirectVideo
 from program.services.directscrapers.ranking import (
     MIN_RELEVANCE,
+    MatchTarget,
     best_matches,
     relevance,
+    series_name,
 )
 from program.services.directscrapers.upornia import _best_size, _deobfuscate
 from program.services.directscrapers.xfreehd import XFreeHDScraper
@@ -317,6 +319,106 @@ check("every result survives the merge", len(merged) == 3)
 check(
     "a site that returned nothing is skipped",
     len(_merge_ranked({"a": None, "b": None}, {"a": scored["a"], "b": []})) == 2,  # type: ignore[dict-item]
+)
+
+
+print("\nseries extraction")
+check(
+    "instalment marker splits the series off",
+    series_name("Bratty Sis Vol. 10: Trick or Treat") == "Bratty Sis",
+    series_name("Bratty Sis Vol. 10: Trick or Treat"),
+)
+check("a colon alone splits too", series_name("Brazzers: Day One") == "Brazzers")
+# Empty rather than the whole title, so callers can tell "no series" from "the
+# series is the title" and skip a duplicate query.
+check("a title that is not an instalment has no series", series_name("Alpha Male") == "")
+
+print("\nquery ladder")
+target = MatchTarget.build(
+    "Bratty Sis Vol. 10: Trick or Treat", ["Riley Reid", "Bunny Colby"], "Nubiles"
+)
+ladder = DirectScraperService.query_ladder(target)
+# Measured, not guessed: xfreehd ANDs its terms, so the full punctuated title
+# matched nothing there and only the bare series found the scene.
+check("the title is tried first", ladder[0] == "Bratty Sis Vol. 10: Trick or Treat")
+check(
+    "punctuation is stripped and the lead performer added",
+    ladder[1] == "Bratty Sis Vol 10 Trick or Treat Riley Reid",
+    ladder[1],
+)
+check("the bare series is tried last", ladder[-1] == "Bratty Sis", ladder[-1])
+# The studio is TPDB's network name, which no upload is labelled with; pairing
+# it with a performer never surfaced a target and cost a request every time.
+check("the studio is not queried", not any("Nubiles" in q for q in ladder))
+
+plain = DirectScraperService.query_ladder(MatchTarget.build("Alpha Male"))
+check("a title with no series or cast yields one query", plain == ["Alpha Male"], plain)
+check(
+    "duplicate phrasings are collapsed",
+    len(DirectScraperService.query_ladder(MatchTarget.build("Alpha Male", [], ""))) == 1,
+)
+
+print("\nperformer corroboration")
+bratty = MatchTarget.build(
+    "Bratty Sis Vol. 10: Trick or Treat", ["Riley Reid", "Bunny Colby"], "Nubiles"
+)
+# The case this exists for: the right series with the right performer under a
+# different episode name. Scored on title alone it was 0.4 and thrown away,
+# while unrelated Halloween clips saying "trick or treat" outranked it.
+check(
+    "series plus performer beats the threshold",
+    relevance(bratty, video("Bratty Sis And Riley Reid - Do Or Die")) >= MIN_RELEVANCE,
+    relevance(bratty, video("Bratty Sis And Riley Reid - Do Or Die")),
+)
+# A performer on their own is not evidence about *this* title -- these people
+# appear in hundreds of scenes, and treating a name as a match flooded the
+# results with unrelated clips of the lead actor.
+check(
+    "a performer with nothing else is not enough",
+    relevance(bratty, video("Riley Reid In Hardcore")) < MIN_RELEVANCE,
+    relevance(bratty, video("Riley Reid In Hardcore")),
+)
+check(
+    "a first name alone is not a performer match",
+    relevance(bratty, video("Bratty riley has fun")) 
+    < relevance(bratty, video("Bratty Sis And Riley Reid")),
+)
+check(
+    "the studio name in a title is a small bonus",
+    relevance(MatchTarget.build("Alpha Male", [], "Pure Taboo"), video("PureTaboo-Alpha Male"))
+    == 1.0,
+)
+
+print("\ninstalment numbers")
+daddy = MatchTarget.build("Daddy Issues 8", ["Scarlet Skies"], "Diabolic Video")
+check(
+    "the right instalment scores full",
+    relevance(daddy, video("Step daddy Issues 8 Sc 2 With Scarlet Skies")) == 1.0,
+)
+# A bare "8" is weak evidence on its own: as a full-weight token it let
+# "italian daddy leo casanova part 8" out-score the real scene.
+check(
+    "a coincidental instalment number does not rescue an unrelated clip",
+    relevance(daddy, video("Facial cumshots from italian daddy leo casanova part 8"))
+    < MIN_RELEVANCE,
+    relevance(daddy, video("Facial cumshots from italian daddy leo casanova part 8")),
+)
+check(
+    "a stated different instalment is still penalised",
+    relevance(daddy, video("Daddy Issues 3")) < MIN_RELEVANCE,
+    relevance(daddy, video("Daddy Issues 3")),
+)
+
+print("\nbucket granularity")
+# Tenths, not quarters: coarser bands landed an exact match and a same-series
+# near-miss together, and the near-miss won on running time.
+exact = video("Daddy Issues 8", duration=600)
+near = video("Step daddy Issues with someone else", duration=4000)
+ordered = best_matches(daddy, [near, exact], 5)
+check(
+    "an exact match outranks a longer near-miss",
+    ordered[0].title == exact.title,
+    [(v.title, v.relevance) for v in ordered],
 )
 
 print("\nsource defaults")

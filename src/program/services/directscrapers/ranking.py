@@ -21,6 +21,7 @@ both plainly the right scene.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 
 from program.services.directscrapers.models import DirectVideo
 from program.utils.text_matching import extract_volume, normalise, tokenise
@@ -45,16 +46,77 @@ _COMMON = frozenset({
     "big", "hot", "sexy", "best", "free", "full", "video", "porn", "sex",
 })
 
+@dataclass(frozen=True, slots=True)
+class MatchTarget:
+    """Everything known about the title being looked for.
+
+    Scoring against the title alone is not enough. Tube sites rarely carry the
+    exact scene under the exact name -- they carry *a* scene from the series
+    with the performer in the title -- so "Bratty Sis And Riley Reid" scores
+    0.4 against "Bratty Sis Vol. 10: Trick or Treat" and gets thrown away,
+    while unrelated Halloween clips that happen to say "trick or treat" score
+    higher. The performer is what settles it, and the library already knows it.
+    """
+
+    title: str
+    performers: tuple[str, ...] = ()
+    studio: str = ""
+    #: Series name with the instalment stripped: "Bratty Sis Vol. 10: Trick or
+    #: Treat" -> "Bratty Sis". Empty when the title states no instalment.
+    series: str = field(default="")
+
+    @classmethod
+    def build(
+        cls,
+        title: str,
+        performers: list[str] | None = None,
+        studio: str | None = None,
+    ) -> "MatchTarget":
+        return cls(
+            title=title or "",
+            performers=tuple(p for p in (performers or []) if p),
+            studio=studio or "",
+            series=series_name(title or ""),
+        )
+
+
+_INSTALMENT = re.compile(r"\b(?:vol(?:ume)?|part|pt)\.?\s*\d{1,3}\b", re.I)
+
+
+def strip_punctuation(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^A-Za-z0-9]+", " ", text or "")).strip()
+
+
+def series_name(title: str) -> str:
+    """The series a title belongs to, when it names one.
+
+    "Bratty Sis Vol. 10: Trick or Treat" -> "Bratty Sis". Empty when the title
+    is not an instalment of anything, so callers can tell "no series" from "the
+    series is the whole title" and skip a duplicate query.
+    """
+
+    head = _INSTALMENT.split(title, maxsplit=1)
+    if len(head) > 1:
+        return strip_punctuation(head[0])
+    if ":" in title:
+        return strip_punctuation(title.split(":", 1)[0])
+    return ""
+
+
 #: What a common word is worth next to a distinctive one. Not zero: dropping
 #: filler entirely makes a one-distinctive-token query like "Deny It All You
 #: Want" score any title containing "deny" at a perfect 1.0. Not one either,
 #: which is the bug this whole module exists to fix.
 _COMMON_WEIGHT = 0.25
 
+#: How much of the title a result must carry before a performer match counts
+#: as corroboration rather than a coincidence.
+_CORROBORATION = 0.3
+
 #: Below this, a result is not the title that was searched for. A real match
 #: reliably clears it -- "Deny It All You Want - Vanna Bardot" carries every
 #: token -- while a title sharing only filler cannot get near it.
-MIN_RELEVANCE = 0.6
+MIN_RELEVANCE = 0.65
 
 _RESOLUTION_ORDER = {
     "2160p": 6,
@@ -70,16 +132,19 @@ _RESOLUTION_ORDER = {
 def _weighted_tokens(text: str) -> dict[str, float]:
     """Tokens in `text` with how much each says about which title this is.
 
-    Digits survive at full weight: the instalment number is often the only
-    thing separating "Daddy Issues 8" from "Daddy Issues". A bare year is
-    dropped because it identifies a release rather than a work.
+    A bare year is dropped -- it identifies a release, not a work. Bare digits
+    survive but only at filler weight: the instalment number matters, and the
+    volume comparison below scores it properly, but as a loose token an "8"
+    also matches "italian daddy leo casanova part 8", which is how an unrelated
+    clip out-scored the real scene.
     """
 
     weights: dict[str, float] = {}
     for token in tokenise(text):
         if re.fullmatch(r"(19|20)\d{2}", token):
             continue
-        weights[token] = _COMMON_WEIGHT if token in _COMMON else 1.0
+        common = token in _COMMON or token.isdigit()
+        weights[token] = _COMMON_WEIGHT if common else 1.0
     return weights
 
 
@@ -91,50 +156,116 @@ def distinctive_tokens(text: str) -> set[str]:
     }
 
 
-def relevance(query: str, video: DirectVideo) -> float:
-    """How well `video` matches `query`, from 0 (unrelated) to 1.
+def _performer_hits(target: MatchTarget, video: DirectVideo) -> int:
+    """How many of the credited performers the video's title names.
 
-    Returns 0 rather than a small number when nothing distinctive matched. A
+    Full names only. A first name on its own ("vanna") is far too common to be
+    evidence, and matching on one would readmit exactly the noise this is here
+    to remove.
+    """
+
+    haystack = normalise(video.title)
+    return sum(
+        1 for performer in target.performers if normalise(performer) in haystack
+    )
+
+
+def relevance(target: MatchTarget | str, video: DirectVideo) -> float:
+    """How well `video` matches `target`, from 0 (unrelated) to 1.
+
+    Returns 0 rather than a small number when nothing identifying matched. A
     near-zero score and "no match at all" are different claims, and only the
     second one should be filtered on.
     """
 
-    wanted = _weighted_tokens(query)
+    if isinstance(target, str):
+        target = MatchTarget.build(target)
+
+    wanted = _weighted_tokens(target.title)
     if not wanted:
         # Nothing to discriminate on -- a query of pure filler. Treat every
         # result as equally plausible rather than silently returning nothing.
         return 1.0
 
     found = set(_weighted_tokens(video.title))
-
-    # A result that matches only filler has matched nothing that identifies
-    # anything, however many filler words it happens to share.
-    if not (distinctive_tokens(query) & found):
-        if distinctive_tokens(query):
-            return 0.0
-
     total = sum(wanted.values())
     matched = sum(weight for token, weight in wanted.items() if token in found)
     score = matched / total
 
-    # The whole query appearing as one run is much stronger evidence than the
+    # The whole title appearing as one run is much stronger evidence than the
     # same tokens scattered across an unrelated sentence.
-    if normalise(query) and normalise(query) in normalise(video.title):
+    if normalise(target.title) and normalise(target.title) in normalise(video.title):
         score = min(1.0, score + 0.25)
+
+    performers = _performer_hits(target, video)
+    in_series = bool(
+        target.series and normalise(target.series) in normalise(video.title)
+    )
+
+    if performers and (in_series or score >= _CORROBORATION):
+        # A credited performer *plus* something of the title is what rescues
+        # the right series under the wrong episode name -- "Bratty Sis And
+        # Riley Reid" against "Bratty Sis Vol. 10: Trick or Treat". Floored, so
+        # it survives sharing few title words.
+        score = min(1.0, max(score, 0.7) + 0.1 * min(performers, 2))
+    elif performers:
+        # A performer on their own is not evidence about *this* title. These
+        # people appear in hundreds of scenes, and treating a name match as a
+        # match flooded the results with unrelated clips of the lead actor.
+        score = min(1.0, score + 0.15)
+    elif not (distinctive_tokens(target.title) & found):
+        # Nothing distinctive and nobody recognisable: filler overlap only.
+        return 0.0
+
+    if in_series:
+        score = min(1.0, score + 0.1)
+
+    if target.studio and normalise(target.studio) in normalise(video.title):
+        score = min(1.0, score + 0.1)
 
     # Adult series reuse one name across many instalments, so a volume
     # disagreement means a different film, not a worse copy of this one.
-    wanted_volume = extract_volume(query)
+    wanted_volume = extract_volume(target.title)
     if wanted_volume is not None:
-        # Scraped titles put stray numbers everywhere -- scene numbers, dates,
-        # performer counts -- so only an explicit "Vol"/"Part" marker counts.
-        found_volume = extract_volume(video.title, trailing_number=False)
+        found_volume = _found_volume(target, video)
+        # Multiplicative, so agreement rewards a result that already matches
+        # and cannot rescue one that does not. Added, a coincidental "part 8"
+        # was worth as much to an unrelated clip as to the real scene.
         if found_volume == wanted_volume:
-            score = min(1.0, score + 0.15)
+            score *= 1.15
         elif found_volume is not None:
             score *= 0.5
 
     return round(min(1.0, score), 3)
+
+
+_TRAILING = re.compile(r"\s*(\d{1,3})\s*$")
+
+
+def _found_volume(target: MatchTarget, video: DirectVideo) -> int | None:
+    """The instalment a scraped title refers to, if it can be trusted.
+
+    An explicit "Vol"/"Part" marker always counts. A bare trailing number only
+    counts when removing it leaves a string ending in the queried title -- so
+    "Daddy Issues 3" states an instalment, while the 2 in "Step daddy Issues 8
+    Sc 2" is a scene number and the 8 in "italian daddy leo casanova part 8"
+    belongs to something else entirely. Reading either of those as the volume
+    threw away an exact match or promoted an unrelated clip.
+    """
+
+    explicit = extract_volume(video.title, trailing_number=False)
+    if explicit is not None:
+        return explicit
+
+    trailing = _TRAILING.search(video.title.strip())
+    if not trailing:
+        return None
+
+    stem = normalise(video.title.strip()[: trailing.start()])
+    wanted_stem = normalise(_INSTALMENT.sub("", target.title).rstrip(" 0123456789"))
+    if wanted_stem and stem.endswith(wanted_stem):
+        return int(trailing.group(1))
+    return None
 
 
 def _resolution_rank(video: DirectVideo) -> int:
@@ -148,22 +279,24 @@ def _resolution_rank(video: DirectVideo) -> int:
 def sort_key(video: DirectVideo) -> tuple:
     """Ordering within one site's filtered results, best first.
 
-    Relevance is bucketed to the nearest quarter on purpose. The difference
-    between 0.83 and 0.79 is not a real difference in how well a title matches,
-    and letting it decide would push a 40-minute 1080p scene below a 6-minute
-    clip on noise.
+    Relevance is bucketed into tenths on purpose. The difference between 0.83
+    and 0.79 is not a real difference in how well a title matches, and letting
+    it decide would push a 40-minute 1080p scene below a 6-minute clip on
+    noise. Coarser bands than this went too far the other way: an exact match
+    and a same-series near-miss landed together, and the near-miss won on
+    length.
     """
 
-    bucket = round((video.relevance or 0.0) * 4)
+    bucket = round((video.relevance or 0.0) * 10)
     return (bucket, _resolution_rank(video), video.duration or 0, video.size or 0)
 
 
 def best_matches(
-    query: str, videos: list[DirectVideo], limit: int
+    target: MatchTarget | str, videos: list[DirectVideo], limit: int
 ) -> list[DirectVideo]:
     """Score, drop the junk and the duplicates, return the best `limit`."""
 
-    scored = [video.with_relevance(relevance(query, video)) for video in videos]
+    scored = [video.with_relevance(relevance(target, video)) for video in videos]
     kept = [video for video in scored if (video.relevance or 0) >= MIN_RELEVANCE]
     kept.sort(key=sort_key, reverse=True)
 

@@ -27,7 +27,7 @@ from pydantic import BaseModel
 
 from program.db.db import db_session
 from program.media.item import MediaItem
-from program.services.directscrapers import DirectScraperService
+from program.services.directscrapers import DirectScraperService, MatchTarget
 
 
 router = APIRouter(
@@ -94,34 +94,47 @@ def direct_search(
             le=20,
             description="Maximum results kept per site, after ranking",
         ),
-    ] = 2,
+    ] = 3,
     sites: Annotated[
         str | None, Query(description="Comma-separated site keys")
     ] = None,
 ) -> DirectSearchResponse:
     search_term = (query or "").strip()
+    target: MatchTarget | None = None
 
-    if not search_term and item_id is not None:
+    if item_id is not None:
         # db_session is a context manager, not a FastAPI dependency: injecting
         # it hands the route the manager object rather than a Session.
         with db_session() as session:
             item = session.get(MediaItem, item_id)
             if item is None:
                 raise HTTPException(status_code=404, detail="Item not found")
-            search_term = item.title or ""
+            # Performers and studio come along even when the caller supplied
+            # its own search text. They are not the query -- they are how a
+            # result is recognised once the site has answered, and the site
+            # that carries the right series under the wrong episode name is
+            # only identifiable by the performer in its title.
+            target = MatchTarget.build(
+                title=search_term or item.title or "",
+                performers=item.performers,
+                studio=item.network,
+            )
 
-    if not search_term:
-        raise HTTPException(
-            status_code=400, detail="Provide either a query or an item_id"
-        )
+    if target is None:
+        if not search_term:
+            raise HTTPException(
+                status_code=400, detail="Provide either a query or an item_id"
+            )
+        target = MatchTarget.build(search_term)
+
+    if not target.title:
+        raise HTTPException(status_code=400, detail="Nothing to search for")
 
     selected = [s.strip() for s in sites.split(",")] if sites else None
-    results, errors = _service.search(
-        search_term, limit_per_site=limit, sites=selected
-    )
+    results, errors = _service.search(target, limit_per_site=limit, sites=selected)
 
     return DirectSearchResponse(
-        query=search_term,
+        query=target.title,
         results=[
             DirectVideoModel(
                 site=video.site,
