@@ -402,8 +402,15 @@ that is not rendered is dropped from the submitted payload.
   retry picks the same items straight back up. It fires from the settings save
   (on the True -> False transition), from disabling the AVN section, and from
   `POST /collections/avn/cancel-downloads` for a backlog queued earlier.
+- The sweep goes by `requested_by` **on the MediaItem**, never by walking
+  `CollectionEntry.media_item_id`. A freshly auto-requested winner has no link
+  to walk: `request_matched_winners` hands a transient MediaItem to the event
+  manager and the row is persisted later by the pipeline, so the entry link is
+  still null while the download is in flight. The first version walked entries
+  and left 35 titles downloading after the source was switched off.
 - It only touches items stamped `requested_by == "awards"` and only those not
-  yet Completed/Symlinked. A title the user clicked Request on is stamped
+  yet Completed/Symlinked, and skips anything with a `filesystem_entry` (that
+  is already mounted in the VFS; `remove_item` is what tears those down). A title the user clicked Request on is stamped
   `"collections"` and survives; so does anything already downloaded, which is
   media they now own. The `CollectionEntry` always survives -- it is a catalogue
   row, so the title stays browsable and re-requestable.

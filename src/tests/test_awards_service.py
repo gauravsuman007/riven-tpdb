@@ -487,6 +487,37 @@ def test_cancelling_removes_an_unfinished_award_download():
         assert s.get(MediaItem, item_id) is None, "the MediaItem survived"
 
 
+
+def test_cancelling_catches_an_item_no_entry_points_at():
+    """The case the entry-walking version missed entirely.
+
+    request_matched_winners hands a transient MediaItem to the event manager
+    and the row is persisted later by the pipeline, so entry.media_item_id is
+    still null while the download is in flight. Walking entries found nothing
+    and left 35 titles downloading after the user had switched the source off.
+    """
+
+    svc = _fresh_service(w={"title": "Strip", "studio": "Dorcel",
+                            "performers": ["Tommy Pistol"], "winner": True,
+                            "category": "Best Feature"})
+    svc.resolve_batch()
+
+    with Session(ENGINE) as s:
+        item = MediaItem({"tpdb_id": "uuid-strip", "requested_by": "awards",
+                          "state": "Scraped"})
+        s.add(item)
+        s.commit()
+        item_id = item.id
+
+        entry = s.execute(select(coll.CollectionEntry)).scalars().one()
+        assert entry.media_item_id is None, "test setup: entry must be unlinked"
+
+    assert svc.cancel_auto_requests() == 1, "an unlinked award item was missed"
+
+    with Session(ENGINE) as s:
+        assert s.get(MediaItem, item_id) is None
+
+
 def test_cancelling_keeps_a_finished_download():
     """Already downloaded is media the user owns; deleting it is not ours to do."""
 

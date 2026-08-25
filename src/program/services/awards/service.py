@@ -21,7 +21,7 @@ from datetime import datetime
 
 from kink import di
 from loguru import logger
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from program.apis.tpdb_api import TpdbApi, TpdbApiError
 from program.db.db import db_session
@@ -500,6 +500,13 @@ class AwardsService:
         because cancelling alone only pauses them -- the next library retry
         would pick the same items straight back up.
 
+        The sweep goes by ``requested_by`` on the item, not by walking
+        CollectionEntry links, because a freshly auto-requested winner has no
+        link to walk: ``request_matched_winners`` hands a transient MediaItem
+        to the event manager and the row is only persisted later by the
+        pipeline, so ``entry.media_item_id`` is still null. Traversing entries
+        therefore missed exactly the items the flood is made of.
+
         Only unfinished items are touched. Anything already Completed or
         Symlinked is a real download the user now owns, and deleting media
         nobody asked us to delete is not ours to do; those are removed from the
@@ -513,26 +520,15 @@ class AwardsService:
         cancelled = 0
 
         with db_session() as session:
-            entries = (
+            items = (
                 session.execute(
-                    select(CollectionEntry)
-                    .join(Collection)
-                    .where(
-                        Collection.source == SOURCE,
-                        CollectionEntry.media_item_id.is_not(None),
-                    )
+                    select(MediaItem).where(MediaItem.requested_by == "awards")
                 )
                 .scalars()
                 .all()
             )
 
-            for entry in entries:
-                item = session.get(MediaItem, entry.media_item_id)
-
-                if item is None:
-                    entry.media_item_id = None
-                    continue
-
+            for item in items:
                 if item.last_state in keep:
                     continue
 
@@ -543,20 +539,32 @@ class AwardsService:
                 if getattr(item, "filesystem_entry", None) is not None:
                     continue
 
-                # Only the auto-request path is undone here. "collections" is
-                # the Request button, so a title the user picked off an AVN
-                # page themselves stays, even though it came from a ceremony.
-                if item.requested_by != "awards":
-                    continue
-
                 try:
                     di[Program].em.cancel_job(item.id, suppress_logs=True)
                 except Exception as exc:
                     logger.debug(f"Could not cancel job for {item.log_string}: {exc}")
 
-                entry.media_item_id = None
+                # Drop the link first: the foreign key is ON DELETE SET NULL,
+                # but doing it explicitly keeps the entry usable in this
+                # session rather than depending on the database to catch up.
+                session.execute(
+                    update(CollectionEntry)
+                    .where(CollectionEntry.media_item_id == item.id)
+                    .values(media_item_id=None)
+                )
+
                 session.delete(item)
                 cancelled += 1
+
+            # Links left pointing at rows that are already gone.
+            session.execute(
+                update(CollectionEntry)
+                .where(
+                    CollectionEntry.media_item_id.is_not(None),
+                    ~CollectionEntry.media_item_id.in_(select(MediaItem.id)),
+                )
+                .values(media_item_id=None)
+            )
 
             session.commit()
 
