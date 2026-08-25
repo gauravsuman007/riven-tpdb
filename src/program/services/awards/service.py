@@ -536,6 +536,13 @@ class AwardsService:
                 if item.last_state in keep:
                     continue
 
+                # Anything with a filesystem entry is already mounted in the
+                # VFS, and tearing that down properly is the remove_item
+                # endpoint's job, not ours. Leave it to be removed by hand
+                # rather than deleting the row and orphaning the mount.
+                if getattr(item, "filesystem_entry", None) is not None:
+                    continue
+
                 # Only the auto-request path is undone here. "collections" is
                 # the Request button, so a title the user picked off an AVN
                 # page themselves stays, even though it came from a ceremony.
