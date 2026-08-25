@@ -1,5 +1,6 @@
 from collections import OrderedDict
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Annotated, Any, Literal, TypeAlias, cast
 from uuid import uuid4
 
@@ -132,16 +133,33 @@ def _remember_manual_streams(streams: dict[str, ItemStream]) -> None:
 def _rebuild_stream(remembered: dict[str, Any]) -> ItemStream:
     """A fresh Stream row from remembered fields.
 
-    Built field by field rather than through ``Stream.__init__``, which takes
-    an RTN Torrent we no longer have, and never by reusing the cached object:
-    one ORM instance cannot belong to two items.
+    Goes through the real ``Stream.__init__`` rather than around it. The
+    constructor wants an RTN Torrent, but it only ever reads five attributes
+    off it, so a plain namespace carrying those satisfies it exactly. Building
+    the instance any other way -- ``__new__``, or the mapper's own
+    ``new_instance()`` -- skips SQLAlchemy's instrumentation, and the object
+    then raises ``AttributeError: 'Stream' object has no attribute
+    '_sa_instance_state'`` on the first column assignment.
+
+    Never reuses the cached object: one ORM instance cannot belong to two
+    items, and the same release can legitimately be picked for two titles.
     """
 
-    stream = ItemStream.__new__(ItemStream)
+    torrent = SimpleNamespace(
+        raw_title=remembered["raw_title"],
+        infohash=remembered["infohash"],
+        data=remembered["parsed_data"],
+        rank=remembered["rank"],
+        lev_ratio=remembered["lev_ratio"],
+    )
+    result = SimpleNamespace(
+        seeders=remembered["seeders"],
+        leechers=remembered["leechers"],
+        size=remembered["size"],
+        indexer=remembered["indexer"],
+    )
 
-    for field, value in remembered.items():
-        setattr(stream, field, value)
-
+    stream = ItemStream(torrent, result)  # pyright: ignore[reportArgumentType]
     stream.is_cached = False
 
     return stream
