@@ -275,6 +275,92 @@ def test_best_match_returns_none_when_nothing_accepted():
     assert matching.best_match([weak]) is None
 
 
+# ------------------------------------------------- movie vs person categories
+
+def test_movie_categories_are_kept():
+    for category in (
+        "Best Anal Movie",
+        "Best Feature",
+        "Best All-Girl Sex Scene",
+        "Best Gonzo Series",
+        "Best Parody - Comedy",
+        "Movie of the Year",
+        "Best Sex Scene, Film (Couple)",
+        "Best MILF Movie or Limited Series",
+        "Best Female Mixed-Age Movie or Series",
+        "Best Picture",
+    ):
+        assert avn.awards_a_work(category), category
+
+
+def test_person_awards_are_rejected():
+    """These all name a real film, which is exactly why they need rejecting."""
+
+    for category in (
+        "Best Actor",
+        "Best Actress\u2014Film",
+        "Best Supporting Actor",
+        "Best Male Newcomer",
+        "Best New Starlet",
+        "Male Performer of the Year",
+        "Best Director - Feature",
+        "Best Cinematography",
+        "Best Editing",
+        "Best Screenplay",
+        "Best Non-Sex Performance",
+        "Best Tease Performance",
+        "Best Music, Gay Video",
+        "Best Art Direction, Film",
+        "Hall of Fame",
+    ):
+        assert not avn.awards_a_work(category), category
+
+
+def test_non_media_categories_are_rejected():
+    for category in (
+        "Best Web Site",
+        "Best Retail Chain",
+        "Best Pleasure Product",
+        "Best Boutique",
+        "Best CD-ROM",
+        "Hottest Ass",
+        "Favorite Adult Podcast",
+        "Best Affiliate Program",
+        "Best Body",
+    ):
+        assert not avn.awards_a_work(category), category
+
+
+def test_a_title_alone_is_not_enough():
+    """`is_media` used to be `bool(title)`, which let every person award in.
+
+    "Best Actor" parses a real film title out of the entry -- the film the
+    actor won for -- so a title-only gate put Best Actor, Best Male Newcomer
+    and several hundred other person awards onto the AVN page.
+    """
+
+    person = avn.AwardEntry(
+        ceremony=40, year=2023, category="Best Actor", winner=True,
+        raw="", title="Some Real Film", performers=["Someone"],
+    )
+    work = avn.AwardEntry(
+        ceremony=40, year=2023, category="Best Anal Movie", winner=True,
+        raw="", title="Some Real Film",
+    )
+
+    assert not person.is_media
+    assert work.is_media
+
+
+def test_a_movie_category_with_no_title_is_not_media():
+    entry = avn.AwardEntry(
+        ceremony=40, year=2023, category="Best Anal Movie", winner=True,
+        raw="", title=None,
+    )
+
+    assert not entry.is_media
+
+
 for _name, _fn in sorted(list(globals().items())):
     if _name.startswith("test_") and callable(_fn):
         check(_name, _fn)

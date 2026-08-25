@@ -271,7 +271,7 @@ def test_winner_resolves_via_detail_lookup():
 
     svc = _fresh_service(strip={"title": "Strip", "studio": "Dorcel/Pulse",
                                 "performers": ["Tommy Pistol"], "winner": True,
-                                "category": "Grand Reel"})
+                                "category": "Best Feature"})
     matched, unmatched = svc.resolve_batch()
 
     assert (matched, unmatched) == (1, 0), f"{matched=} {unmatched=}"
@@ -287,7 +287,7 @@ def test_winner_resolves_via_detail_lookup():
 def test_wrong_studio_does_not_match():
     svc = _fresh_service(x={"title": "Strip", "studio": "Nonexistent Studio",
                             "performers": ["Nobody At All"], "winner": True,
-                            "category": "Grand Reel"})
+                            "category": "Best Feature"})
     CATALOGUE.pop("uuid-strip")
 
     try:
@@ -319,9 +319,9 @@ def test_unmatched_entry_is_kept_not_deleted():
 def test_winners_resolve_before_nominees():
     svc = _fresh_service(
         nominee={"title": "Strip", "studio": "Dorcel", "winner": False,
-                 "category": "Best Nominee"},
+                 "category": "Best Anal Movie"},
         winner={"title": "Strip", "studio": "Dorcel", "winner": True,
-                "category": "Grand Reel"},
+                "category": "Best Feature"},
     )
     svc.resolve_batch(limit=1)
 
@@ -337,8 +337,8 @@ def test_api_outage_pauses_instead_of_burning_the_queue():
     """A TPDB outage must not mark the whole backlog unmatched."""
 
     svc = _fresh_service(
-        a={"title": "Strip", "winner": True, "category": "One"},
-        b={"title": "Strip", "winner": True, "category": "Two"},
+        a={"title": "Strip", "winner": True, "category": "Best Feature"},
+        b={"title": "Strip", "winner": True, "category": "Best Anal Movie"},
     )
     svc.api.fail_with = TpdbApiError("503", status_code=503)
     matched, unmatched = svc.resolve_batch()
@@ -356,9 +356,9 @@ def test_outage_partway_keeps_earlier_results():
 
     svc = _fresh_service(
         a={"title": "Strip", "studio": "Dorcel", "performers": ["Tommy Pistol"],
-           "winner": True, "category": "One"},
+           "winner": True, "category": "Best Feature"},
         b={"title": "Strip", "studio": "Dorcel", "performers": ["Tommy Pistol"],
-           "winner": True, "category": "Two"},
+           "winner": True, "category": "Best Anal Movie"},
     )
 
     real_search = svc.api.search_movies_text
@@ -390,9 +390,9 @@ def test_outage_partway_keeps_earlier_results():
 def test_only_winners_are_auto_requested():
     svc = _fresh_service(
         w={"title": "Strip", "studio": "Dorcel", "performers": ["Tommy Pistol"],
-           "winner": True, "category": "Grand Reel"},
+           "winner": True, "category": "Best Feature"},
         n={"title": "Strip", "studio": "Dorcel", "performers": ["Tommy Pistol"],
-           "winner": False, "category": "Best Nominee"},
+           "winner": False, "category": "Best Anal Movie"},
     )
     svc.resolve_batch()
     queued = svc.request_matched_winners()
@@ -411,7 +411,7 @@ def test_only_winners_are_auto_requested():
 
 def test_auto_request_is_off_when_disabled():
     svc = _fresh_service(w={"title": "Strip", "studio": "Dorcel", "winner": True,
-                            "category": "Grand Reel"})
+                            "category": "Best Feature"})
     svc.resolve_batch()
     svc.settings.auto_request_winners = False
 
@@ -425,7 +425,7 @@ def test_auto_request_is_off_when_disabled():
 def test_existing_library_item_is_adopted_not_duplicated():
     svc = _fresh_service(w={"title": "Strip", "studio": "Dorcel",
                             "performers": ["Tommy Pistol"], "winner": True,
-                            "category": "Grand Reel"})
+                            "category": "Best Feature"})
     svc.resolve_batch()
 
     with Session(ENGINE) as s:
@@ -446,9 +446,9 @@ def test_resolution_is_resumable():
     """State lives in the rows, so a second run continues rather than repeats."""
 
     svc = _fresh_service(
-        a={"title": "Strip", "studio": "Dorcel", "winner": True, "category": "One"},
-        b={"title": "Strip", "studio": "Dorcel", "winner": True, "category": "Two"},
-        c={"title": "Strip", "studio": "Dorcel", "winner": True, "category": "Three"},
+        a={"title": "Strip", "studio": "Dorcel", "winner": True, "category": "Best Feature"},
+        b={"title": "Strip", "studio": "Dorcel", "winner": True, "category": "Best Anal Movie"},
+        c={"title": "Strip", "studio": "Dorcel", "winner": True, "category": "Best Gonzo Movie"},
     )
     svc.resolve_batch(limit=2)
     after_first = svc.api.searches
@@ -472,7 +472,7 @@ def test_sync_stores_winners_only_by_default():
     svc.settings.include_nominees = False
 
     entry = lambda title, winner: types.SimpleNamespace(
-        ceremony=43, year=2026, category="Grand Reel", winner=winner,
+        ceremony=43, year=2026, category="Best Feature", winner=winner,
         raw=title, title=title, studio="Dorcel", performers=[],
         is_media=True)
 
@@ -495,14 +495,14 @@ def test_turning_nominees_off_prunes_stored_ones():
     """Changing the setting has to clean up what an earlier sync stored."""
 
     svc = _fresh_service(
-        w={"title": "A Winner", "winner": True, "category": "Grand Reel"},
-        n={"title": "A Nominee", "winner": False, "category": "Grand Reel"},
+        w={"title": "A Winner", "winner": True, "category": "Best Feature"},
+        n={"title": "A Nominee", "winner": False, "category": "Best Feature"},
     )
     svc.settings.include_nominees = False
 
     real_build = sys.modules["program.services.awards.avn"].build_corpus
     sys.modules["program.services.awards.avn"].build_corpus = lambda *a, **k: [
-        types.SimpleNamespace(ceremony=43, year=2026, category="Grand Reel",
+        types.SimpleNamespace(ceremony=43, year=2026, category="Best Feature",
                               winner=True, raw="A Winner", title="A Winner",
                               studio=None, performers=[], is_media=True)
     ]
@@ -522,7 +522,7 @@ def test_prune_spares_a_nominee_already_in_the_library():
     """Deleting it would make an owned title look like it arrived from nowhere."""
 
     svc = _fresh_service(
-        n={"title": "A Nominee", "winner": False, "category": "Grand Reel"},
+        n={"title": "A Nominee", "winner": False, "category": "Best Feature"},
     )
     svc.settings.include_nominees = False
 
@@ -550,7 +550,7 @@ def test_nominees_stored_when_explicitly_enabled():
     svc.settings.include_nominees = True
 
     entry = lambda title, winner: types.SimpleNamespace(
-        ceremony=43, year=2026, category="Grand Reel", winner=winner,
+        ceremony=43, year=2026, category="Best Feature", winner=winner,
         raw=title, title=title, studio=None, performers=[], is_media=True)
 
     real_build = sys.modules["program.services.awards.avn"].build_corpus
@@ -573,7 +573,7 @@ def test_resolver_ignores_other_sources():
     """A self-sourced catalogue owes TPDB nothing and must not be resolved here."""
 
     _fresh_service(a={"title": "Strip", "studio": "Dorcel", "winner": True,
-                      "category": "One"})
+                      "category": "Best Feature"})
 
     with Session(ENGINE) as s:
         other = coll.Collection(key="adultempire-trending", source="adultempire",
@@ -599,14 +599,83 @@ def test_resolver_ignores_other_sources():
 
 def test_progress_counts_by_state():
     svc = _fresh_service(
-        a={"title": "Strip", "studio": "Dorcel", "winner": True, "category": "One"},
-        b={"title": "Nothing Like It", "winner": True, "category": "Two"},
+        a={"title": "Strip", "studio": "Dorcel", "winner": True, "category": "Best Feature"},
+        b={"title": "Nothing Like It", "winner": True, "category": "Best Anal Movie"},
     )
     svc.resolve_batch()
     progress = svc.progress()
 
     assert progress.get(coll.MATCH_MATCHED) == 1, progress
     assert progress.get(coll.MATCH_UNMATCHED) == 1, progress
+
+
+def test_sync_prunes_stored_person_awards():
+    """The category gates were tightened after corpora had already synced.
+
+    ``sync_corpus`` only ever adds, so without an explicit prune a library that
+    synced before the change would show Best Actor and Best Male Newcomer
+    forever -- the rows are already there and nothing would revisit them.
+    """
+
+    svc = _fresh_service(
+        film={"title": "A Real Film", "winner": True, "category": "Best Feature"},
+        actor={"title": "A Real Film", "winner": True, "category": "Best Actor"},
+        starlet={"title": "Another Film", "winner": True, "category": "Best New Starlet"},
+        website={"title": "Brazzers", "winner": True, "category": "Best Web Site"},
+    )
+
+    real_build = sys.modules["program.services.awards.avn"].build_corpus
+    # Non-empty on purpose: sync_corpus returns early on an empty corpus so
+    # that a Wikipedia outage cannot delete the collections.
+    sys.modules["program.services.awards.avn"].build_corpus = lambda *a, **k: [
+        types.SimpleNamespace(ceremony=43, year=2026, category="Best Feature",
+                              winner=True, raw="A Real Film", title="A Real Film",
+                              studio=None, performers=[], is_media=True)
+    ]
+
+    try:
+        svc.sync_corpus()
+    finally:
+        sys.modules["program.services.awards.avn"].build_corpus = real_build
+
+    with Session(ENGINE) as s:
+        categories = {e.category for e in s.query(coll.CollectionEntry).all()}
+
+    assert categories == {"Best Feature"}, categories
+
+
+def test_person_award_prune_spares_a_requested_title():
+    """Same reasoning as the nominee prune: it is in the library now."""
+
+    svc = _fresh_service(
+        actor={"title": "A Real Film", "winner": True, "category": "Best Actor"},
+    )
+
+    with Session(ENGINE) as s:
+        item = MediaItem({"tpdb_id": "uuid-y", "requested_by": "user"})
+        s.add(item)
+        s.flush()
+        s.query(coll.CollectionEntry).update({"media_item_id": item.id})
+        s.commit()
+
+    real_build = sys.modules["program.services.awards.avn"].build_corpus
+    # Non-empty on purpose: sync_corpus returns early on an empty corpus, so an
+    # empty stub would prove nothing about the prune.
+    sys.modules["program.services.awards.avn"].build_corpus = lambda *a, **k: [
+        types.SimpleNamespace(ceremony=43, year=2026, category="Best Feature",
+                              winner=True, raw="A Real Film", title="A Real Film",
+                              studio=None, performers=[], is_media=True)
+    ]
+
+    try:
+        svc.sync_corpus()
+    finally:
+        sys.modules["program.services.awards.avn"].build_corpus = real_build
+
+    with Session(ENGINE) as s:
+        surviving = {e.category for e in s.query(coll.CollectionEntry).all()}
+
+    assert "Best Actor" in surviving, surviving
 
 
 for _name, _fn in sorted(list(globals().items())):

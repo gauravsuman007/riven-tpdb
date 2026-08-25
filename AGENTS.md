@@ -311,6 +311,22 @@ prints `SKIP:` and exits 0 if a dependency is missing.
   the corpus has not reached yet still gets a row marked `status: "fetching"`
   ("Data being fetched"). A page that grows downwards while a sync runs reads as
   breakage, not as progress.
+- **Only movie categories reach the page.** Almost every AVN category names a
+  work somewhere -- "Best Actor" is awarded *for* a film, so parsing one yields
+  a real title -- which is why `is_media` being `bool(title)` let several
+  hundred person awards onto the page. Two gates now run against the *category*,
+  in order: `PERSON_AWARD` rejects person and craft awards outright, then
+  `WORK_CATEGORY` requires a format noun (movie/film/video/feature/release/
+  series/scene/tape/...). The order matters: "Movie of the Year" and
+  "Best Sex Scene, Film (Couple)" are real movie categories, so "of the year"
+  and "couple" are in neither gate and are handled by the work-noun requirement
+  instead. Measured live: 544 of 855 categories and 1,776 of 2,792 winners
+  survive.
+- `sync_corpus` only ever *adds*, so tightening the gates needed
+  `_prune_person_awards` as well -- a library that synced before the change
+  would otherwise show Best Actor forever. It spares entries already requested,
+  same as the nominee prune. `sync_corpus` returns early on an empty corpus so a
+  Wikipedia outage cannot delete anything.
 - `POST /collections/avn/enable` does two things and needs both: it saves the
   setting (so the switch survives a restart and matches Settings → Content →
   Awards) **and** calls `ProgramScheduler.refresh_content_jobs()`. Saving alone
@@ -320,6 +336,23 @@ prints `SKIP:` and exits 0 if a dependency is missing.
   would immediately fire the vacuum and the library retry as a side effect. It
   touches only the four awards/brochure jobs, adds or removes them, and drops
   the cached service instances (they read their settings at construction).
+
+## Enabling content jobs from their own page
+`/avn` and `/brochure` each have an enable button that posts to
+`/collections/{avn,brochure}/enable`. Both go through `_toggle_content_job`,
+which saves the setting **and** calls `refresh_content_jobs()`. AVN 409s without
+a TPDB token because its titles are resolved against TPDB; the brochure does not,
+because Adult Empire supplies studio, year and cast on its own.
+
+`/collections/brochure/status` exists because empty shelves are ambiguous:
+switched off and switched-on-but-not-yet-synced need different things said.
+
+## Settings tabs
+`content` is its own **Content** tab in the frontend settings page, not a
+sub-section of TPDB. It was under TPDB before, which made every "Settings ->
+Content -> ..." pointer in the UI a dead end. Tabs are a presentation layer over
+one form -- inactive panels stay mounted and hidden with CSS, because a field
+that is not rendered is dropped from the submitted payload.
 
 ## Shared TPDB lookup
 `services/recommendations/tpdb_lookup.resolve_movie()` is the single two-pass

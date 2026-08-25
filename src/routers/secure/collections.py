@@ -635,30 +635,22 @@ def avn_overview(
     return AvnOverview(enabled=settings.enabled, years=rows, progress=progress)
 
 
-class AvnEnableResponse(BaseModel):
+class ToggleResponse(BaseModel):
     enabled: bool
     message: str
 
 
-@router.post("/avn/enable", operation_id="enable_avn")
-def enable_avn(enabled: Annotated[bool, Query()] = True) -> AvnEnableResponse:
-    """Turn the AVN corpus job on (or off) and apply it without a restart.
+def _toggle_content_job(section: str, enabled: bool, on_message: str, off_message: str) -> ToggleResponse:
+    """Flip one content job on or off and apply it without a restart.
 
     Both halves matter and neither is enough alone: the settings write is what
     survives a restart and what the settings page shows, and the scheduler
     refresh is what makes data start appearing now. Writing the setting without
     refreshing leaves a switch that reads "on" while nothing runs until the
-    next restart -- which is exactly the kind of silent no-op this page exists
-    to avoid.
+    next restart -- exactly the silent no-op these buttons exist to avoid.
     """
 
-    if enabled and not settings_manager.settings.tpdb.api_token:
-        raise HTTPException(
-            status_code=409,
-            detail="Set a ThePornDB API token in Settings first; AVN titles are resolved against TPDB.",
-        )
-
-    settings_manager.settings.content.awards.enabled = enabled
+    setattr(getattr(settings_manager.settings.content, section), "enabled", enabled)
     settings_manager.save()
 
     from program.program import Program
@@ -670,18 +662,74 @@ def enable_avn(enabled: Annotated[bool, Query()] = True) -> AvnEnableResponse:
         # failure that a restart would resolve.
         logger.error(f"Could not refresh scheduled jobs: {exc}")
 
-        return AvnEnableResponse(
+        return ToggleResponse(
             enabled=enabled,
             message="Saved, but the scheduler did not pick it up. Restart Riven to apply.",
         )
 
-    return AvnEnableResponse(
-        enabled=enabled,
-        message=(
-            "Fetching AVN award winners. Years will fill in as they resolve."
-            if enabled
-            else "AVN award collections disabled."
-        ),
+    return ToggleResponse(
+        enabled=enabled, message=on_message if enabled else off_message
+    )
+
+
+@router.post("/avn/enable", operation_id="enable_avn")
+def enable_avn(enabled: Annotated[bool, Query()] = True) -> ToggleResponse:
+    """Turn the AVN corpus job on (or off)."""
+
+    if enabled and not settings_manager.settings.tpdb.api_token:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Set a ThePornDB API token in Settings first; AVN titles are "
+                "resolved against TPDB."
+            ),
+        )
+
+    return _toggle_content_job(
+        "awards",
+        enabled,
+        "Fetching AVN award winners. Years will fill in as they resolve.",
+        "AVN award collections disabled.",
+    )
+
+
+class BrochureStatus(BaseModel):
+    enabled: bool
+    # Titles mirrored so far, so the page can tell "switched off" from
+    # "switched on but the first sync has not landed yet".
+    total: int
+
+
+@router.get("/brochure/status", operation_id="get_brochure_status")
+def brochure_status(source: Annotated[str, Query()] = "adultempire") -> BrochureStatus:
+    """Whether the brochure is on, and how much it has mirrored."""
+
+    with db_session() as session:
+        total = session.scalar(
+            select(func.count(CollectionEntry.id))
+            .join(Collection)
+            .where(Collection.source == source)
+        )
+
+    return BrochureStatus(
+        enabled=settings_manager.settings.content.brochure.enabled, total=total or 0
+    )
+
+
+@router.post("/brochure/enable", operation_id="enable_brochure")
+def enable_brochure(enabled: Annotated[bool, Query()] = True) -> ToggleResponse:
+    """Turn the Adult Empire brochure on (or off).
+
+    Unlike AVN this needs no TPDB token: Adult Empire supplies studio, year and
+    cast, which is everything the scrapers match on. TPDB enrichment is a
+    separate, optional pass over titles that are already downloadable.
+    """
+
+    return _toggle_content_job(
+        "brochure",
+        enabled,
+        "Reading Adult Empire's ranked listings. Ratings and cast fill in afterwards.",
+        "Adult Empire brochure disabled.",
     )
 
 

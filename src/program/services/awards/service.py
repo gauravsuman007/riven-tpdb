@@ -162,6 +162,7 @@ class AwardsService:
                 collection.refreshed_at = datetime.now()
 
             removed = self._prune_nominees(session) if not keep_nominees else 0
+            demoted = self._prune_person_awards(session)
             session.commit()
 
         scope = "winners and nominees" if keep_nominees else "winners only"
@@ -169,6 +170,7 @@ class AwardsService:
             f"AVN corpus synced ({scope}): {len(by_year)} collections, "
             f"{added} new entries"
             + (f", {removed} nominee(s) removed" if removed else "")
+            + (f", {demoted} person award(s) removed" if demoted else "")
         )
 
         return added
@@ -200,6 +202,41 @@ class AwardsService:
             session.delete(entry)
 
         return len(nominees)
+
+    @staticmethod
+    def _prune_person_awards(session) -> int:
+        """Delete stored entries whose category awards a person, not a film.
+
+        Needed because the category gates were tightened after the corpus had
+        already been synced, and ``sync_corpus`` only ever adds. Without this, a
+        library that synced before the change would keep showing Best Actor and
+        Best Male Newcomer forever -- the rows are already there and nothing
+        would revisit them.
+
+        Requested entries are left alone, exactly as with nominees: the title is
+        in the library now, and unlinking it would make it look like it arrived
+        from nowhere.
+        """
+
+        stale = [
+            entry
+            for entry in session.execute(
+                select(CollectionEntry)
+                .join(Collection)
+                .where(
+                    Collection.source == SOURCE,
+                    CollectionEntry.media_item_id.is_(None),
+                )
+            )
+            .scalars()
+            .all()
+            if not avn.awards_a_work(entry.category)
+        ]
+
+        for entry in stale:
+            session.delete(entry)
+
+        return len(stale)
 
     # -------------------------------------------------------------- resolution
 
