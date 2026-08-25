@@ -324,8 +324,11 @@ prints `SKIP:` and exits 0 if a dependency is missing.
   survive.
 - `sync_corpus` only ever *adds*, so tightening the gates needed
   `_prune_person_awards` as well -- a library that synced before the change
-  would otherwise show Best Actor forever. It spares entries already requested,
-  same as the nominee prune. `sync_corpus` returns early on an empty corpus so a
+  would otherwise show Best Actor forever. Unlike the nominee prune it does
+  *not* spare requested entries: deleting a collection entry never touches its
+  MediaItem, so the film stays in the library and only its awards-page listing
+  goes -- and sparing them would defeat the prune on exactly the ceremonies that
+  have been synced longest, which are full of auto-requested Best Actor winners. `sync_corpus` returns early on an empty corpus so a
   Wikipedia outage cannot delete anything.
 - `POST /collections/avn/enable` does two things and needs both: it saves the
   setting (so the switch survives a restart and matches Settings → Content →

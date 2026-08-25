@@ -644,8 +644,15 @@ def test_sync_prunes_stored_person_awards():
     assert categories == {"Best Feature"}, categories
 
 
-def test_person_award_prune_spares_a_requested_title():
-    """Same reasoning as the nominee prune: it is in the library now."""
+def test_person_award_prune_removes_even_a_requested_title():
+    """Deliberately unlike the nominee prune.
+
+    Deleting the entry does not touch the MediaItem -- the film stays in the
+    library exactly as it was, and only its listing on the awards page goes.
+    Sparing requested entries would defeat the prune on precisely the
+    ceremonies that have been synced longest, which are the ones full of
+    auto-requested Best Actor winners.
+    """
 
     svc = _fresh_service(
         actor={"title": "A Real Film", "winner": True, "category": "Best Actor"},
@@ -659,8 +666,6 @@ def test_person_award_prune_spares_a_requested_title():
         s.commit()
 
     real_build = sys.modules["program.services.awards.avn"].build_corpus
-    # Non-empty on purpose: sync_corpus returns early on an empty corpus, so an
-    # empty stub would prove nothing about the prune.
     sys.modules["program.services.awards.avn"].build_corpus = lambda *a, **k: [
         types.SimpleNamespace(ceremony=43, year=2026, category="Best Feature",
                               winner=True, raw="A Real Film", title="A Real Film",
@@ -674,8 +679,10 @@ def test_person_award_prune_spares_a_requested_title():
 
     with Session(ENGINE) as s:
         surviving = {e.category for e in s.query(coll.CollectionEntry).all()}
+        # The library item is untouched; only the awards-page row went.
+        assert s.query(MediaItem).count() == 1
 
-    assert "Best Actor" in surviving, surviving
+    assert surviving == {"Best Feature"}, surviving
 
 
 for _name, _fn in sorted(list(globals().items())):

@@ -213,9 +213,14 @@ class AwardsService:
         Best Male Newcomer forever -- the rows are already there and nothing
         would revisit them.
 
-        Requested entries are left alone, exactly as with nominees: the title is
-        in the library now, and unlinking it would make it look like it arrived
-        from nowhere.
+        Unlike the nominee prune this does **not** spare entries that were
+        already requested, and the difference is deliberate. Deleting a
+        collection entry does not touch its MediaItem: the film stays in the
+        library exactly as it was, and only its listing on the awards page
+        goes. A nominee is spared because its entry is the only record of why
+        that title was ever fetched; a person award's entry is a row that
+        should never have existed, so keeping it would defeat the prune on
+        precisely the ceremonies that have been synced longest.
         """
 
         stale = [
@@ -223,10 +228,7 @@ class AwardsService:
             for entry in session.execute(
                 select(CollectionEntry)
                 .join(Collection)
-                .where(
-                    Collection.source == SOURCE,
-                    CollectionEntry.media_item_id.is_(None),
-                )
+                .where(Collection.source == SOURCE)
             )
             .scalars()
             .all()
