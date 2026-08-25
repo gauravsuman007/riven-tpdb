@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from loguru import logger
 
 from program.services.directscrapers.base import DirectScraper
+from program.services.directscrapers.eporner import EPornerScraper
 from program.services.directscrapers.iporntv import IPornTVScraper
 from program.services.directscrapers.models import DirectSource, DirectVideo
 from program.services.directscrapers.ranking import (
@@ -20,6 +21,7 @@ from program.services.directscrapers.ranking import (
     sort_key,
     strip_punctuation,
 )
+from program.services.directscrapers.tnaflix import TnaflixScraper
 from program.services.directscrapers.upornia import UporniaScraper
 from program.services.directscrapers.xfreehd import XFreeHDScraper
 
@@ -29,10 +31,18 @@ class DirectScraperService:
 
     key = "direct_scraping"
 
+    #: Shown ahead of the other three regardless of relevance. Both are a
+    #: bigger catalogue than the rest combined -- tnaflix alone answered
+    #: every measured query, eporner has a documented API instead of scraped
+    #: HTML -- so a user picking a source is better served starting here.
+    PRIORITY_SITES = frozenset({"tnaflix", "eporner"})
+
     def __init__(self) -> None:
         self.services: dict[str, DirectScraper] = {
             scraper.key: scraper
             for scraper in (
+                TnaflixScraper(),
+                EPornerScraper(),
                 XFreeHDScraper(),
                 UporniaScraper(),
                 IPornTVScraper(),
@@ -56,14 +66,14 @@ class DirectScraperService:
 
         Returns the results and a map of site key to error message. One site
         being down is normal -- these are not services with uptime guarantees --
-        and must not cost the user the other two, so failures are reported
+        and must not cost the user the rest, so failures are reported
         alongside the results rather than raised.
 
         Each site is searched with several phrasings rather than one, because
         the sites do not agree on what a query means. xfreehd ANDs the terms,
         so a full scene title matches nothing and only a short "series +
-        performer" finds anything; the other two OR them, so every extra word
-        adds noise instead. One phrasing cannot serve both, and measuring
+        performer" finds anything; every other site ORs them, so every extra
+        word adds noise instead. One phrasing cannot serve both, and measuring
         showed each site's hit arriving under a different one.
 
         Results are pooled across phrasings, then ranked and filtered per site.
@@ -190,25 +200,31 @@ def _merge_ranked(
     for is that the best video is at the top.
 
     Position within a site breaks ties, so two results a site itself ranked in
-    an order do not get shuffled out of it.
+    an order do not get shuffled out of it. A priority site's tier of 0 always
+    sorts ahead of a non-priority site's tier of 1, however the quality
+    compares -- that ordering is a deliberate site preference, not something
+    relevance should be allowed to override.
     """
 
-    ranked: list[tuple[tuple, int, DirectVideo]] = []
+    ranked: list[tuple[int, tuple, int, DirectVideo]] = []
     seen: set[str] = set()
 
     for key in selected:
+        tier = 0 if key in DirectScraperService.PRIORITY_SITES else 1
         for position, video in enumerate(results.get(key) or []):
             if video.key() in seen:
                 continue
             seen.add(video.key())
-            ranked.append((sort_key(video), position, video))
+            ranked.append((tier, sort_key(video), position, video))
 
-    # Descending on quality, ascending on the site's own position, which is why
-    # the two cannot be expressed as one reverse=True sort.
-    ranked.sort(key=lambda entry: entry[1])
-    ranked.sort(key=lambda entry: entry[0], reverse=True)
+    # Each sort is stable and applied least-significant first, so the final
+    # order is: tier ascending, then quality descending, then the site's own
+    # position ascending.
+    ranked.sort(key=lambda entry: entry[2])
+    ranked.sort(key=lambda entry: entry[1], reverse=True)
+    ranked.sort(key=lambda entry: entry[0])
 
-    return [video for _, _, video in ranked]
+    return [video for _, _, _, video in ranked]
 
 
 __all__ = ["DirectScraperService", "DirectSource", "DirectVideo", "MatchTarget"]

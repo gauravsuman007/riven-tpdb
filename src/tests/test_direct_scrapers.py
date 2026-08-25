@@ -24,6 +24,8 @@ from program.services.directscrapers.ranking import (
     relevance,
     series_name,
 )
+from program.services.directscrapers.eporner import _DOWNLOAD_RE, EPornerScraper
+from program.services.directscrapers.tnaflix import TnaflixScraper
 from program.services.directscrapers.upornia import _best_size, _deobfuscate
 from program.services.directscrapers.xfreehd import XFreeHDScraper
 
@@ -175,6 +177,130 @@ check("views are parsed", video.views == 1100)
 check("the HD badge is not reported as a resolution", video.resolution is None)
 check("private videos are excluded", all(p.video_id != "222" for p in parsed))
 
+print("\ntnaflix search parsing")
+tna_markup = """
+<html><body>
+  <div class="row video-list">
+    <div data-vid="10181935" data-num="1" class="col-xs-6">
+      <a class="thumb thumb-chrome video-thumb bg-dark" href="/asian-porn/x/video10181935">
+        <img src="/assets/img/video_cover_placeholder.jpg" data-src="https://img.tnaflix.com/real.jpg" />
+        <div class="thumb-icon video-duration">14:01</div>
+        <div class="thumb-icon max-quality">1080p</div>
+      </a>
+      <a href="/asian-porn/x/video10181935" class="video-title text-break">A Good Scene</a>
+      <div class="d-flex">
+        <div class="me-2"><i class="icon-eye"></i>3.7K</div>
+      </div>
+    </div>
+  </div>
+</body></html>
+"""
+tna_scraper = TnaflixScraper()
+tna_scraper._get = lambda *a, **k: _FakeResponse(tna_markup)  # type: ignore[method-assign]
+tna_parsed = tna_scraper.search("anything")
+check("one card is parsed", len(tna_parsed) == 1, [p.title for p in tna_parsed])
+tna_video = tna_parsed[0]
+check("id comes from data-vid", tna_video.video_id == "10181935")
+check("title comes from the title link", tna_video.title == "A Good Scene")
+check("thumbnail prefers data-src", tna_video.thumbnail == "https://img.tnaflix.com/real.jpg")
+check("duration is parsed", tna_video.duration == 841)
+check("resolution is read straight off the badge", tna_video.resolution == "1080p")
+check("a measured 1080p also sets the HD hint", tna_video.hd is True)
+check("views are parsed", tna_video.views == 3700)
+check("page_url is absolute", tna_video.page_url.startswith("https://www.tnaflix.com/"))
+
+print("\ntnaflix source resolution")
+tna_video_page = """
+<html><body>
+  <video controls>
+    <source src="https://cdn.tnaflix.com/x-360p.mp4?secure=abc" type="video/mp4" size="360">
+    <source src="https://cdn.tnaflix.com/x-1080p.mp4?secure=abc" type="video/mp4" size="1080">
+  </video>
+</body></html>
+"""
+tna_scraper._get = lambda *a, **k: _FakeResponse(tna_video_page)  # type: ignore[method-assign]
+tna_sources = tna_scraper.resolve("10181935")
+check("both renditions are found", len(tna_sources) == 2, tna_sources)
+check(
+    "the higher resolution sorts first",
+    tna_sources[0].label == "1080p",
+    [s.label for s in tna_sources],
+)
+check("a Referer travels with the source", tna_sources[0].headers.get("Referer"))
+
+print("\neporner search parsing")
+epo_scraper = EPornerScraper()
+
+
+class _FakeJsonResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+epo_scraper._get = lambda *a, **k: _FakeJsonResponse(  # type: ignore[method-assign]
+    {
+        "videos": [
+            {
+                "id": "HpzfGbGxtdQ",
+                "title": "A Good Scene",
+                "url": "https://www.eporner.com/video-HpzfGbGxtdQ/a-good-scene/",
+                "default_thumb": {"src": "https://img.eporner.com/real.jpg"},
+                "length_sec": 1235,
+                "views": 512,
+            },
+            {"id": "", "title": "No id, dropped"},
+        ]
+    }
+)
+epo_parsed = epo_scraper.search("anything")
+check(
+    "an entry with no id is dropped",
+    len(epo_parsed) == 1,
+    [p.title for p in epo_parsed],
+)
+epo_video = epo_parsed[0]
+check("id is the slug id", epo_video.video_id == "HpzfGbGxtdQ")
+check("title comes through as-is", epo_video.title == "A Good Scene")
+check("thumbnail comes from default_thumb", epo_video.thumbnail == "https://img.eporner.com/real.jpg")
+check("duration is the reported seconds", epo_video.duration == 1235)
+check("views come through as an int", epo_video.views == 512)
+check(
+    "resolution is unknown until resolved -- the search API does not report one",
+    epo_video.resolution is None,
+)
+
+print("\neporner download-link parsing")
+check(
+    "a 720p h264 link is matched",
+    _DOWNLOAD_RE.search("Download MP4 (720p, h264, 312.37 MB)").groups()
+    == ("720", "312.37", "MB"),
+)
+check("a non-matching string yields nothing", _DOWNLOAD_RE.search("Stream") is None)
+
+epo_video_page = """
+<html><body>
+  <span class="download-h264"><a href="/dload/x/240/1-240p.mp4" >Download MP4 (240p, h264, 44.59 MB)</a></span>
+  <span class="download-h264"><a href="/dload/x/720/1-720p.mp4" >Download MP4 (720p, h264, 312.37 MB)</a></span>
+</body></html>
+"""
+epo_scraper._get = lambda *a, **k: _FakeResponse(epo_video_page)  # type: ignore[method-assign]
+epo_sources = epo_scraper.resolve("HpzfGbGxtdQ")
+check("both renditions are found", len(epo_sources) == 2, epo_sources)
+check(
+    "the higher resolution sorts first",
+    epo_sources[0].label == "720p",
+    [s.label for s in epo_sources],
+)
+check(
+    "size is converted from MB to bytes",
+    epo_sources[0].size == int(312.37 * 1_000_000),
+    epo_sources[0].size,
+)
+check("a Referer travels with the source", epo_sources[0].headers.get("Referer"))
+
 print("\nrelevance scoring")
 
 
@@ -319,6 +445,31 @@ check("every result survives the merge", len(merged) == 3)
 check(
     "a site that returned nothing is skipped",
     len(_merge_ranked({"a": None, "b": None}, {"a": scored["a"], "b": []})) == 2,  # type: ignore[dict-item]
+)
+
+# A priority site must sort ahead of a non-priority one even when its best
+# result scores lower -- the whole point of the tiering, not a side effect of
+# it happening to also rank well.
+weak_priority = [
+    DirectVideo(site="eporner", video_id="1", title="Alpha Male", page_url="", duration=60)
+]
+strong_other = [
+    DirectVideo(
+        site="a", video_id="1", title="Alpha Male", page_url="",
+        resolution="1080p", duration=3600,
+    )
+]
+tiered = _merge_ranked(
+    {"eporner": None, "a": None},  # type: ignore[dict-item]
+    {
+        "eporner": [v.with_relevance(1.0) for v in weak_priority],
+        "a": [v.with_relevance(1.0) for v in strong_other],
+    },
+)
+check(
+    "a priority site outranks a higher-quality non-priority site",
+    [v.site for v in tiered] == ["eporner", "a"],
+    [(v.site, v.relevance, v.resolution) for v in tiered],
 )
 
 
