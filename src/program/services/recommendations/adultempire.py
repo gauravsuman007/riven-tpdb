@@ -78,14 +78,22 @@ _CAST = re.compile(r'href="/\d+/[a-z0-9-]+-pornstars\.html"[^>]*>\s*([^<]+?)\s*<
 _ALSO_BOUGHT = re.compile(r'href="/(\d+)/([a-z0-9-]+)-porn-movies\.html"')
 _MOVIE_HREF = re.compile(r"^/(\d+)/([a-z0-9-]+)-porn-movies\.html$")
 
-# Studios. The directory comes from the sitemaps rather than a browse page:
-# `/all-porn-movie-studios.html` renders only a handful of studios in HTML and
-# the rest some other way, while robots.txt points at these three explicitly.
-# They overlap heavily and are unioned by id.
-STUDIO_SITEMAPS = (
-    "/sitemaps/studio/sitemap.xml",
-    "/sitemaps/studio-videos/sitemap.xml",
-    "/sitemaps/studio-blu-rays/sitemap.xml",
+# Studios. `/all-porn-movie-studios.html` on its own renders only about ten
+# studios -- the page's default view is a curated top slice, not the
+# catalogue. Adding `?letter=all` is what turns it into the actual directory:
+# confirmed live, it returns every studio the catalogue has (800+ for movies,
+# same again for videos, versus the ~100 the studio sitemaps cap out at,
+# which is why a studio like Pure Taboo -- a real, working studio page --
+# never showed up through the sitemaps at all). Confirmed non-paginated too:
+# `?letter=all&page=2` returns the identical set.
+#
+# The three catalogues overlap heavily and are unioned by id. robots.txt
+# disallows `/Search` and `/AllSearch/Search` specifically; these listing
+# pages are not under either path.
+STUDIO_INDEX_PAGES = (
+    "/all-porn-movie-studios.html",
+    "/all-porn-video-studios.html",
+    "/all-blu-ray-studios.html",
 )
 
 # Sorts a studio page accepts. Deliberately not the full set the page offers
@@ -94,8 +102,7 @@ STUDIO_SITEMAPS = (
 # carries a rating per title but will not order by it.
 STUDIO_SORTS = ("bestseller", "trending")
 
-_SITEMAP_LOC = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>")
-_STUDIO_PATH = re.compile(r"/(\d+)/studio/([a-z0-9-]+)\.html$")
+_STUDIO_HREF = re.compile(r'href="(/(\d+)/studio/([a-z0-9-]+)\.html)"')
 _STUDIO_NAME = re.compile(r'<h1 class="list-page__headline[^"]*">\s*(.*?)\s*</h1>', re.S)
 _STUDIO_COUNT = re.compile(r'class="list-page__results"><strong>([\d,]+)</strong>')
 
@@ -227,24 +234,26 @@ class AdultEmpireClient:
     # ---------------------------------------------------------------- studios
 
     def studio_refs(self) -> list[StudioRef]:
-        """Every studio the sitemaps list, unioned by id.
+        """Every studio the catalogue indexes list, unioned by id.
 
-        The three sitemaps are the movie, video and Blu-ray catalogues. A
-        studio usually appears in more than one under different slugs; the
-        first slug seen wins, and since the movie sitemap is read first that
-        is the ``-porn-movies`` form, which is the catalogue the ranked
-        listings and :func:`parse_listing` are built around.
+        ``?letter=all`` is what makes these indexes complete -- without it
+        the page renders only its default top slice. The three pages are the
+        movie, video and Blu-ray catalogues; a studio usually appears in more
+        than one under different slugs, and the first slug seen wins. The
+        movie index is read first, so that is the ``-porn-movies`` form,
+        which is the catalogue the ranked listings and :func:`parse_listing`
+        are built around.
         """
 
         found: dict[str, StudioRef] = {}
 
-        for sitemap in STUDIO_SITEMAPS:
+        for page in STUDIO_INDEX_PAGES:
             try:
-                body = self._get(sitemap)
+                body = self._get(page + "?letter=all")
             except AdultEmpireError as exc:
-                # One catalogue's sitemap being unavailable should cost its
+                # One catalogue's index being unavailable should cost its
                 # exclusive studios, not the whole directory.
-                logger.warning(f"Adult Empire sitemap {sitemap} failed: {exc}")
+                logger.warning(f"Adult Empire studio index {page} failed: {exc}")
                 continue
 
             for ref in parse_studio_refs(body):
@@ -310,22 +319,27 @@ class AdultEmpireClient:
         return out
 
 
-def parse_studio_refs(xml: str) -> list[StudioRef]:
-    """Extract studio ids and slugs from a sitemap."""
+def parse_studio_refs(html: str) -> list[StudioRef]:
+    """Extract studio ids and slugs from a ``?letter=all`` index page.
+
+    Each card links its id twice -- an image and a title, the same pattern
+    the product cards use -- so ids are deduplicated here rather than left to
+    the caller.
+    """
 
     out: list[StudioRef] = []
+    seen: set[str] = set()
 
-    for loc in _SITEMAP_LOC.findall(xml):
-        match = _STUDIO_PATH.search(loc)
-
-        if not match:
+    for _href, ae_id, slug in _STUDIO_HREF.findall(html):
+        if ae_id in seen:
             continue
 
+        seen.add(ae_id)
         out.append(
             StudioRef(
-                ae_id=match.group(1),
-                slug=match.group(2),
-                path=f"/{match.group(1)}/studio/{match.group(2)}.html",
+                ae_id=ae_id,
+                slug=slug,
+                path=f"/{ae_id}/studio/{slug}.html",
             )
         )
 

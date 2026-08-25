@@ -205,13 +205,24 @@ Whisparr dependency. Regular movies/TV must never appear.
   every request and never mirrored: two ranked rows for a hundred studios is
   twenty thousand rows rebuilt weekly to serve pages mostly never opened, and
   a rank stored last Sunday is not the rank.
-- Directory source is the SITEMAPS (`/sitemaps/studio/sitemap.xml` plus the
-  `-videos` and `-blu-rays` variants), unioned by id, ~100 each. Do NOT use
-  `/all-porn-movie-studios.html`: it renders only about ten studios in HTML.
-  robots.txt names the sitemaps explicitly.
-- Studio URL is `/{ae_id}/studio/{slug}.html`. The movie sitemap is read first
-  so the winning slug is the `-porn-movies` form, which is the catalogue
-  `parse_listing` is built around.
+- Directory source is `?letter=all` on the three catalogue index pages
+  (`/all-porn-movie-studios.html`, `/all-porn-video-studios.html`,
+  `/all-blu-ray-studios.html`), unioned by id, ~800 each for movies/videos.
+  TRAP: the studio SITEMAPS (`/sitemaps/studio*/sitemap.xml`) look like the
+  sanctioned source and are what the feature originally used, but they cap out
+  at ~100 -- a curated top slice, not the catalogue. Confirmed live: Pure
+  Taboo (id 95179, a real working studio page, 242 titles) is absent from
+  every sitemap and present in `?letter=all`. Confirmed non-paginated too --
+  `&page=2` returns the identical set. robots.txt disallows `/Search` and
+  `/AllSearch/Search` specifically; these index pages are not under either.
+- Studio URL is `/{ae_id}/studio/{slug}.html`. Each card on the index page
+  links its id TWICE (image, then title) -- `parse_studio_refs` dedupes.
+  The movie index is read first so the winning slug is the `-porn-movies`
+  form, which is the catalogue `parse_listing` is built around.
+- Some studios genuinely have no Adult Empire page at all -- e.g. Bratty Sis
+  (a TPDB "site" under the Nubiles network) never showed up under any name
+  variant across all three catalogue indexes. That is a real gap in what the
+  storefront carries, not a bug in the directory sync.
 - `parse_listing` works UNCHANGED on studio pages -- same `product-card`
   markup. That is why studios needed no second parser; a divergence would show
   up as empty studio pages.

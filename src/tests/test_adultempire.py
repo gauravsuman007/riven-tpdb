@@ -217,14 +217,15 @@ def test_unknown_listing_rejected():
 
 # --------------------------------------------------------------- studios
 
-STUDIO_SITEMAP = (
-    '<?xml version="1.0" encoding="UTF-8"?>'
-    "<urlset>"
-    "<url><loc>https://www.adultdvdempire.com/149/studio/evil-angel-porn-movies.html</loc></url>"
-    "<url><loc>\n\t\thttps://www.adultdvdempire.com/145/studio/devils-film-porn-movies.html\n\t</loc></url>"
-    # Not a studio URL. Sitemaps for other catalogues share the same shape.
-    "<url><loc>https://www.adultdvdempire.com/700215/pirates-porn-movies.html</loc></url>"
-    "</urlset>"
+# A trimmed slice of a real `?letter=all` index page: each studio card links
+# its id twice (image, then title), which is why the parser has to dedupe.
+STUDIO_INDEX = (
+    '<a href="/149/studio/evil-angel-porn-movies.html"><img/></a>'
+    '<a href="/149/studio/evil-angel-porn-movies.html">Evil Angel</a>'
+    '<a href="/145/studio/devils-film-porn-movies.html"><img/></a>'
+    '<a href="/145/studio/devils-film-porn-movies.html">Devil\'s Film</a>'
+    # Not a studio link -- the movie catalogue link, same page.
+    '<a href="/700215/pirates-porn-movies.html">Pirates</a>'
 )
 
 STUDIO_PAGE = (
@@ -235,12 +236,22 @@ STUDIO_PAGE = (
 )
 
 
-def test_studio_refs_are_read_from_a_sitemap():
-    refs = ae.parse_studio_refs(STUDIO_SITEMAP)
+def test_studio_refs_are_read_from_an_index_page():
+    refs = ae.parse_studio_refs(STUDIO_INDEX)
 
     assert [r.ae_id for r in refs] == ["149", "145"], [r.ae_id for r in refs]
     assert refs[0].slug == "evil-angel-porn-movies"
     assert refs[0].path == "/149/studio/evil-angel-porn-movies.html"
+
+
+def test_a_studio_linked_twice_is_only_counted_once():
+    """Each card links its id via an image and a title; the sitemap-based
+    parser this replaced had no such duplicate to guard against, but the
+    index pages do."""
+
+    refs = ae.parse_studio_refs(STUDIO_INDEX)
+
+    assert len(refs) == len(set(r.ae_id for r in refs)) == 2
 
 
 def test_a_movie_url_is_not_mistaken_for_a_studio():
@@ -248,7 +259,7 @@ def test_a_movie_url_is_not_mistaken_for_a_studio():
     `/studio/` segment, and a looser pattern would file every film in the
     catalogue as a studio."""
 
-    assert all(r.ae_id != "700215" for r in ae.parse_studio_refs(STUDIO_SITEMAP))
+    assert all(r.ae_id != "700215" for r in ae.parse_studio_refs(STUDIO_INDEX))
 
 
 def test_studio_detail_reads_the_name_and_count():

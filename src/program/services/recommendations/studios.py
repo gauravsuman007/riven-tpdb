@@ -4,7 +4,7 @@ Split in two because the two halves have completely different costs and
 completely different failure modes:
 
     * The *directory* -- which studios exist, what they are called, how many
-      titles each has -- is slow to obtain (three sitemaps plus one page per
+      titles each has -- is slow to obtain (three catalogue indexes plus one page per
       studio at the storefront's one-request-a-second courtesy delay) and
       changes about never. It is synced weekly, overnight.
     * A studio's *titles* are never stored at all. They are read live in
@@ -62,7 +62,7 @@ class StudioService:
         """Refresh the studio directory. Returns the number of studios stored.
 
         Resumable and non-destructive. A studio that has dropped off the
-        sitemaps is left in place rather than deleted: the user may have saved
+        index pages is left in place rather than deleted: the user may have saved
         it, and a weekly job that silently removed someone's saved studios
         would be indistinguishable from data loss.
         """
