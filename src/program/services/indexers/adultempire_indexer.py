@@ -54,6 +54,38 @@ def parse_released(text: str | None) -> datetime | None:
         return None
 
 
+def best_entry(session, external_id: str) -> CollectionEntry | None:
+    """The richest cached brochure row for this product id.
+
+    The same title appears in several listings -- trending and bestsellers
+    overlap heavily -- but the rows are *not* interchangeable. Only shelves
+    that have been through the detail-enrichment pass carry studio, cast and
+    release date; a row first seen in an unenriched shelf holds nothing but a
+    title. Taking whichever row the database happened to return first meant a
+    manual scrape for "Pirates" could be handed a Movie with no site, no cast
+    and no year, leaving the adult relevance filter no evidence to match on --
+    so every candidate was rejected and the scrape came back empty.
+
+    Ordering by how much metadata a row actually has makes the choice
+    deterministic and always picks the most useful row available.
+    """
+
+    return session.execute(
+        select(CollectionEntry)
+        .where(
+            CollectionEntry.external_source == SOURCE,
+            CollectionEntry.external_id == external_id,
+        )
+        .order_by(
+            CollectionEntry.studio.is_(None),
+            CollectionEntry.performers.is_(None),
+            CollectionEntry.released_at.is_(None),
+            CollectionEntry.year.is_(None),
+            CollectionEntry.id,
+        )
+    ).scalars().first()
+
+
 def build_movie(entry: CollectionEntry) -> Movie:
     """Turn a brochure entry into a Movie, using only what the entry holds."""
 
@@ -128,20 +160,10 @@ class AdultEmpireIndexer(BaseIndexer):
 
     @staticmethod
     def _entry_for(external_id: str) -> CollectionEntry | None:
-        """The cached brochure row for this product id.
-
-        Any collection will do -- the same title appears in several listings
-        (trending and bestsellers overlap heavily) and the metadata is
-        identical, so the first row found is as good as any.
-        """
+        """The cached brochure row for this product id."""
 
         with db_session() as session:
-            entry = session.execute(
-                select(CollectionEntry).where(
-                    CollectionEntry.external_source == SOURCE,
-                    CollectionEntry.external_id == external_id,
-                )
-            ).scalars().first()
+            entry = best_entry(session, external_id)
 
             if entry is not None:
                 session.expunge(entry)

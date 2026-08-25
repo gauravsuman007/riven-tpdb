@@ -92,6 +92,42 @@ def test_every_declared_id_is_read_from_the_payload():
     )
 
 
+def test_duplicate_check_knows_every_id_add_item_passes():
+    """`add_item` and `item_exists_by_any_id` must agree on the id list.
+
+    They are in different modules and drifted: `add_item` handed over five ids
+    while a brochure title only ever has `adultempire_id`, so the duplicate
+    check raised "At least one ID must be provided" and the Request button
+    returned a 500.
+    """
+
+    manager = (SRC / "program/managers/event_manager.py").read_text()
+    functions = (SRC / "program/db/db_functions.py").read_text()
+
+    call_start = manager.index("db_functions.item_exists_by_any_id(")
+    call = manager[call_start:manager.index("):", call_start)]
+
+    passed = {
+        line.split("=")[0].strip()
+        for line in call.split("\n")[1:]
+        if "=" in line
+    }
+
+    signature_start = functions.index("def item_exists_by_any_id(")
+    signature = functions[signature_start:functions.index(") -> bool:", signature_start)]
+
+    for name in sorted(passed):
+        assert f"{name}:" in signature, (
+            f"add_item passes {name!r} but item_exists_by_any_id does not "
+            "accept it"
+        )
+
+    assert "adultempire_id" in passed, (
+        "add_item must pass adultempire_id, or an Adult Empire title with no "
+        "other id trips the 'At least one ID' guard"
+    )
+
+
 for _name, _fn in sorted(list(globals().items())):
     if _name.startswith("test_") and callable(_fn):
         check(_name, _fn)

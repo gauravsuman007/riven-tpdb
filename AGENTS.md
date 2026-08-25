@@ -357,7 +357,7 @@ Content -> ..." pointer in the UI a dead end. Tabs are a presentation layer over
 one form -- inactive panels stay mounted and hidden with CSS, because a field
 that is not rendered is dropped from the submitted payload.
 
-## Two silent traps in the adult scrape path
+## Silent traps in the adult scrape path
 - **`MediaItem.__init__` must read every id column it declares.** `adultempire_id`
   was a column, and `is_adult` read it, but the constructor never assigned it
   from the payload -- so `Movie({"adultempire_id": ...})` looked completely
@@ -372,10 +372,41 @@ that is not rendered is dropped from the submitted payload.
   buries the real matches. `select_category_ids` falls back to the type
   categories for indexers that expose no XXX category at all, or an adult-only
   tracker that Prowlarr mapped to "movie" would search nothing.
+- **A brochure title has one row per shelf, and they are not interchangeable.**
+  Only shelves that have been through the detail-enrichment pass carry studio,
+  cast and release date; a row first seen in an unenriched shelf holds nothing
+  but a title. Picking whichever row came back first handed the scraper a Movie
+  with no site, no cast and no year, so the relevance filter had no evidence and
+  rejected everything -- the manual scrape for "Pirates" came back with *zero*
+  results, which looks like a broken scraper rather than a bad row. Always go
+  through `adultempire_indexer.best_entry`, which orders by how much metadata a
+  row actually has. Duplicates are normal and permanent: "Pirates" exists in
+  four shelves and only two are enriched.
+- **`item_exists_by_any_id` must accept every id `EventManager.add_item`
+  passes.** They live in different modules and drifted: `add_item` handed over
+  five ids, none of which a brochure title has, so the duplicate check raised
+  `ValueError("At least one ID must be provided")` and the Request button
+  returned a 500. `test_mediaitem_ids.py` now diffs the two lists.
 - The manual scrape shares one path with the TPDB one -- `resolve_media_item`
   then `scraper.scrape(item, manual=True)`. Only item *resolution* differs; the
   filtering and ranking are the same code. `manual=True` skips the mainstream
   season/year/country filters but **not** `_filter_adult_torrents`.
+
+## Auto-requesting award winners
+- `content.awards.auto_request_winners` defaults to **off**. A synced corpus is
+  ~1,800 winners, so leaving it on made "enable AVN" mean "download a library's
+  worth of titles", which is not what the button says.
+- Turning it off is not just a scheduling change: `AwardsService.
+  cancel_auto_requests()` cancels the jobs *and deletes* the unfinished
+  MediaItems, because cancelling alone only pauses them and the next library
+  retry picks the same items straight back up. It fires from the settings save
+  (on the True -> False transition), from disabling the AVN section, and from
+  `POST /collections/avn/cancel-downloads` for a backlog queued earlier.
+- It only touches items stamped `requested_by == "awards"` and only those not
+  yet Completed/Symlinked. A title the user clicked Request on is stamped
+  `"collections"` and survives; so does anything already downloaded, which is
+  media they now own. The `CollectionEntry` always survives -- it is a catalogue
+  row, so the title stays browsable and re-requestable.
 
 ## TPDB search ordering
 TPDB's `q` search returns matches in no useful order, ignores every ordering

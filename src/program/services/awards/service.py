@@ -33,6 +33,7 @@ from program.media.collection import (
     CollectionEntry,
 )
 from program.media.item import MediaItem
+from program.media.state import States
 from program.services.awards import avn
 from program.services.awards.matching import (
     MIN_TITLE_RATIO,
@@ -489,6 +490,76 @@ class AwardsService:
             logger.info(f"Queued {queued} AVN award winner(s)")
 
         return queued
+
+    def cancel_auto_requests(self) -> int:
+        """Undo auto-requests that have not finished downloading yet.
+
+        Switching auto-request off has to mean something for the work already
+        in flight, or the library keeps filling for hours after the user
+        stopped it. The events are cancelled *and* the MediaItems deleted,
+        because cancelling alone only pauses them -- the next library retry
+        would pick the same items straight back up.
+
+        Only unfinished items are touched. Anything already Completed or
+        Symlinked is a real download the user now owns, and deleting media
+        nobody asked us to delete is not ours to do; those are removed from the
+        library by hand. The CollectionEntry itself always survives -- it is a
+        catalogue row, so the title stays browsable and re-requestable.
+        """
+
+        from program.program import Program
+
+        keep = {States.Completed, States.Symlinked, States.PartiallyCompleted}
+        cancelled = 0
+
+        with db_session() as session:
+            entries = (
+                session.execute(
+                    select(CollectionEntry)
+                    .join(Collection)
+                    .where(
+                        Collection.source == SOURCE,
+                        CollectionEntry.media_item_id.is_not(None),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            for entry in entries:
+                item = session.get(MediaItem, entry.media_item_id)
+
+                if item is None:
+                    entry.media_item_id = None
+                    continue
+
+                if item.last_state in keep:
+                    continue
+
+                # Only the auto-request path is undone here. "collections" is
+                # the Request button, so a title the user picked off an AVN
+                # page themselves stays, even though it came from a ceremony.
+                if item.requested_by != "awards":
+                    continue
+
+                try:
+                    di[Program].em.cancel_job(item.id, suppress_logs=True)
+                except Exception as exc:
+                    logger.debug(f"Could not cancel job for {item.log_string}: {exc}")
+
+                entry.media_item_id = None
+                session.delete(item)
+                cancelled += 1
+
+            session.commit()
+
+        if cancelled:
+            logger.info(
+                f"Cancelled {cancelled} unfinished AVN award download(s); "
+                "titles already downloaded were left alone"
+            )
+
+        return cancelled
 
     # ---------------------------------------------------------------- progress
 

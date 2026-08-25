@@ -22,9 +22,8 @@ from sqlalchemy.orm import Session
 
 from program.db import db_functions
 from program.db.db import db_session
-from program.media.collection import CollectionEntry
 from program.services.indexers.adultempire_indexer import (
-    SOURCE as ADULTEMPIRE_SOURCE,
+    best_entry as adultempire_best_entry,
     build_movie as build_adultempire_movie,
 )
 from program.media.item import (
@@ -464,12 +463,7 @@ def resolve_media_item(
     # list work on a brochure page before anything has been requested, and it
     # costs no network call because the brochure already holds the metadata.
     if not item and adultempire_id:
-        entry = session.execute(
-            select(CollectionEntry).where(
-                CollectionEntry.external_source == ADULTEMPIRE_SOURCE,
-                CollectionEntry.external_id == adultempire_id,
-            )
-        ).scalars().first()
+        entry = adultempire_best_entry(session, adultempire_id)
 
         if entry is not None:
             item = build_adultempire_movie(entry)

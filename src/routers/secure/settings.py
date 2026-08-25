@@ -2,6 +2,7 @@ from copy import copy
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Body, HTTPException, Path, Query
+from loguru import logger
 from pydantic import TypeAdapter, ValidationError
 
 from program.settings import settings_manager
@@ -95,6 +96,24 @@ async def get_settings_schema_for_keys(
     return prune_settings_schema(filtered_schema)
 
 
+def _apply_settings_side_effects(was_auto_requesting: bool) -> None:
+    """React to settings whose new value implies work on already-queued items.
+
+    Saving a setting is not always enough. Turning award auto-requests off has
+    to reach the items already in the pipeline, or the library keeps filling
+    for hours with exactly the titles the user just stopped asking for.
+    """
+
+    if was_auto_requesting and not settings_manager.settings.content.awards.auto_request_winners:
+        try:
+            from program.services.awards.service import AwardsService
+
+            AwardsService().cancel_auto_requests()
+        except Exception as exc:
+            # The setting is saved regardless; nothing new will be queued.
+            logger.error(f"Could not cancel in-flight award downloads: {exc}")
+
+
 @router.get(
     "/load",
     operation_id="load_settings",
@@ -181,12 +200,16 @@ async def set_all_settings(
     update_settings(current_settings, new_settings)
 
     # Validate and save the updated settings
+    was_auto_requesting = settings_manager.settings.content.awards.auto_request_winners
+
     try:
         updated_settings = settings_manager.settings.model_validate(current_settings)
         settings_manager.load(settings_dict=updated_settings.model_dump())
         settings_manager.save()  # Ensure the changes are persisted
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    _apply_settings_side_effects(was_auto_requesting)
 
     return MessageResponse(message="All settings updated successfully!")
 
@@ -249,6 +272,8 @@ async def set_settings(
             )
         current_obj[keys[-1]] = values[path]
 
+    was_auto_requesting = settings_manager.settings.content.awards.auto_request_winners
+
     try:
         updated_settings = settings_manager.settings.__class__(**current_settings)
         settings_manager.load(settings_dict=updated_settings.model_dump())
@@ -258,5 +283,7 @@ async def set_settings(
             status_code=400,
             detail=f"Failed to update settings: {str(e)}",
         ) from e
+
+    _apply_settings_side_effects(was_auto_requesting)
 
     return MessageResponse(message="Settings updated successfully.")

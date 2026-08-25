@@ -565,6 +565,7 @@ class EventManager:
             tmdb_id=item.tmdb_id,
             imdb_id=item.imdb_id,
             tpdb_id=item.tpdb_id,
+            adultempire_id=item.adultempire_id,
         ):
             if self.add_event(
                 Event(

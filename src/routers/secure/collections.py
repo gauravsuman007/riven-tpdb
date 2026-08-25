@@ -685,11 +685,64 @@ def enable_avn(enabled: Annotated[bool, Query()] = True) -> ToggleResponse:
             ),
         )
 
-    return _toggle_content_job(
+    response = _toggle_content_job(
         "awards",
         enabled,
         "Fetching AVN award winners. Years will fill in as they resolve.",
         "AVN award collections disabled.",
+    )
+
+    if not enabled:
+        # Switching the section off has to reach the pipeline too, or titles
+        # keep arriving from a source the user just turned off.
+        try:
+            cancelled = _cancel_avn_downloads()
+        except Exception as exc:
+            logger.error(f"Could not cancel in-flight AVN downloads: {exc}")
+        else:
+            if cancelled:
+                response.message = (
+                    f"{response.message} Cancelled {cancelled} unfinished "
+                    "download(s)."
+                )
+
+    return response
+
+
+class CancelResponse(BaseModel):
+    cancelled: int
+    message: str
+
+
+def _cancel_avn_downloads() -> int:
+    from program.services.awards.service import AwardsService
+
+    return AwardsService().cancel_auto_requests()
+
+
+@router.post("/avn/cancel-downloads", operation_id="cancel_avn_downloads")
+def cancel_avn_downloads() -> CancelResponse:
+    """Stop AVN award downloads that have not finished.
+
+    Turning auto-requests off in Settings already does this, but only for the
+    flip itself. This is the way to clear a backlog that was queued before --
+    a corpus sync can leave thousands of titles in the pipeline, and they keep
+    landing in the library for hours otherwise.
+
+    Titles already downloaded are kept: those are media the user now owns, and
+    removing them is a library decision, not a scheduling one.
+    """
+
+    cancelled = _cancel_avn_downloads()
+
+    return CancelResponse(
+        cancelled=cancelled,
+        message=(
+            f"Cancelled {cancelled} unfinished AVN download(s). Titles already "
+            "downloaded were left in the library."
+            if cancelled
+            else "No unfinished AVN downloads to cancel."
+        ),
     )
 
 

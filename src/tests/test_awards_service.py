@@ -9,6 +9,7 @@ program package is never imported.
 import importlib.util
 import sys
 import types
+from enum import Enum
 from datetime import datetime
 from pathlib import Path
 
@@ -57,9 +58,18 @@ class MediaItem(Base):
     tpdb_id: Mapped[str] = mapped_column(sqlalchemy.String, nullable=True)
     requested_by: Mapped[str] = mapped_column(sqlalchemy.String, nullable=True)
     requested_at: Mapped[datetime] = mapped_column(sqlalchemy.DateTime, nullable=True)
+    state: Mapped[str] = mapped_column(sqlalchemy.String, nullable=True)
 
     def __init__(self, payload=None, **kwargs):
         super().__init__(**(payload or kwargs))
+
+    @property
+    def last_state(self):
+        return _States(self.state) if self.state else _States.Requested
+
+    @property
+    def log_string(self):
+        return f"MediaItem {self.id}"
 
 
 for pkg in ("program", "program.db", "program.media", "program.apis",
@@ -69,6 +79,20 @@ for pkg in ("program", "program.db", "program.media", "program.apis",
 
 _module("program.db.base_model", Base=Base)
 _module("program.media.item", MediaItem=MediaItem)
+
+
+class _States(Enum):
+    """Only the members cancel_auto_requests compares against."""
+
+    Requested = "Requested"
+    Scraped = "Scraped"
+    Downloaded = "Downloaded"
+    Symlinked = "Symlinked"
+    Completed = "Completed"
+    PartiallyCompleted = "PartiallyCompleted"
+
+
+_module("program.media.state", States=_States)
 
 
 class TpdbApiError(Exception):
@@ -137,10 +161,16 @@ _load("program.services.awards.matching", AWARDS / "matching.py")
 QUEUED = []
 
 
+CANCELLED = []
+
+
 class _EventManager:
     def add_item(self, item):
         QUEUED.append(item)
         return True
+
+    def cancel_job(self, item_id, suppress_logs=False):
+        CANCELLED.append(item_id)
 
 
 _module("kink", di={})
@@ -261,6 +291,7 @@ def _fresh_service(**entries_by_kind):
         s.commit()
 
     QUEUED.clear()
+    CANCELLED.clear()
     service = service_mod.AwardsService()
     service.api = FakeApi()
     return service
@@ -420,6 +451,114 @@ def test_auto_request_is_off_when_disabled():
         assert not QUEUED
     finally:
         svc.settings.auto_request_winners = True
+
+
+
+def _requested_winner(state=None):
+    """A resolved winner that has been auto-requested into the library."""
+
+    svc = _fresh_service(w={"title": "Strip", "studio": "Dorcel",
+                            "performers": ["Tommy Pistol"], "winner": True,
+                            "category": "Best Feature"})
+    svc.resolve_batch()
+    svc.request_matched_winners()
+
+    with Session(ENGINE) as s:
+        item = MediaItem({"tpdb_id": "uuid-strip", "requested_by": "awards",
+                          "state": state})
+        s.add(item)
+        s.flush()
+
+        entry = s.execute(select(coll.CollectionEntry)).scalars().one()
+        entry.media_item_id = item.id
+        item_id = item.id
+        s.commit()
+
+    return svc, item_id
+
+
+def test_cancelling_removes_an_unfinished_award_download():
+    svc, item_id = _requested_winner(state="Scraped")
+
+    assert svc.cancel_auto_requests() == 1
+    assert CANCELLED == [item_id], f"job was not cancelled: {CANCELLED}"
+
+    with Session(ENGINE) as s:
+        assert s.get(MediaItem, item_id) is None, "the MediaItem survived"
+
+
+def test_cancelling_keeps_a_finished_download():
+    """Already downloaded is media the user owns; deleting it is not ours to do."""
+
+    svc, item_id = _requested_winner(state="Completed")
+
+    assert svc.cancel_auto_requests() == 0
+    assert CANCELLED == []
+
+    with Session(ENGINE) as s:
+        assert s.get(MediaItem, item_id) is not None, "a completed download was deleted"
+
+
+def test_cancelling_leaves_the_catalogue_entry_browsable():
+    """The entry is a catalogue row -- it must outlive the download."""
+
+    svc, item_id = _requested_winner(state="Requested")
+    svc.cancel_auto_requests()
+
+    with Session(ENGINE) as s:
+        entry = s.execute(select(coll.CollectionEntry)).scalars().one()
+
+        assert entry.media_item_id is None, "entry still points at a deleted item"
+        assert entry.title == "Strip"
+        assert entry.tpdb_id == "uuid-strip", "the entry can no longer be re-requested"
+
+
+def test_cancelling_ignores_items_requested_by_hand():
+    """A title the user picked off an AVN page themselves is not an auto-request.
+
+    The Request button stamps "collections", so that is the case that matters:
+    stopping the automatic flood must not undo a deliberate click.
+    """
+
+    svc, item_id = _requested_winner(state="Scraped")
+
+    with Session(ENGINE) as s:
+        s.get(MediaItem, item_id).requested_by = "collections"
+        s.commit()
+
+    assert svc.cancel_auto_requests() == 0
+
+    with Session(ENGINE) as s:
+        assert s.get(MediaItem, item_id) is not None
+
+
+def test_cancelling_clears_a_dangling_link():
+    svc, item_id = _requested_winner(state="Scraped")
+
+    with Session(ENGINE) as s:
+        s.delete(s.get(MediaItem, item_id))
+        s.commit()
+
+    svc.cancel_auto_requests()
+
+    with Session(ENGINE) as s:
+        entry = s.execute(select(coll.CollectionEntry)).scalars().one()
+        assert entry.media_item_id is None
+
+
+def test_auto_request_defaults_to_off():
+    """Enabling AVN must not start downloading thousands of titles."""
+
+    import re
+
+    models = (SRC / "program/settings/models.py").read_text()
+    block = models[models.index("auto_request_winners: bool = Field("):]
+    default = re.search(r"default=(\w+)", block).group(1)
+
+    assert default == "False", (
+        f"auto_request_winners defaults to {default}; enabling AVN would "
+        "immediately queue the whole corpus"
+    )
 
 
 def test_existing_library_item_is_adopted_not_duplicated():

@@ -683,10 +683,15 @@ class AwardsModel(Observable):
         ),
     )
     auto_request_winners: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Request award winners automatically once they resolve to a TPDB "
-            "title. Nominees, if stored, are never auto-requested."
+            "title. Nominees, if stored, are never auto-requested. Off by "
+            "default: a full corpus is thousands of winners, so turning this "
+            "on downloads a library's worth of titles rather than letting you "
+            "browse the ceremonies and pick. Turning it back off cancels "
+            "award downloads that have not finished; anything already "
+            "downloaded is kept."
         ),
     )
     first_year: int = Field(

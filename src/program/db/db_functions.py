@@ -141,13 +141,19 @@ def item_exists_by_any_id(
     tmdb_id: str | None = None,
     imdb_id: str | None = None,
     tpdb_id: str | None = None,
+    adultempire_id: str | None = None,
     session: Session | None = None,
 ) -> bool:
     """
     Check whether any provided identifier corresponds to an existing MediaItem.
 
-    At least one of `item_id`, `tvdb_id`, `tmdb_id`, `imdb_id`, or `tpdb_id` must
-    be supplied; otherwise a ValueError is raised.
+    At least one of `item_id`, `tvdb_id`, `tmdb_id`, `imdb_id`, `tpdb_id` or
+    `adultempire_id` must be supplied; otherwise a ValueError is raised.
+
+    `adultempire_id` is the only id a brochure title has before it is enriched,
+    so leaving it out made every Adult Empire request raise "At least one ID
+    must be provided" from inside `EventManager.add_item` -- a 500 on the
+    Request button, not the duplicate check it looks like.
 
     Returns:
         `true` if at least one matching MediaItem exists, `false` otherwise.
@@ -158,7 +164,7 @@ def item_exists_by_any_id(
 
     from program.media.item import MediaItem
 
-    if not any([item_id, tvdb_id, tmdb_id, imdb_id, tpdb_id]):
+    if not any([item_id, tvdb_id, tmdb_id, imdb_id, tpdb_id, adultempire_id]):
         raise ValueError("At least one ID must be provided")
 
     clauses = list[Any]()
@@ -177,6 +183,9 @@ def item_exists_by_any_id(
 
     if tpdb_id is not None:
         clauses.append(MediaItem.tpdb_id == str(tpdb_id))
+
+    if adultempire_id is not None:
+        clauses.append(MediaItem.adultempire_id == str(adultempire_id))
 
     with _maybe_session(session) as (_s, _owns):
         count = _s.execute(
