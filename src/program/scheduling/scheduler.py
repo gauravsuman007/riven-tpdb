@@ -74,6 +74,10 @@ class ProgramScheduler:
 
         self._schedule_services()
         self._schedule_functions()
+        # After the periodic jobs are registered, because this only adds a
+        # one-off when the weekly studio cron would otherwise leave the
+        # directory empty until its first firing.
+        self._kickoff_studios_if_empty()
         self.scheduler.start()
 
     def stop(self) -> None:
@@ -344,16 +348,7 @@ class ProgramScheduler:
                 # the section empty until Sunday, so it runs once now if there
                 # is nothing to show yet. On a later settings save the
                 # directory is already populated and nothing is re-crawled.
-                if self._studio_directory_is_empty():
-                    self.scheduler.add_job(
-                        func,
-                        "date",
-                        run_date=datetime.now(),
-                        id=f"{job_id}_once",
-                        replace_existing=True,
-                        misfire_grace_time=60,
-                    )
-                    logger.debug(f"Scheduled {job_id} once, directory is empty")
+                self._kickoff_studios_if_empty()
             elif self.scheduler.get_job(job_id) is not None:
                 self.scheduler.remove_job(job_id)
                 logger.debug(f"Removed scheduled job {job_id}")
@@ -458,6 +453,34 @@ class ProgramScheduler:
                 self._tpdb_enricher.run()
         except Exception as exc:
             logger.error(f"TPDB backfill failed: {exc}")
+
+    def _kickoff_studios_if_empty(self) -> None:
+        """Sync the studio directory once, now, if there is nothing in it.
+
+        The weekly cron cannot cover this on its own. Its whole point is to
+        run at its hour rather than on startup, so a fresh install -- or the
+        deploy that first introduced the table -- would show an empty studios
+        section until the next Sunday. Once the directory has anything in it
+        this does nothing, so restarts do not re-crawl.
+        """
+
+        brochure = settings_manager.settings.content.brochure
+
+        if not brochure.enabled or not brochure.studios_enabled:
+            return
+
+        if self.scheduler is None or not self._studio_directory_is_empty():
+            return
+
+        self.scheduler.add_job(
+            self._sync_studios,
+            "date",
+            run_date=datetime.now(),
+            id="_sync_studios_once",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.debug("Scheduled a one-off studio sync; the directory is empty")
 
     @staticmethod
     def _studio_directory_is_empty() -> bool:

@@ -239,6 +239,51 @@ def test_promotion_resolves_tpdb_before_returning():
     assert "enrich_entry(entry)" in body
 
 
+# --------------------------------------------------------------- scheduling
+
+
+def test_an_empty_directory_is_synced_at_startup():
+    """The weekly cron cannot cover the first run.
+
+    Its whole point is to fire at its hour rather than on startup, so without
+    a kickoff a fresh install shows an empty studios section until the next
+    Sunday -- which is exactly what the first deploy of this feature did.
+    Registering the jobs is not enough; `start` has to ask for the one-off.
+    """
+
+    text = (SRC / "program/scheduling/scheduler.py").read_text()
+    body = text[text.index("def start(self)"):]
+    body = body[: body.index("def stop(self)")]
+
+    assert "_kickoff_studios_if_empty()" in body, (
+        "start() registers the weekly studio cron but never kicks off a first "
+        "sync, so a fresh install has no studios until the cron fires"
+    )
+
+
+def test_the_kickoff_only_fires_on_an_empty_directory():
+    """Otherwise every restart re-crawls a hundred storefront pages."""
+
+    text = (SRC / "program/scheduling/scheduler.py").read_text()
+    body = text[text.index("def _kickoff_studios_if_empty("):]
+    body = body[: body.index("def _studio_directory_is_empty(")]
+
+    assert "_studio_directory_is_empty()" in body
+
+
+def test_the_studio_sync_is_cron_not_interval():
+    """A several-minute crawl on an interval drifts to whenever the process
+    last restarted, which is the opposite of 'weekly, overnight'."""
+
+    text = (SRC / "program/scheduling/scheduler.py").read_text()
+    # The first occurrence is the startup registration in _schedule_functions;
+    # the window has to clear the explanatory comment between the two lines.
+    body = text[text.index("if brochure.studios_enabled:"):]
+    body = body[:800]
+
+    assert '"cron"' in body and "studio_sync_hour" in body
+
+
 for _name, _fn in sorted(list(globals().items())):
     if _name.startswith("test_") and callable(_fn):
         check(_name, _fn)
