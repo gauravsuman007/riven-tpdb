@@ -764,7 +764,26 @@ class BrochureModel(Observable):
     )
 
 
+class CollectionsModel(Observable):
+    """User-created collections: named lists curated by hand."""
+
+    sync_to_tpdb: bool = Field(
+        default=False,
+        description=(
+            "Also mark titles in your ThePornDB account's collection when you "
+            "add them here. TPDB has one flat collection per account with no "
+            "named lists, so only membership is mirrored -- not which "
+            "collection a title is in. It is also one-way: TPDB's API has no "
+            "delete, so removing a title here cannot un-collect it there."
+        ),
+    )
+
+
 class ContentModel(Observable):
+    collections: CollectionsModel = Field(
+        default_factory=lambda: CollectionsModel(),
+        description="User collections",
+    )
     brochure: BrochureModel = Field(
         default_factory=lambda: BrochureModel(),
         description="Adult Empire brochure",

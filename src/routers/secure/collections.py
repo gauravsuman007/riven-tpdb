@@ -27,6 +27,9 @@ from program.media.collection import (
     CollectionEntry,
 )
 from program.media.item import MediaItem
+from program.services.collections import service as user_collections
+from program.settings import settings_manager
+from routers.models.shared import MessageResponse
 
 router = APIRouter(prefix="/collections", tags=["collections"])
 
@@ -473,3 +476,375 @@ def list_categories(
         ).all()
 
     return {category or "Uncategorised": count for category, count in rows}
+
+
+# --------------------------------------------------------------------- AVN
+
+class AvnYear(BaseModel):
+    """One ceremony year as a row on the AVN page.
+
+    ``key`` is null for a year whose collection has not been built yet. That is
+    the normal state right after enabling: the corpus sync writes years one at
+    a time, so the page shows every expected year immediately and fills them in
+    as they arrive, rather than appearing empty and then jumping.
+    """
+
+    year: int
+    key: str | None
+    name: str
+    # "ready" once the year has entries; "fetching" while it is still being
+    # built or resolved.
+    status: Literal["ready", "fetching"]
+    total: int
+    matched: int
+    requested: int
+    entries: list[CollectionEntryResponse]
+
+
+class AvnOverview(BaseModel):
+    enabled: bool
+    years: list[AvnYear]
+    # Counts per match state across every year, so the page can say how much of
+    # the corpus has been resolved without counting client-side.
+    progress: dict[str, int]
+
+
+@router.get("/avn/overview", operation_id="get_avn_overview")
+def avn_overview(
+    per_year: Annotated[int, Query(ge=1, le=100)] = 18,
+) -> AvnOverview:
+    """Every AVN ceremony year, newest first, with a row of winners each.
+
+    Years are enumerated from the settings rather than from the database, so a
+    year that has not been fetched yet still gets a row. Without that the page
+    would grow downwards as the sync progressed, which reads as breakage rather
+    than as progress.
+    """
+
+    from program.services.awards.service import SOURCE as AVN_SOURCE
+
+    settings = settings_manager.settings.content.awards
+    latest = datetime.now().year
+    expected = list(range(latest, settings.first_year - 1, -1))
+
+    with db_session() as session:
+        collections = {
+            collection.year: collection
+            for collection in session.execute(
+                select(Collection).where(Collection.source == AVN_SOURCE)
+            )
+            .scalars()
+            .all()
+            if collection.year is not None
+        }
+
+        # A collection may exist for a year outside the configured range (the
+        # setting was lowered after a sync); showing it is strictly better than
+        # hiding data that is already there.
+        for year in sorted(collections, reverse=True):
+            if year not in expected:
+                expected.append(year)
+
+        expected.sort(reverse=True)
+
+        rows: list[AvnYear] = []
+
+        for year in expected:
+            collection = collections.get(year)
+
+            if collection is None:
+                rows.append(
+                    AvnYear(
+                        year=year,
+                        key=None,
+                        name=f"AVN Awards {year}",
+                        status="fetching",
+                        total=0,
+                        matched=0,
+                        requested=0,
+                        entries=[],
+                    )
+                )
+                continue
+
+            total, matched, requested = session.execute(
+                select(
+                    func.count(CollectionEntry.id),
+                    func.sum(
+                        func.cast(CollectionEntry.match_state == MATCH_MATCHED, Integer)
+                    ),
+                    func.sum(
+                        func.cast(CollectionEntry.media_item_id.is_not(None), Integer)
+                    ),
+                ).where(CollectionEntry.collection_id == collection.id)
+            ).one()
+
+            entries = (
+                session.execute(
+                    select(CollectionEntry)
+                    .where(CollectionEntry.collection_id == collection.id)
+                    # Resolved entries first: they are the ones with artwork, so
+                    # a row of them looks like a shelf rather than a list of
+                    # placeholder tiles.
+                    .order_by(
+                        CollectionEntry.poster_path.is_(None),
+                        CollectionEntry.winner.desc(),
+                        CollectionEntry.category,
+                        CollectionEntry.title,
+                    )
+                    .limit(per_year)
+                )
+                .scalars()
+                .all()
+            )
+
+            item_ids = [e.media_item_id for e in entries if e.media_item_id]
+            states: dict[int, str] = {}
+
+            if item_ids:
+                for item_id, state in session.execute(
+                    select(MediaItem.id, MediaItem.last_state).where(
+                        MediaItem.id.in_(item_ids)
+                    )
+                ).all():
+                    states[item_id] = state.value if state else "Unknown"
+
+            rows.append(
+                AvnYear(
+                    year=year,
+                    key=collection.key,
+                    name=collection.name,
+                    status="ready" if total else "fetching",
+                    total=total or 0,
+                    matched=matched or 0,
+                    requested=requested or 0,
+                    entries=[_entry_response(e, states) for e in entries],
+                )
+            )
+
+        progress = {
+            state: count
+            for state, count in session.execute(
+                select(CollectionEntry.match_state, func.count(CollectionEntry.id))
+                .join(Collection)
+                .where(Collection.source == AVN_SOURCE)
+                .group_by(CollectionEntry.match_state)
+            ).all()
+        }
+
+    return AvnOverview(enabled=settings.enabled, years=rows, progress=progress)
+
+
+class AvnEnableResponse(BaseModel):
+    enabled: bool
+    message: str
+
+
+@router.post("/avn/enable", operation_id="enable_avn")
+def enable_avn(enabled: Annotated[bool, Query()] = True) -> AvnEnableResponse:
+    """Turn the AVN corpus job on (or off) and apply it without a restart.
+
+    Both halves matter and neither is enough alone: the settings write is what
+    survives a restart and what the settings page shows, and the scheduler
+    refresh is what makes data start appearing now. Writing the setting without
+    refreshing leaves a switch that reads "on" while nothing runs until the
+    next restart -- which is exactly the kind of silent no-op this page exists
+    to avoid.
+    """
+
+    if enabled and not settings_manager.settings.tpdb.api_token:
+        raise HTTPException(
+            status_code=409,
+            detail="Set a ThePornDB API token in Settings first; AVN titles are resolved against TPDB.",
+        )
+
+    settings_manager.settings.content.awards.enabled = enabled
+    settings_manager.save()
+
+    from program.program import Program
+
+    try:
+        di[Program].scheduler_manager.refresh_content_jobs()
+    except Exception as exc:
+        # The setting is saved either way; say so rather than reporting a
+        # failure that a restart would resolve.
+        logger.error(f"Could not refresh scheduled jobs: {exc}")
+
+        return AvnEnableResponse(
+            enabled=enabled,
+            message="Saved, but the scheduler did not pick it up. Restart Riven to apply.",
+        )
+
+    return AvnEnableResponse(
+        enabled=enabled,
+        message=(
+            "Fetching AVN award winners. Years will fill in as they resolve."
+            if enabled
+            else "AVN award collections disabled."
+        ),
+    )
+
+
+# ---------------------------------------------------------- user collections
+
+class CreateCollectionRequest(BaseModel):
+    name: str
+    description: str | None = None
+
+
+class AddToCollectionRequest(BaseModel):
+    """What to add. Exactly one of these identifies a title.
+
+    Three routes in because three surfaces need it: a TPDB detail page knows a
+    uuid, a library page knows a Riven id, and a brochure or award page knows a
+    catalogue entry id.
+    """
+
+    tpdb_id: str | None = None
+    tpdb_kind: str = "movie"
+    media_item_id: int | None = None
+    entry_id: int | None = None
+
+
+def _user_collection(session, key: str) -> Collection:
+    collection = session.execute(
+        select(Collection).where(Collection.key == key)
+    ).scalar_one_or_none()
+
+    if collection is None:
+        raise HTTPException(status_code=404, detail=f"No collection {key!r}")
+
+    if collection.source != user_collections.SOURCE:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{collection.name!r} is built from {collection.source!r} and is "
+                "maintained automatically; it cannot be edited by hand."
+            ),
+        )
+
+    return collection
+
+
+@router.post("", operation_id="create_collection", status_code=201)
+def create_collection(body: CreateCollectionRequest) -> CollectionSummary:
+    """Create an empty user collection."""
+
+    with db_session() as session:
+        try:
+            collection = user_collections.create(
+                session, body.name, body.description
+            )
+        except user_collections.CollectionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        key = collection.key
+        session.commit()
+
+    summary = next(iter(_summaries(key=key)), None)
+
+    if summary is None:  # pragma: no cover - the row was just committed
+        raise HTTPException(status_code=500, detail="Collection vanished after create")
+
+    return summary
+
+
+@router.delete("/{key}", operation_id="delete_collection")
+def delete_collection(key: Annotated[str, Path()]) -> MessageResponse:
+    """Delete a user collection and its entries.
+
+    Entries are catalogue rows, so nothing leaves the library: a title that was
+    requested from this collection stays exactly where it is.
+    """
+
+    with db_session() as session:
+        collection = _user_collection(session, key)
+        name = collection.name
+        session.delete(collection)
+        session.commit()
+
+    return MessageResponse(message=f"Deleted {name!r}")
+
+
+@router.post("/{key}/items", operation_id="add_to_collection")
+def add_to_collection(
+    key: Annotated[str, Path(description="Collection key")],
+    body: AddToCollectionRequest,
+) -> CollectionEntryResponse:
+    """Add one title to a user collection.
+
+    Adding does **not** request the title. A collection is a list of titles you
+    are interested in; the library is what you own. If the title happens to be
+    in the library already the entry adopts it, but nothing is ever queued for
+    download from here.
+    """
+
+    with db_session() as session:
+        collection = _user_collection(session, key)
+
+        try:
+            if body.entry_id is not None:
+                source_entry = session.get(CollectionEntry, body.entry_id)
+
+                if source_entry is None:
+                    raise HTTPException(status_code=404, detail="No such entry")
+
+                entry = user_collections.add_catalogue_entry(
+                    session, collection, source_entry
+                )
+            elif body.media_item_id is not None:
+                entry = user_collections.add_library_item(
+                    session, collection, body.media_item_id
+                )
+            elif body.tpdb_id:
+                entry = user_collections.add_tpdb_title(
+                    session, collection, body.tpdb_id, body.tpdb_kind
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Provide one of tpdb_id, media_item_id or entry_id",
+                )
+        except user_collections.CollectionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        session.commit()
+
+        states: dict[int, str] = {}
+
+        if entry.media_item_id:
+            row = session.execute(
+                select(MediaItem.id, MediaItem.last_state).where(
+                    MediaItem.id == entry.media_item_id
+                )
+            ).first()
+
+            if row:
+                states[row[0]] = row[1].value if row[1] else "Unknown"
+
+        return _entry_response(entry, states)
+
+
+@router.delete("/{key}/items/{entry_id}", operation_id="remove_from_collection")
+def remove_from_collection(
+    key: Annotated[str, Path()],
+    entry_id: Annotated[int, Path()],
+) -> MessageResponse:
+    """Remove one title from a user collection.
+
+    Local only. TPDB's collection route has no DELETE, so a title mirrored
+    there stays there and has to be removed on the TPDB website.
+    """
+
+    with db_session() as session:
+        collection = _user_collection(session, key)
+        entry = session.get(CollectionEntry, entry_id)
+
+        if entry is None or entry.collection_id != collection.id:
+            raise HTTPException(status_code=404, detail="No such entry in this collection")
+
+        title = entry.title
+        session.delete(entry)
+        session.commit()
+
+    return MessageResponse(message=f"Removed {title!r}")

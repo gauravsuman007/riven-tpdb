@@ -1,5 +1,11 @@
 data/
 logs/
+
+# The user's original standalone tube-site scraper scripts, kept at the repo
+# root as reference material. Superseded by src/program/services/directscrapers/
+# and deliberately not tracked -- they are notes, not part of the application.
+/scrapers/
+
 settings.json
 ignore.txt
 .vscode

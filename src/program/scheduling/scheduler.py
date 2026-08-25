@@ -192,6 +192,68 @@ class ProgramScheduler:
                 f"Scheduled {service_name} to run every {update_interval} seconds."
             )
 
+    def refresh_content_jobs(self) -> None:
+        """(Re)register the awards and brochure jobs from current settings.
+
+        Toggling one of these from the API has to take effect without a
+        restart, and it has to work in both directions -- registering the jobs
+        on enable, and removing them on disable. ``_schedule_functions`` cannot
+        be re-run wholesale for this: every job it registers carries
+        ``next_run_time=now``, so a settings change would immediately fire the
+        vacuum and the library retry as a side effect.
+        """
+
+        if self.scheduler is None or not self.scheduler.running:
+            return
+
+        awards = settings_manager.settings.content.awards
+        brochure = settings_manager.settings.content.brochure
+
+        wanted: dict[Callable[..., None], int] = {}
+
+        if awards.enabled:
+            wanted[self._sync_awards] = awards.refresh_interval
+            wanted[self._resolve_awards] = awards.resolve_interval
+
+        if brochure.enabled:
+            wanted[self._sync_brochure] = brochure.refresh_interval
+            wanted[self._enrich_brochure] = brochure.enrich_interval
+
+        managed = (
+            self._sync_awards,
+            self._resolve_awards,
+            self._sync_brochure,
+            self._enrich_brochure,
+        )
+
+        for func in managed:
+            job_id = func.__name__
+
+            if func in wanted:
+                self.scheduler.add_job(
+                    func,
+                    "interval",
+                    seconds=wanted[func],
+                    id=job_id,
+                    max_instances=1,
+                    replace_existing=True,
+                    # Deliberately immediate: the user just switched this on
+                    # and expects data to start appearing, not to wait out a
+                    # twelve-hour interval first.
+                    next_run_time=datetime.now(),
+                    misfire_grace_time=30,
+                )
+                logger.debug(f"Scheduled {job_id} every {wanted[func]}s")
+            elif self.scheduler.get_job(job_id) is not None:
+                self.scheduler.remove_job(job_id)
+                logger.debug(f"Removed scheduled job {job_id}")
+
+        # The services cache their settings at construction, so a toggle has to
+        # drop them or the next run would still see the old values.
+        self._awards = None
+        self._brochure = None
+        self._tpdb_enricher = None
+
     def _awards_service(self):
         """The awards service, built lazily so a disabled one costs nothing."""
 

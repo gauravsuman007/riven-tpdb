@@ -217,3 +217,113 @@ Whisparr dependency. Regular movies/TV must never appear.
   endpoint only filters by `site`, so performer/tag catalogs need another
   source or a local cache).
 - Frontend "add" flow with TPDB title search.
+## Sessions: read this before changing anything
+Several Claude Code sessions work in this repo at once. **This file is the only
+shared memory between them** -- it is tracked, so it travels with the branch and
+is visible to every session and to CI. `CLAUDE.md` is gitignored and is only a
+pointer to this file; do not put facts there.
+
+Two rules keep the sessions from diverging:
+1. Before starting work, `git log --oneline -10` and skim the section below.
+   Another session may have already landed what you are about to write.
+2. After landing a change that another session would be wrong without --
+   a new deployment step, a renamed service, a trap that cost you an hour --
+   append it here in the same commit.
+
+## Deployment
+The server is `hellonfire@192.168.2.100` (key-based; no ssh alias). The compose
+stack is a full checkout at `/home/hellonfire/Server/riven-tpdb`.
+
+    ssh 192.168.2.100 'cd /home/hellonfire/Server/riven-tpdb && \
+      docker compose pull riven-tpdb riven-tpdb-frontend && \
+      docker compose up -d riven-tpdb riven-tpdb-frontend'
+
+- **Name the services explicitly.** A bare `docker compose up -d` also recreates
+  `riven_postgres`, which an app deploy has no reason to touch.
+- **The host also runs UPSTREAM `riven` / `riven-frontend`** (`spoked/riven`).
+  Those are a different application. Always target `riven-tpdb`.
+- Compose service names are `riven-tpdb`, `riven-tpdb-frontend`,
+  `riven_postgres`; container names are `riven-tpdb`, `riven-tpdb-frontend`,
+  `riven-db`. Postgres differs between the two -- compose name in compose
+  commands, container name in `docker exec` / `docker logs`.
+- Ports on the host: backend **8089**, frontend **3001** (not 8080/3000).
+- **`:latest` is built from `main` only.** The workflow tags `latest` with
+  `enable={{is_default_branch}}`; a `ci/**` push publishes a branch tag that the
+  compose file does not reference. Deploying from a branch therefore re-pulls
+  whatever main last built and looks like a successful no-op. Merge to main
+  first, or override the tag deliberately and say so.
+- Backend and frontend are two repos with two independent CI runs; the frontend
+  usually finishes a minute or two later. Check both:
+  `gh run list --limit 1 --json databaseId,status` then `gh run watch <id> --exit-status`.
+- Migrations run automatically at startup ("Database migrations completed
+  successfully" in the log). Never run alembic by hand.
+- The API answers ~20-30s after the container starts; probing sooner returns a
+  misleading 502. Wait with an until-loop on `http://127.0.0.1:3001/api/v1/`.
+- Verifying without the api_key: `local_access` is on for loopback and the
+  frontend proxies with the key injected, so from the server
+  `curl -s http://127.0.0.1:3001/api/v1/items?limit=30` returns real data.
+- `RIVEN_FORCE_ENV=true` is set on the server. Any `RIVEN_*` env var silently
+  overwrites the UI-saved setting on every start.
+
+## Running the tests
+These suites are plain scripts with a local `check(name, cond)` harness, not
+pytest. On the server:
+
+    docker exec riven-tpdb env PYTHONPATH=/riven/src \
+      /riven/.venv/bin/python /riven/src/tests/<name>.py
+
+Locally they need only sqlalchemy/pydantic/loguru in a throwaway venv; each one
+prints `SKIP:` and exits 0 if a dependency is missing.
+
+## User collections (distinct from source catalogues)
+- The same `Collection` model backs three different things, told apart by
+  `source`: `avn` (award ballots), `adultempire` (storefront listings), and
+  `user` (hand-curated lists). Only `user` collections are editable; the router
+  rejects edits to the others, because a source catalogue is rebuilt on every
+  sync and an edit to one would silently vanish.
+- The library page's Collections shelf shows `source=user` **only**. Forty award
+  years in that row would bury the two or three lists the user actually made.
+- **Adding a title to a collection does not request it.** No add path touches
+  the event manager. A collection is what you are interested in; the library is
+  what you own. An add adopts an existing MediaItem if there is one, and never
+  creates one.
+- User entries have a null `category`, so the `(collection_id, title, category)`
+  unique constraint does not protect them -- NULL never equals NULL in SQL.
+  Dedupe happens in `_existing_entry`, keyed on whichever id the title was
+  added by.
+- Adding an Adult Empire entry runs a TPDB lookup so it lands with the same
+  artwork and ids a TPDB title has. A miss is not an error: the entry keeps its
+  `external_id`, stays `self_sourced`, and is still requestable.
+- **TPDB has exactly one collection per account** -- a flat "collected" flag,
+  no named lists. So `content.collections.sync_to_tpdb` can only mirror
+  *membership*, not which collection a title is in. It is also one-way:
+  `user/collection` exposes GET/HEAD/POST and no DELETE, so removing a title
+  locally cannot un-collect it upstream. Off by default.
+- The collection write is keyed on the **integer `_id`**, not the uuid stored
+  everywhere else. `TpdbApi.numeric_id()` reads it from the raw payload because
+  pydantic does not surface underscore-prefixed keys as extra fields, however
+  permissive the model config is.
+
+## The AVN page
+- `/avn` is its own browsing surface, a row per ceremony year, newest first --
+  not a collections shelf. `GET /collections/avn/overview` enumerates years from
+  `content.awards.first_year` to the current year *from the settings*, so a year
+  the corpus has not reached yet still gets a row marked `status: "fetching"`
+  ("Data being fetched"). A page that grows downwards while a sync runs reads as
+  breakage, not as progress.
+- `POST /collections/avn/enable` does two things and needs both: it saves the
+  setting (so the switch survives a restart and matches Settings → Content →
+  Awards) **and** calls `ProgramScheduler.refresh_content_jobs()`. Saving alone
+  leaves a switch that reads "on" while nothing runs until the next restart.
+- `refresh_content_jobs()` deliberately does *not* re-run `_schedule_functions`:
+  every job that registers carries `next_run_time=now`, so a settings change
+  would immediately fire the vacuum and the library retry as a side effect. It
+  touches only the four awards/brochure jobs, adds or removes them, and drops
+  the cached service instances (they read their settings at construction).
+
+## Shared TPDB lookup
+`services/recommendations/tpdb_lookup.resolve_movie()` is the single two-pass
+search-then-detail matcher. Both the brochure enricher and the collections
+service call it. Do not re-implement it: scoring the flat `/movies?q=` records
+directly leaves studio and cast unset, the score never clears `ACCEPT_SCORE`,
+and nothing ever matches -- silently.

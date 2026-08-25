@@ -680,6 +680,30 @@ class TpdbApi:
         except OSError as exc:
             logger.debug(f"Could not clear TPDB cache directory: {exc}")
 
+    def numeric_id(self, uuid: str, kind: str = "movie") -> int | None:
+        """The integer ``_id`` behind a TPDB uuid.
+
+        The collection routes are keyed on this, not on the uuid every other
+        endpoint uses. It is read from the raw payload rather than a parsed
+        model because pydantic does not surface underscore-prefixed keys as
+        extra fields, so ``TpdbMovie`` cannot carry it however permissive the
+        model config is.
+        """
+
+        path = f"scenes/{uuid}" if kind == "scene" else f"movies/{uuid}"
+        data = self._get_optional(path)
+        payload = (data or {}).get("data")
+
+        if not isinstance(payload, dict):
+            return None
+
+        value = payload.get("_id")
+
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
     def is_collected(self, numeric_id: int | str) -> bool:
         """Whether one title is in the collection.
 

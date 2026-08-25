@@ -19,17 +19,8 @@ from sqlalchemy import select
 from program.apis.tpdb_api import TpdbApi, TpdbApiError
 from program.db.db import db_session
 from program.media.item import MediaItem
-from program.services.awards.matching import (
-    MIN_TITLE_RATIO,
-    best_match,
-    evaluate_candidate,
-    title_ratio,
-)
+from program.services.recommendations.tpdb_lookup import resolve_movie
 from program.settings import settings_manager
-
-# Same shortlist depth as award resolution: enough to cover a title TPDB lists
-# under several editions, without spending a detail request on every hit.
-DETAIL_CANDIDATES = 3
 
 
 class TpdbEnricher:
@@ -103,50 +94,19 @@ class TpdbEnricher:
     def _match(self, item: MediaItem):
         """Find a TPDB record for a library item, or None.
 
-        Uses the same two-pass shape as award resolution -- shortlist on title
-        from the flat search response, then score the detail records -- and the
-        same acceptance bar, because a wrong attachment here silently relabels
-        an owned title.
+        Delegates to the shared two-pass lookup so this path and the collections
+        path cannot drift apart -- and so the acceptance bar stays in one place,
+        because a wrong attachment here silently relabels an owned title.
         """
 
-        results = self.api.search_movies_text(item.title, per_page=20) or []
-        shortlist = sorted(
-            (
-                (title_ratio(item.title, r.title or ""), r)
-                for r in results
-                if r.id and title_ratio(item.title, r.title or "") >= MIN_TITLE_RATIO
-            ),
-            key=lambda pair: pair[0],
-            reverse=True,
-        )[:DETAIL_CANDIDATES]
-
-        candidates = []
-
-        for _ratio, result in shortlist:
-            detail = self.api.get_movie(result.id)
-
-            if detail is None:
-                continue
-
-            candidates.append(
-                evaluate_candidate(
-                    entry_title=item.title,
-                    # site_name carries the Adult Empire studio for these items.
-                    entry_studio=item.site_name,
-                    entry_year=item.year,
-                    # A storefront year is the release year already, unlike an
-                    # award ceremony year.
-                    year_offset=0,
-                    entry_performers=list(item.performers or []),
-                    tpdb_id=detail.id or result.id,
-                    tpdb_kind="movie",
-                    tpdb_title=detail.title,
-                    tpdb_site=detail.site.name if detail.site else None,
-                    tpdb_date=detail.date,
-                    tpdb_performers=[p.name for p in detail.performers if p.name],
-                    tpdb_poster=detail.poster
-                    or (detail.posters.large if detail.posters else None),
-                )
-            )
-
-        return best_match(candidates)
+        return resolve_movie(
+            self.api,
+            title=item.title,
+            # site_name carries the Adult Empire studio for these items.
+            studio=item.site_name,
+            year=item.year,
+            performers=list(item.performers or []),
+            # A storefront year is the release year already, unlike an award
+            # ceremony year.
+            year_offset=0,
+        )
