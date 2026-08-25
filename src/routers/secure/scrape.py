@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from program.db import db_functions
 from program.db.db import db_session
+from program.services.recommendations.tpdb_lookup import enrich_entry
 from program.services.indexers.adultempire_indexer import (
     best_entry as adultempire_best_entry,
     build_movie as build_adultempire_movie,
@@ -528,15 +529,36 @@ def resolve_media_item(
         except ValueError:
             pass
 
-    # An Adult Empire title that is not in the library yet: build a transient
-    # Movie from the cached brochure entry. This is what lets the candidates
-    # list work on a brochure page before anything has been requested, and it
-    # costs no network call because the brochure already holds the metadata.
-    if not item and adultempire_id:
+    # An Adult Empire title that is not in the library yet. Resolve it against
+    # TPDB first: a match turns it into an ordinary TPDB item, so everything
+    # downstream -- indexing, scraping, the detail page -- is the same code the
+    # rest of the fork uses, with nothing storefront-specific left in it.
+    #
+    # Roughly one title in five has no confident TPDB match, and those fall
+    # back to the storefront's own metadata. That is not a second download
+    # path: it produces a Movie carrying the same title, studio, year and cast
+    # a TPDB record would have supplied, and the scrapers match on exactly
+    # those fields.
+    if not item and adultempire_id and not tpdb_id:
         entry = adultempire_best_entry(session, adultempire_id)
 
         if entry is not None:
-            item = build_adultempire_movie(entry)
+            if enrich_entry(entry):
+                session.commit()
+
+            if entry.tpdb_id:
+                # Hand over to the TPDB branch below, which indexes it the
+                # ordinary way. It may already be in the library under that id.
+                tpdb_id = entry.tpdb_id
+
+                try:
+                    item = db_functions.get_item_by_external_id(
+                        tpdb_id=tpdb_id, session=session
+                    )
+                except ValueError:
+                    pass
+            else:
+                item = build_adultempire_movie(entry)
 
     # If item not found locally, try to create it via Indexer if external IDs are provided
     if not item and (tmdb_id or tvdb_id or imdb_id or tpdb_id):

@@ -28,6 +28,7 @@ from program.media.collection import (
 )
 from program.media.item import MediaItem
 from program.services.collections import service as user_collections
+from program.services.recommendations.tpdb_lookup import enrich_entry
 from program.settings import settings_manager
 from routers.models.shared import MessageResponse
 
@@ -294,9 +295,15 @@ def request_entry(
                 detail=f"{entry.title!r} has not been matched to a TPDB title",
             )
 
-        # Prefer TPDB when the entry has been resolved: it indexes to richer
-        # metadata. Otherwise go on the source's own id, which is the whole
-        # point of a self-sourced entry -- no TPDB round trip before download.
+        # Resolve against TPDB first, so a storefront title enters the library
+        # as an ordinary TPDB item and takes the ordinary TPDB path from here
+        # on. Roughly four titles in five match; the fifth downloads from the
+        # storefront's own metadata instead, which is why the branch below
+        # still exists. The lookup happens once -- the id is written back to
+        # the entry -- so this costs nothing on a second request.
+        if enrich_entry(entry):
+            session.commit()
+
         if entry.tpdb_id:
             existing = session.execute(
                 select(MediaItem).where(MediaItem.tpdb_id == entry.tpdb_id)

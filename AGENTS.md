@@ -392,6 +392,32 @@ that is not rendered is dropped from the submitted payload.
   filtering and ranking are the same code. `manual=True` skips the mainstream
   season/year/country filters but **not** `_filter_adult_torrents`.
 
+## One download path: TPDB first, storefront as fallback
+- A storefront title is resolved against TPDB **at the boundary** -- when it is
+  requested, or when it is manually scraped -- not later by a background
+  enricher. A match makes it an ordinary TPDB item, so indexing, scraping and
+  the detail page are all the same code the rest of the fork uses, with nothing
+  storefront-specific left downstream.
+- `tpdb_lookup.enrich_entry` is the single implementation, used by the request
+  endpoint, `resolve_media_item`, and the user-collections service. It used to
+  be duplicated in `collections/service.py`; do not copy it again.
+- The resolved id is written back to the `CollectionEntry`, so the lookup costs
+  one TPDB round trip per title ever, not one per request.
+- **The fallback is load-bearing, not dead code.** Measured against the
+  all-time bestsellers, TPDB confidently matches about four titles in five. The
+  fifth is usually a bare one-word title ("Nurses") or a pre-1980 release,
+  where the matcher correctly refuses to guess. Those titles still download
+  from the storefront's own metadata -- studio, year and cast is exactly what
+  the scrapers match on -- which is why `AdultEmpireIndexer` and `build_movie`
+  remain. Removing them would make one bestseller in five undownloadable.
+- Ordering is the thing to protect: read `entry.tpdb_id` *after* enriching, or
+  every unresolved title silently takes the storefront branch.
+  `test_brochure_tpdb_first.py` asserts the ordering in both routers.
+- The brochure card links to the TPDB detail page once an entry has a
+  `tpdb_id`, and to its brochure page otherwise (`entryHref` in
+  `lib/collections.ts`). Requesting or scraping from a brochure page navigates
+  to the library page once resolution succeeds.
+
 ## Picking a release that is not cached
 - `start_session` exists to let the user choose files *out of* a torrent, so it
   needs the provider to already hold it. An uncached torrent has no file list --

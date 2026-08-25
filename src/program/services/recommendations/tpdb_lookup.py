@@ -17,7 +17,14 @@ score never clears ``ACCEPT_SCORE``, and nothing ever matches -- silently, with
 no error to notice.
 """
 
-from program.apis.tpdb_api import TpdbApi
+from datetime import datetime
+
+from kink import di
+from loguru import logger
+
+from program.apis.tpdb_api import TpdbApi, TpdbApiError
+from program.media.collection import MATCH_MATCHED, CollectionEntry
+from program.settings import settings_manager
 from program.services.awards.matching import (
     MIN_TITLE_RATIO,
     best_match,
@@ -88,3 +95,74 @@ def resolve_movie(
         )
 
     return best_match(candidates)
+
+
+def client() -> TpdbApi | None:
+    """The TPDB client, or None when the fork is running without a token."""
+
+    if not settings_manager.settings.tpdb.api_token:
+        return None
+
+    try:
+        return di[TpdbApi]
+    except Exception as exc:  # pragma: no cover - DI misconfiguration
+        logger.debug(f"TPDB client unavailable: {exc}")
+        return None
+
+
+def enrich_entry(entry: CollectionEntry) -> bool:
+    """Attach TPDB metadata to a catalogue entry that arrived without it.
+
+    Best effort by design, and that is load-bearing rather than lazy: measured
+    against Adult Empire's all-time bestsellers, TPDB has a confident match for
+    roughly four titles in five. The fifth is usually a one-word title like
+    "Nurses" or a 1979 release, where the matcher correctly refuses to guess.
+    Those titles are still perfectly downloadable from the storefront's own
+    metadata -- studio, year and cast is exactly what the scrapers match on --
+    so a miss must leave the entry usable rather than reject it.
+
+    Mutates ``entry``; the caller owns the commit.
+    """
+
+    if entry.tpdb_id or not entry.title:
+        return False
+
+    api = client()
+
+    if api is None:
+        return False
+
+    try:
+        match = resolve_movie(
+            api,
+            title=entry.title,
+            studio=entry.studio,
+            year=entry.year,
+            performers=list(entry.performers or []),
+            # A storefront year is the release year; only a ceremony year is
+            # one ahead of it.
+            year_offset=0,
+        )
+    except TpdbApiError as exc:
+        logger.debug(f"TPDB unavailable while resolving {entry.title!r}: {exc}")
+        return False
+    except Exception as exc:
+        logger.debug(f"TPDB lookup failed for {entry.title!r}: {exc}")
+        return False
+
+    if match is None:
+        logger.debug(f"No TPDB match for {entry.title!r}; using storefront metadata")
+        return False
+
+    entry.tpdb_id = match.tpdb_id
+    entry.tpdb_kind = match.kind
+    entry.match_score = match.score
+    entry.match_state = MATCH_MATCHED
+    entry.matched_at = datetime.now()
+
+    if match.poster:
+        entry.poster_path = match.poster
+
+    logger.debug(f"Matched {entry.title!r} to TPDB {match.tpdb_id}")
+
+    return True

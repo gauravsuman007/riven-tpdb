@@ -128,10 +128,12 @@ _load("program.utils.text_matching", SRC / "program" / "utils" / "text_matching.
 coll = _load("program.media.collection", SRC / "program" / "media" / "collection.py")
 _load("program.services.awards.matching",
       SRC / "program" / "services" / "awards" / "matching.py")
+# Before tpdb_lookup: it now owns the TPDB client lookup, so it imports kink
+# at module level.
+_module("kink", di={})
+
 _load("program.services.recommendations.tpdb_lookup",
       SRC / "program" / "services" / "recommendations" / "tpdb_lookup.py")
-
-_module("kink", di={})
 
 service = _load("program.services.collections.service",
                 SRC / "program" / "services" / "collections" / "service.py")

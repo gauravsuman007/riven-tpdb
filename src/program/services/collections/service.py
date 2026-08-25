@@ -29,7 +29,6 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from program.apis.tpdb_api import TpdbApi, TpdbApiError
 from program.media.collection import (
     MATCH_MATCHED,
     MATCH_SELF_SOURCED,
@@ -38,7 +37,7 @@ from program.media.collection import (
     CollectionEntry,
 )
 from program.media.item import MediaItem
-from program.services.recommendations.tpdb_lookup import resolve_movie
+from program.services.recommendations.tpdb_lookup import client, enrich_entry
 from program.settings import settings_manager
 
 SOURCE = "user"
@@ -174,67 +173,6 @@ def _link_library(session: Session, entry: CollectionEntry) -> None:
         entry.media_item_id = item.id
 
 
-def _api() -> TpdbApi | None:
-    if not settings_manager.settings.tpdb.api_token:
-        return None
-
-    try:
-        return di[TpdbApi]
-    except Exception as exc:  # pragma: no cover - DI misconfiguration
-        logger.debug(f"TPDB client unavailable: {exc}")
-        return None
-
-
-def enrich_from_tpdb(entry: CollectionEntry) -> bool:
-    """Attach TPDB metadata to an entry that arrived without it.
-
-    Best effort by design. An Adult Empire title is perfectly usable without a
-    TPDB record -- it already carries studio, year and cast, which is what the
-    scrapers match on -- so a miss leaves the entry exactly as it was rather
-    than rejecting the add.
-    """
-
-    if entry.tpdb_id or not entry.title:
-        return False
-
-    api = _api()
-
-    if api is None:
-        return False
-
-    try:
-        match = resolve_movie(
-            api,
-            title=entry.title,
-            studio=entry.studio,
-            year=entry.year,
-            performers=list(entry.performers or []),
-            # A storefront year is the release year; only a ceremony year is
-            # one ahead of it.
-            year_offset=0,
-        )
-    except TpdbApiError as exc:
-        logger.debug(f"TPDB unavailable while adding {entry.title!r}: {exc}")
-        return False
-    except Exception as exc:
-        logger.debug(f"TPDB lookup failed for {entry.title!r}: {exc}")
-        return False
-
-    if match is None:
-        return False
-
-    entry.tpdb_id = match.tpdb_id
-    entry.tpdb_kind = match.kind
-    entry.match_score = match.score
-    entry.match_state = MATCH_MATCHED
-    entry.matched_at = datetime.now()
-
-    if match.poster:
-        entry.poster_path = match.poster
-
-    return True
-
-
 def add_tpdb_title(
     session: Session, collection: Collection, tpdb_id: str, kind: str = "movie"
 ) -> CollectionEntry:
@@ -251,7 +189,7 @@ def add_tpdb_title(
     studio = performers = poster = None
     year = None
 
-    api = _api()
+    api = client()
 
     if api is not None:
         try:
@@ -334,7 +272,7 @@ def add_library_item(
     session.flush()
 
     if not entry.tpdb_id:
-        enrich_from_tpdb(entry)
+        enrich_entry(entry)
 
     sync_to_tpdb(entry)
 
@@ -395,7 +333,7 @@ def add_catalogue_entry(
     session.flush()
 
     if not entry.tpdb_id:
-        enrich_from_tpdb(entry)
+        enrich_entry(entry)
 
     _link_library(session, entry)
     sync_to_tpdb(entry)
@@ -424,7 +362,7 @@ def sync_to_tpdb(entry: CollectionEntry) -> bool:
     if not entry.tpdb_id:
         return False
 
-    api = _api()
+    api = client()
 
     if api is None:
         return False
