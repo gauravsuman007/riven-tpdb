@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from typing import Annotated, Any, Literal, TypeAlias, cast
 from uuid import uuid4
@@ -93,6 +94,57 @@ class ParsedFile(BaseModel):
     filesize: int
     download_url: str | None = None
     parsed_metadata: dict[str, Any]
+
+
+# Streams from the most recent manual scrapes, keyed by infohash.
+#
+# Picking a release has to be able to rebuild the Stream row server-side. The
+# scrape endpoint is the only place those Streams exist -- it does not persist
+# them, because a candidate list is not a commitment to download anything --
+# so they are remembered here rather than trusting the browser to send a
+# release description back. Bounded and ordered so a long browsing session
+# cannot grow it without limit.
+_MANUAL_STREAM_CACHE_SIZE = 4000
+_manual_streams: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+
+
+def _remember_manual_streams(streams: dict[str, ItemStream]) -> None:
+    for infohash, stream in streams.items():
+        _manual_streams.pop(infohash, None)
+        _manual_streams[infohash] = {
+            "infohash": stream.infohash,
+            "raw_title": stream.raw_title,
+            "parsed_title": stream.parsed_title,
+            "parsed_data": stream.parsed_data,
+            "rank": stream.rank,
+            "lev_ratio": stream.lev_ratio,
+            "resolution": stream.resolution,
+            "seeders": stream.seeders,
+            "leechers": stream.leechers,
+            "size": stream.size,
+            "indexer": stream.indexer,
+        }
+
+    while len(_manual_streams) > _MANUAL_STREAM_CACHE_SIZE:
+        _manual_streams.popitem(last=False)
+
+
+def _rebuild_stream(remembered: dict[str, Any]) -> ItemStream:
+    """A fresh Stream row from remembered fields.
+
+    Built field by field rather than through ``Stream.__init__``, which takes
+    an RTN Torrent we no longer have, and never by reusing the cached object:
+    one ORM instance cannot belong to two items.
+    """
+
+    stream = ItemStream.__new__(ItemStream)
+
+    for field, value in remembered.items():
+        setattr(stream, field, value)
+
+    stream.is_cached = False
+
+    return stream
 
 
 class StartSessionResponse(MessageResponse):
@@ -751,6 +803,11 @@ def scrape_item(
                             services_completed += 1
                             new_streams: dict[str, Stream] = {}
 
+                            # Streaming mode is the one the UI uses, so this is
+                            # the path that has to remember candidates for a
+                            # later pick.
+                            _remember_manual_streams(parsed_streams)
+
                             for infohash, s in parsed_streams.items():
                                 if infohash not in all_streams:
                                     stream_obj = Stream(
@@ -831,6 +888,8 @@ def scrape_item(
                     if infohash not in streams:
                         streams[infohash] = item_stream
 
+            _remember_manual_streams(streams)
+
         return ScrapeItemResponse(
             message=f"Manually scraped streams for item {item.log_string}",
             streams={
@@ -850,6 +909,118 @@ def scrape_item(
                 for s in streams.values()
             },
         )
+
+
+class QueueReleaseResponse(MessageResponse):
+    item_id: int
+    infohash: str
+    # False when the release still has to be fetched by the debrid service.
+    cached: bool
+
+
+@router.post(
+    "/queue_release",
+    summary="Download a specific release, cached or not",
+    operation_id="queue_release",
+    response_model=QueueReleaseResponse,
+)
+def queue_release(
+    infohash: Annotated[str, Query(description="Infohash of the chosen release")],
+    item_id: Annotated[int | None, Query()] = None,
+    tmdb_id: Annotated[str | None, Query()] = None,
+    tvdb_id: Annotated[str | None, Query()] = None,
+    imdb_id: Annotated[str | None, Query()] = None,
+    tpdb_id: Annotated[str | None, Query()] = None,
+    adultempire_id: Annotated[str | None, Query()] = None,
+    media_type: Annotated[Literal["movie", "tv"] | None, Query()] = None,
+) -> QueueReleaseResponse:
+    """Pin one release to a title and let the normal pipeline download it.
+
+    This is the path for a release the debrid service does not already hold.
+    ``start_session`` cannot be used for those: it exists to let the user pick
+    files *out of* a torrent, and an uncached torrent has no file list yet --
+    the provider has not fetched its metadata. It therefore refused the pick
+    outright, which for adult content is the common case rather than the edge
+    one, since these releases are rarely in anyone's cache.
+
+    Rather than reimplementing downloading, this reuses the mechanism the
+    "switch to this release" button already uses: pin ``preferred_stream_hash``
+    and hand the item to the pipeline, which knows how to wait for a provider
+    to finish caching.
+    """
+
+    with db_session() as session:
+        item = resolve_media_item(
+            session,
+            item_id=item_id,
+            tmdb_id=tmdb_id,
+            tvdb_id=tvdb_id,
+            imdb_id=imdb_id,
+            tpdb_id=tpdb_id,
+            adultempire_id=adultempire_id,
+            media_type=media_type,
+        )
+
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        remembered = _manual_streams.get(infohash)
+
+        if remembered is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "That release is no longer in the candidate list. Run the "
+                    "scrape again and pick it from the fresh results."
+                ),
+            )
+
+        # A brochure title picked from the candidate list has never been
+        # requested, so it exists only as a transient Movie built from the
+        # cached entry. It has to be a row before a stream can point at it.
+        if item.id is None:
+            item.requested_at = item.requested_at or datetime.now()
+            item.requested_by = item.requested_by or "manual_scrape"
+            item.store_state()
+            session.add(item)
+            session.commit()
+
+        if not any(
+            existing.infohash == infohash
+            for existing in list(item.streams or []) + list(item.blacklisted_streams or [])
+        ):
+            item.streams.append(_rebuild_stream(remembered))
+
+        # Pinning the hash is what makes the downloader use this release rather
+        # than the top-ranked one; unblacklisting covers a release that an
+        # earlier automatic pass gave up on.
+        item.preferred_stream_hash = infohash
+
+        blacklisted = next(
+            (s for s in (item.blacklisted_streams or []) if s.infohash == infohash),
+            None,
+        )
+
+        if blacklisted is not None:
+            item.unblacklist_stream(blacklisted)
+
+        session.commit()
+
+        resolved_id = item.id
+        title = item.log_string
+
+    if not di[Program].em.add_item(item, service="Manual"):
+        logger.debug(f"{title} is already queued or running; the pick still stands")
+
+    return QueueReleaseResponse(
+        message=(
+            f"Queued {title}. The release is being fetched by your debrid "
+            "service and will download once it is ready."
+        ),
+        item_id=resolved_id,
+        infohash=infohash,
+        cached=False,
+    )
 
 
 @router.post(
@@ -947,9 +1118,18 @@ async def start_manual_session(
         )
 
         if not container or not container.cached:
+            logger.debug(f"Manual pick {info_hash} is not cached: {error}")
+
+            # 409, not 400: nothing about the request was malformed. The
+            # release simply is not held by the provider yet, so there is no
+            # file list to choose from. The caller is expected to fall back to
+            # /scrape/queue_release, which downloads it anyway.
             raise HTTPException(
-                status_code=400,
-                detail=error or "Torrent is not cached, please try another stream",
+                status_code=409,
+                detail=(
+                    "Not cached by your debrid service yet, so its files "
+                    "cannot be listed. It can still be downloaded."
+                ),
             )
 
         session_obj = scraping_session_manager.create_session(

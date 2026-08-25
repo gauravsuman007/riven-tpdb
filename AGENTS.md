@@ -392,6 +392,27 @@ that is not rendered is dropped from the submitted payload.
   filtering and ranking are the same code. `manual=True` skips the mainstream
   season/year/country filters but **not** `_filter_adult_torrents`.
 
+## Picking a release that is not cached
+- `start_session` exists to let the user choose files *out of* a torrent, so it
+  needs the provider to already hold it. An uncached torrent has no file list --
+  TorBox has not fetched its metadata and reports it as queued -- so the pick
+  was refused outright. For adult content that is the common case, not the edge
+  one: `_request_uncached` exists precisely because these releases are rarely in
+  anyone's cache.
+- `start_session` now answers **409** (not 400) when the release is simply not
+  cached; nothing about the request was malformed. The UI falls back to
+  `POST /scrape/queue_release`, which pins `preferred_stream_hash` and hands the
+  item to the pipeline -- the same mechanism as the "switch to this release"
+  button, so there is no second downloader path.
+- `queue_release` rebuilds the Stream from `_manual_streams`, a bounded cache
+  the scrape endpoints populate. The browser sends only an infohash; it never
+  describes a release back to the backend. A pick made against a stale
+  candidate list 409s and asks for a fresh scrape rather than inventing a row.
+- A brochure title picked this way has never been requested, so it exists only
+  as a transient Movie built from the cached entry. `queue_release` persists it
+  before attaching the stream, since a stream cannot point at a row that does
+  not exist.
+
 ## Auto-requesting award winners
 - `content.awards.auto_request_winners` defaults to **off**. A synced corpus is
   ~1,800 winners, so leaving it on made "enable AVN" mean "download a library's
