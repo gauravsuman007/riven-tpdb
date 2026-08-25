@@ -196,6 +196,14 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         self.tvdb_id = item.get("tvdb_id")
         self.tmdb_id = item.get("tmdb_id")
         self.tpdb_id = item.get("tpdb_id")
+        # Easy to forget, and it fails silently in the worst possible way: the
+        # column and `is_adult` both exist, so a Movie built from a brochure
+        # entry looks fine while carrying no Adult Empire id at all. That makes
+        # `is_adult` False, which sends the title to the mainstream indexer
+        # categories and skips the adult relevance filter entirely -- a manual
+        # scrape for "Pirates" came back with five Pirates of the Caribbean
+        # films and nothing else.
+        self.adultempire_id = item.get("adultempire_id")
         self.site_id = item.get("site_id")
         self.site_name = item.get("site_name")
         self.network = item.get("network")

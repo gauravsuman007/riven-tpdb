@@ -38,6 +38,8 @@ from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from program.utils.search_ranking import rank
+
 from program.apis.tpdb_api import (
     TpdbApiError,
     TpdbApi,
@@ -148,6 +150,54 @@ def list_movies(
     return _call(_api().list_movies, site_id=site_id, page=page, per_page=per_page)
 
 
+# TPDB's ``q`` search returns matches in no useful order and ignores every
+# ordering parameter it accepts, so the closest title is routinely not on the
+# first page. Searching "pirates" put Digital Playground's Pirates -- the
+# best-selling adult film ever made, and an exact title match -- on page 2,
+# behind an unrelated 2018 title of the same name and eleven Butthole Pirates
+# sequels. Page size is fixed at 20 whatever ``per_page`` says, so a UI showing
+# one page simply never saw it.
+#
+# So a text search reads a bounded pool of pages, ranks them by how well the
+# title actually matches, and serves slices out of that. Three pages is enough
+# for the queries this is for -- "pirates" has 43 movie hits in total -- and
+# costs three calls against a two-per-second limit.
+RELEVANCE_POOL_PAGES = 3
+
+
+def _ranked_search(fetch, query: str, page: int, per_page: int) -> list[Any]:
+    """Pool several TPDB pages, rank by title relevance, return one slice."""
+
+    pool: list[Any] = []
+    seen: set[str] = set()
+
+    for pool_page in range(1, RELEVANCE_POOL_PAGES + 1):
+        try:
+            batch = _call(fetch, query, page=pool_page, per_page=per_page)
+        except HTTPException:
+            # A later page failing must not lose the pages already read.
+            if pool_page == 1:
+                raise
+            break
+
+        if not batch:
+            break
+
+        for record in batch:
+            key = str(getattr(record, "id", None) or id(record))
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            pool.append(record)
+
+    ranked = rank(query, pool)
+    start = (page - 1) * per_page
+
+    return ranked[start : start + per_page]
+
+
 @router.get("/search", operation_id="tpdb_search")
 def search(
     query: Annotated[str, Query(min_length=1)],
@@ -155,15 +205,15 @@ def search(
     page: Annotated[int, Query(ge=1)] = 1,
     per_page: Annotated[int, Query(ge=1, le=100)] = DEFAULT_PER_PAGE,
 ) -> list[Any]:
-    """Full-text search across one TPDB collection."""
+    """Full-text search across one TPDB collection, best title match first."""
 
     api = _api()
 
     match type:
         case "scenes":
-            return _call(api.search_scenes_text, query, page=page, per_page=per_page)
+            return _ranked_search(api.search_scenes_text, query, page, per_page)
         case "movies":
-            return _call(api.search_movies_text, query, page=page, per_page=per_page)
+            return _ranked_search(api.search_movies_text, query, page, per_page)
         case "performers":
             return _call(api.search_performers, query)
         case "sites":

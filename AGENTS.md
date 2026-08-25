@@ -357,6 +357,36 @@ Content -> ..." pointer in the UI a dead end. Tabs are a presentation layer over
 one form -- inactive panels stay mounted and hidden with CSS, because a field
 that is not rendered is dropped from the submitted payload.
 
+## Two silent traps in the adult scrape path
+- **`MediaItem.__init__` must read every id column it declares.** `adultempire_id`
+  was a column, and `is_adult` read it, but the constructor never assigned it
+  from the payload -- so `Movie({"adultempire_id": ...})` looked completely
+  normal and carried no id. `is_adult` then returned False, which sent brochure
+  titles to the *mainstream* indexer categories and skipped the adult relevance
+  filter: a manual scrape for "Pirates" returned five Pirates of the Caribbean
+  films and no adult release at all. `src/tests/test_mediaitem_ids.py` guards
+  the whole class of bug by reading item.py with `ast`.
+- **An adult item searches XXX *instead of* the indexer's Movies categories**,
+  not in addition. A one-word adult title collides with mainstream cinema
+  constantly and the mainstream categories are far larger, so searching both
+  buries the real matches. `select_category_ids` falls back to the type
+  categories for indexers that expose no XXX category at all, or an adult-only
+  tracker that Prowlarr mapped to "movie" would search nothing.
+- The manual scrape shares one path with the TPDB one -- `resolve_media_item`
+  then `scraper.scrape(item, manual=True)`. Only item *resolution* differs; the
+  filtering and ranking are the same code. `manual=True` skips the mainstream
+  season/year/country filters but **not** `_filter_adult_torrents`.
+
+## TPDB search ordering
+TPDB's `q` search returns matches in no useful order, ignores every ordering
+parameter it accepts, and its page size is fixed at 20 whatever `per_page` says.
+"pirates" put Digital Playground's Pirates -- an exact title match -- on page 2,
+so a single-page UI never saw it. `/tpdb/search` now pools
+`RELEVANCE_POOL_PAGES` pages and ranks them with `utils/search_ranking.py`:
+exact title, then prefix, then contains, with token overlap only breaking ties
+inside a tier ("Pirates" and "Butthole Pirates #4" both contain every query
+token, so overlap alone cannot separate them).
+
 ## Shared TPDB lookup
 `services/recommendations/tpdb_lookup.resolve_movie()` is the single two-pass
 search-then-detail matcher. Both the brochure enricher and the collections

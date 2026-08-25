@@ -53,11 +53,22 @@ def _test_select_adult_only_indexer():
 
 
 def _test_select_adult_on_general_indexer():
-    # General tracker with both Movies and XXX categories; adult item hits both.
+    # General tracker with both Movies and XXX. An adult item searches XXX
+    # *instead of* Movies: searching both buried the real matches for "Pirates"
+    # under five Pirates of the Caribbean films and a release group of the same
+    # name, because a one-word adult title collides with mainstream cinema and
+    # the mainstream categories are far larger.
     ids = cat.select_category_ids(
         "movie", False, True, [("movie", [2000]), ("xxx", [6000])]
     )
-    assert ids == {2000, 6000}
+    assert ids == {6000}, ids
+
+
+def _test_select_adult_falls_back_without_xxx():
+    # An adult-only tracker whose categories Prowlarr maps to "movie" exposes
+    # no XXX category. Restricting it to one would search nothing at all.
+    ids = cat.select_category_ids("movie", False, True, [("movie", [2000])])
+    assert ids == {2000}, ids
 
 
 def _test_select_non_adult_movie_excludes_xxx():
@@ -78,6 +89,7 @@ TESTS = [
     ("categories: is_adult_category detection", _test_is_adult_category),
     ("categories: adult-only indexer ids", _test_select_adult_only_indexer),
     ("categories: adult on general indexer", _test_select_adult_on_general_indexer),
+    ("categories: adult falls back without xxx", _test_select_adult_falls_back_without_xxx),
     ("categories: non-adult movie excludes xxx", _test_select_non_adult_movie_excludes_xxx),
     ("categories: anime category included", _test_select_anime),
 ]
