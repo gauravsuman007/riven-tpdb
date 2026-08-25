@@ -92,39 +92,103 @@ def test_every_declared_id_is_read_from_the_payload():
     )
 
 
-def test_duplicate_check_knows_every_id_add_item_passes():
-    """`add_item` and `item_exists_by_any_id` must agree on the id list.
-
-    They are in different modules and drifted: `add_item` handed over five ids
-    while a brochure title only ever has `adultempire_id`, so the duplicate
-    check raised "At least one ID must be provided" and the Request button
-    returned a 500.
-    """
-
-    manager = (SRC / "program/managers/event_manager.py").read_text()
+def _id_kwargs_accepted():
     functions = (SRC / "program/db/db_functions.py").read_text()
+    start = functions.index("def item_exists_by_any_id(")
+    signature = functions[start:functions.index(") -> bool:", start)]
 
-    call_start = manager.index("db_functions.item_exists_by_any_id(")
-    call = manager[call_start:manager.index("):", call_start)]
-
-    passed = {
-        line.split("=")[0].strip()
-        for line in call.split("\n")[1:]
-        if "=" in line
+    return {
+        line.split(":")[0].strip()
+        for line in signature.split("\n")[1:]
+        if ":" in line
     }
 
-    signature_start = functions.index("def item_exists_by_any_id(")
-    signature = functions[signature_start:functions.index(") -> bool:", signature_start)]
 
-    for name in sorted(passed):
-        assert f"{name}:" in signature, (
-            f"add_item passes {name!r} but item_exists_by_any_id does not "
-            "accept it"
+def _call_sites():
+    """Every call to item_exists_by_any_id in the tree, with its kwargs."""
+
+    sites = []
+
+    for path in sorted((SRC / "program").rglob("*.py")) + sorted(
+        (SRC / "routers").rglob("*.py")
+    ):
+        text = path.read_text()
+        needle = "item_exists_by_any_id("
+        offset = 0
+
+        while (found := text.find(needle, offset)) != -1:
+            offset = found + len(needle)
+
+            # Skip the definition itself.
+            if text[max(0, found - 4):found].endswith("def "):
+                continue
+
+            depth = 1
+            i = offset
+
+            while i < len(text) and depth:
+                if text[i] == "(":
+                    depth += 1
+                elif text[i] == ")":
+                    depth -= 1
+                i += 1
+
+            call = text[offset:i - 1]
+            kwargs = {
+                part.split("=")[0].strip()
+                for part in call.split(",")
+                if "=" in part and part.split("=")[0].strip().isidentifier()
+            }
+
+            sites.append((path.relative_to(SRC), kwargs))
+
+    return sites
+
+
+def test_the_call_site_scan_found_something():
+    """Guard the guard: a parse change must not make this vacuously pass."""
+
+    sites = _call_sites()
+
+    assert len(sites) >= 2, f"expected several call sites, found {sites}"
+
+
+def test_every_call_site_passes_only_ids_the_check_accepts():
+    accepted = _id_kwargs_accepted()
+
+    for path, kwargs in _call_sites():
+        unknown = sorted(kwargs - accepted)
+
+        assert not unknown, (
+            f"{path} passes {unknown} to item_exists_by_any_id, which does "
+            "not accept them"
         )
 
-    assert "adultempire_id" in passed, (
-        "add_item must pass adultempire_id, or an Adult Empire title with no "
-        "other id trips the 'At least one ID' guard"
+
+def test_every_call_site_passing_a_bare_item_passes_adultempire_id():
+    """A brochure title has no other id, so omitting it raises at runtime.
+
+    Both known call sites drifted this way: `EventManager.add_item` and the
+    idempotent insert in `run_thread_with_db_item`. Each one turned a request
+    for an Adult Empire title into "At least one ID must be provided" -- a 500
+    on the button in the first case, and an item that silently never reached
+    the pipeline in the second.
+    """
+
+    # Only the "check every id this item has" pattern is in scope. A call that
+    # deliberately passes one known id -- tpdb_content asking whether a TPDB id
+    # is already known -- is not drift and must not be flagged.
+    mainstream = {"imdb_id", "tmdb_id", "tvdb_id"}
+
+    offenders = [
+        str(path)
+        for path, kwargs in _call_sites()
+        if kwargs & mainstream and "adultempire_id" not in kwargs
+    ]
+
+    assert not offenders, (
+        f"{offenders} pass tpdb_id but not adultempire_id; an Adult Empire "
+        "title with no other id trips the 'At least one ID' guard"
     )
 
 

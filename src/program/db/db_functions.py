@@ -438,6 +438,7 @@ def run_thread_with_db_item(
                     tmdb_id=indexed_item.tmdb_id,
                     imdb_id=indexed_item.imdb_id,
                     tpdb_id=indexed_item.tpdb_id,
+                    adultempire_id=indexed_item.adultempire_id,
                     session=session,
                 ):
                     logger.debug(
