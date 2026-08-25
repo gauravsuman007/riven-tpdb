@@ -34,6 +34,7 @@ from program.services.recommendations.adultempire import (
     AdultEmpireError,
 )
 from program.services.indexers.adultempire_indexer import parse_released
+from program.services.recommendations.tpdb_lookup import enrich_entry
 from program.settings import settings_manager
 
 SOURCE = "adultempire"
@@ -231,5 +232,77 @@ class BrochureService:
 
         if done:
             logger.debug(f"Enriched {done} Adult Empire entries")
+
+        return done
+
+    # ----------------------------------------------------- TPDB resolution
+
+    def resolve_batch(self, limit: int | None = None) -> int:
+        """Attach a TPDB record to catalogue entries that have none yet.
+
+        Separate from :meth:`enrich_batch`, which reads Adult Empire's own
+        detail page. This one asks TPDB whether the title exists there too,
+        and it has to run over the *catalogue* rather than over library items:
+        the detail page decides which view to render from ``tpdb_id``, so an
+        entry nobody has requested yet still needs resolving or it is stuck on
+        the storefront view forever.
+
+        Until this existed the lookup only ran when a title was requested,
+        which left every un-requested entry unresolved -- 573 of 576 of them,
+        measured -- and made the TPDB detail page look like it only worked for
+        new titles.
+
+        Bounded per run and resumable: ``resolve_movie`` costs a search plus up
+        to three detail requests, and TPDB allows two a second.
+        """
+
+        if not self.settings.enrich_from_tpdb:
+            return 0
+
+        limit = limit or self.settings.resolve_batch_size
+        done = 0
+
+        with db_session() as session:
+            pending = (
+                session.execute(
+                    select(CollectionEntry)
+                    .join(Collection)
+                    # Never attempted, rather than "has no tpdb_id". About
+                    # one title in five legitimately has no TPDB record --
+                    # a bare one-word title, or a pre-1980 release the matcher
+                    # correctly refuses to guess at -- and keying off the id
+                    # alone would re-ask TPDB about those on every single run,
+                    # forever, spending the whole rate limit on known misses.
+                    .where(
+                        Collection.source == SOURCE,
+                        CollectionEntry.tpdb_id.is_(None),
+                        CollectionEntry.matched_at.is_(None),
+                    )
+                    # Highest-ranked first: those are the ones on screen.
+                    .order_by(CollectionEntry.rank)
+                    .limit(limit)
+                )
+                .scalars()
+                .all()
+            )
+
+            for entry in pending:
+                if enrich_entry(entry):
+                    done += 1
+                else:
+                    # Stamp the attempt so the query above does not pick this
+                    # entry up again. `match_state` deliberately stays
+                    # `self_sourced`: the title is still downloadable from the
+                    # storefront's own metadata, and demoting it to
+                    # `unmatched` would make `actionable` false and take away
+                    # a title that works.
+                    entry.matched_at = datetime.now()
+
+                # Per entry, for the same reason as enrichment: a batch is
+                # minutes of rate-limited work to lose on a crash.
+                session.commit()
+
+        if done:
+            logger.debug(f"Resolved {done} Adult Empire entries to TPDB")
 
         return done

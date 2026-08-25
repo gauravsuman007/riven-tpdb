@@ -767,6 +767,55 @@ class BrochureModel(Observable):
             "already downloadable without it."
         ),
     )
+    resolve_batch_size: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description=(
+            "Catalogue entries to resolve against TPDB per run. Each costs a "
+            "search plus up to three detail requests, and TPDB allows two a "
+            "second, so this stays small."
+        ),
+    )
+    resolve_interval: int = Field(
+        default=300,
+        ge=60,
+        description="How often to resolve another batch of entries against TPDB",
+    )
+    studios_enabled: bool = Field(
+        default=True,
+        description=(
+            "Mirror Adult Empire's studio directory so studios can be saved "
+            "and browsed. Their titles are read live and never stored."
+        ),
+    )
+    studio_sync_day: str = Field(
+        default="sun",
+        description=(
+            "Weekday to refresh the studio directory on: mon, tue, wed, thu, "
+            "fri, sat or sun. The directory changes about never, so weekly is "
+            "generous."
+        ),
+    )
+    studio_sync_hour: int = Field(
+        default=3,
+        ge=0,
+        le=23,
+        description=(
+            "Hour of the day to refresh the studio directory, local time. The "
+            "sync is one storefront request per studio at a one-second delay, "
+            "so it runs overnight."
+        ),
+    )
+    studio_enrich_batch_size: int = Field(
+        default=20,
+        ge=1,
+        le=200,
+        description=(
+            "Studios to look up on TPDB per run, for logos and descriptions. "
+            "Adult Empire's studio pages carry neither."
+        ),
+    )
 
 
 class CollectionsModel(Observable):

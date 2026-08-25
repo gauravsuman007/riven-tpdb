@@ -127,9 +127,47 @@ class _Settings:
             refresh_interval = 43200
             enrich_interval = 600
             enrich_from_tpdb = True
+            resolve_batch_size = 10
+            resolve_interval = 300
 
 
 _module("program.settings", settings_manager=types.SimpleNamespace(settings=_Settings))
+
+
+# Titles the fake TPDB "knows". resolve_batch is exercised for real against
+# this; only the network call is substituted, exactly as the matcher's own
+# suite does.
+TPDB_KNOWS = {"Pirates": "uuid-pirates"}
+LOOKUPS: list[str] = []
+
+
+def _fake_enrich_entry(entry):
+    """Stands in for tpdb_lookup.enrich_entry, mirroring its write-back."""
+
+    from datetime import datetime
+
+    LOOKUPS.append(entry.title)
+
+    if entry.tpdb_id or not entry.title:
+        return False
+
+    found = TPDB_KNOWS.get(entry.title)
+
+    if not found:
+        return False
+
+    entry.tpdb_id = found
+    entry.tpdb_kind = "movie"
+    entry.match_state = "matched"
+    entry.matched_at = datetime.now()
+
+    return True
+
+
+_module(
+    "program.services.recommendations.tpdb_lookup",
+    enrich_entry=_fake_enrich_entry,
+)
 
 
 def _load(name, path):
@@ -457,6 +495,87 @@ def test_enrichment_pauses_on_outage():
             coll.CollectionEntry.rating.is_(None)).count()
 
     assert unrated == 2, f"{unrated} left unrated, expected both to survive"
+
+
+# ------------------------------------------------- resolving against TPDB
+
+
+def _resolve_service():
+    """resolve_batch touches TPDB, never the storefront, so no client."""
+
+    return _service(FakeClient())
+
+
+def test_resolution_attaches_a_tpdb_id():
+    _seed()
+    LOOKUPS.clear()
+
+    assert _resolve_service().resolve_batch() == 1
+
+    with Session(ENGINE) as s:
+        entry = s.query(coll.CollectionEntry).one()
+
+        assert entry.tpdb_id == "uuid-pirates"
+        assert entry.match_state == "matched"
+
+
+def test_a_known_miss_is_never_asked_about_twice():
+    """The bug this pass exists to avoid creating.
+
+    One title in five has no TPDB record. Selecting on "tpdb_id is null"
+    alone would hand those back on every run forever, so the whole rate limit
+    goes on re-confirming misses while never-tried entries wait behind them.
+    """
+
+    _seed(title="Nurses", external_id="999001")
+    LOOKUPS.clear()
+
+    service = _resolve_service()
+
+    assert service.resolve_batch() == 0
+    assert LOOKUPS == ["Nurses"]
+
+    # Second run: the entry still has no tpdb_id, and must still be skipped.
+    assert service.resolve_batch() == 0
+    assert LOOKUPS == ["Nurses"], f"asked TPDB again: {LOOKUPS}"
+
+
+def test_a_miss_is_still_requestable_afterwards():
+    """A failed lookup must not cost the user a title that works. The entry
+    keeps its storefront metadata, and `actionable` is what proves it."""
+
+    _seed(title="Nurses", external_id="999001")
+    _resolve_service().resolve_batch()
+
+    with Session(ENGINE) as s:
+        entry = s.query(coll.CollectionEntry).one()
+
+        assert entry.match_state == coll.MATCH_SELF_SOURCED
+        assert entry.actionable is True
+        assert entry.matched_at is not None
+
+
+def test_a_resolved_entry_is_not_re_resolved():
+    _seed()
+    _resolve_service().resolve_batch()
+    LOOKUPS.clear()
+
+    assert _resolve_service().resolve_batch() == 0
+    assert LOOKUPS == []
+
+
+def test_resolution_can_be_switched_off():
+    """It is additive: the titles are downloadable without it."""
+
+    _seed()
+    LOOKUPS.clear()
+    _Settings.content.brochure.enrich_from_tpdb = False
+
+    try:
+        assert _resolve_service().resolve_batch() == 0
+        assert LOOKUPS == []
+    finally:
+        _Settings.content.brochure.enrich_from_tpdb = True
 
 
 for _name, _fn in sorted(list(globals().items())):

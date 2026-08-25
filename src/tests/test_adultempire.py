@@ -215,6 +215,91 @@ def test_unknown_listing_rejected():
     assert raised
 
 
+# --------------------------------------------------------------- studios
+
+STUDIO_SITEMAP = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    "<urlset>"
+    "<url><loc>https://www.adultdvdempire.com/149/studio/evil-angel-porn-movies.html</loc></url>"
+    "<url><loc>\n\t\thttps://www.adultdvdempire.com/145/studio/devils-film-porn-movies.html\n\t</loc></url>"
+    # Not a studio URL. Sitemaps for other catalogues share the same shape.
+    "<url><loc>https://www.adultdvdempire.com/700215/pirates-porn-movies.html</loc></url>"
+    "</urlset>"
+)
+
+STUDIO_PAGE = (
+    '<div class="list-page__headline-container__detail">'
+    '<h1 class="list-page__headline m-b-0"> Evil Angel </h1>'
+    '<div class="list-page__results"><strong>3,978</strong> Results </div>'
+    "</div>"
+)
+
+
+def test_studio_refs_are_read_from_a_sitemap():
+    refs = ae.parse_studio_refs(STUDIO_SITEMAP)
+
+    assert [r.ae_id for r in refs] == ["149", "145"], [r.ae_id for r in refs]
+    assert refs[0].slug == "evil-angel-porn-movies"
+    assert refs[0].path == "/149/studio/evil-angel-porn-movies.html"
+
+
+def test_a_movie_url_is_not_mistaken_for_a_studio():
+    """`/700215/pirates-porn-movies.html` differs only by the missing
+    `/studio/` segment, and a looser pattern would file every film in the
+    catalogue as a studio."""
+
+    assert all(r.ae_id != "700215" for r in ae.parse_studio_refs(STUDIO_SITEMAP))
+
+
+def test_studio_detail_reads_the_name_and_count():
+    ref = ae.StudioRef(ae_id="149", slug="evil-angel-porn-movies", path="/x")
+    filled = ae.parse_studio_detail(STUDIO_PAGE, ref)
+
+    assert filled.name == "Evil Angel", repr(filled.name)
+    # Thousands separator, or every large studio reads as a 3.
+    assert filled.title_count == 3978
+
+
+def test_a_page_that_is_not_a_studio_leaves_the_name_unset():
+    """The sync uses this to tell a real studio from a redirect, so it must
+    not invent a name from the slug."""
+
+    ref = ae.StudioRef(ae_id="1", slug="gone", path="/x")
+    filled = ae.parse_studio_detail("<html><body>nothing</body></html>", ref)
+
+    assert filled.name is None
+    assert filled.title_count is None
+
+
+def test_studio_listings_reuse_the_ordinary_listing_parser():
+    """A studio page's cards are the same markup as a ranked shelf's.
+
+    Worth asserting rather than assuming: it is the reason this feature needed
+    no second parser, and a divergence would show up as empty studio pages.
+    """
+
+    parsed = ae.parse_listing(LISTING, "bestseller")
+
+    assert [t.product_id for t in parsed] == ["700215", "627116"]
+    assert parsed[0].rank == 1
+
+
+def test_an_unknown_studio_sort_is_refused():
+    """The page accepts eight sorts; only two rank by demand. A typo must not
+    silently fall back to the default order and present it as 'Top Sellers'."""
+
+    client = ae.AdultEmpireClient()
+    ref = ae.StudioRef(ae_id="149", slug="evil-angel-porn-movies", path="/x")
+    raised = False
+
+    try:
+        client.studio_listing(ref, "rating")
+    except ae.AdultEmpireError:
+        raised = True
+
+    assert raised
+
+
 for _name, _fn in sorted(list(globals().items())):
     if _name.startswith("test_") and callable(_fn):
         check(_name, _fn)

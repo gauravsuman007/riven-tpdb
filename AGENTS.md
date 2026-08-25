@@ -196,6 +196,77 @@ Whisparr dependency. Regular movies/TV must never appear.
 - `providers/riven.ts` is OpenAPI-generated; the new query params were added to
   it by hand. Regenerating against a running backend produces the same thing.
 
+## Studios (Adult Empire's per-studio ranked listings)
+- `/studios` is the directory (a picker), `/studios/[id]` is one studio's
+  ranked rows, and the brochure page shows only SAVED studios. Showing all
+  hundred there would bury the two or three the user follows -- the same
+  reasoning that keeps award years off the library's Collections shelf.
+- The `Studio` table stores studios ONLY. A studio's titles are read live on
+  every request and never mirrored: two ranked rows for a hundred studios is
+  twenty thousand rows rebuilt weekly to serve pages mostly never opened, and
+  a rank stored last Sunday is not the rank.
+- Directory source is the SITEMAPS (`/sitemaps/studio/sitemap.xml` plus the
+  `-videos` and `-blu-rays` variants), unioned by id, ~100 each. Do NOT use
+  `/all-porn-movie-studios.html`: it renders only about ten studios in HTML.
+  robots.txt names the sitemaps explicitly.
+- Studio URL is `/{ae_id}/studio/{slug}.html`. The movie sitemap is read first
+  so the winning slug is the `-porn-movies` form, which is the catalogue
+  `parse_listing` is built around.
+- `parse_listing` works UNCHANGED on studio pages -- same `product-card`
+  markup. That is why studios needed no second parser; a divergence would show
+  up as empty studio pages.
+- Sorts: the page offers eight, but only `bestseller` and `trending` rank by
+  demand and those are the only two `STUDIO_SORTS` allows. THERE IS NO RATING
+  SORT. Adult Empire carries a rating per title (detail page only) but will not
+  order by it, so there is no honest "Top Rated" row -- re-sorting the
+  forty-eight bestsellers would be a top-rated list *of the bestsellers*.
+- TRAP: Adult Empire studio pages have NO description and NO logo. Only an
+  `<h1>`, a `data-tid` and an "N Results" count. All studio artwork and
+  descriptions come from TPDB `/sites`, which is why `Studio` has both
+  `refreshed_at` (storefront) and `tpdb_checked_at` (TPDB) -- the latter
+  records the ATTEMPT, so studios TPDB has never heard of are not re-looked-up
+  every run.
+- TPDB site matching is EXACT on a normalised name, no fuzzy fallback
+  (`studios.pick_site`). A search for "Evil Angel" returns twenty-two sites
+  including "Mylf X Evil Angel", in TPDB's own order; a loose match hangs the
+  wrong network's logo on a studio and nobody can see to report it.
+- `_store` must NEVER write `saved`. A weekly sync that cleared saved studios
+  is indistinguishable from data loss. Guarded by a test.
+- Clicking a studio title POSTs to `/studios/titles/{product_id}`, which
+  find-or-creates a `CollectionEntry` and returns its id; the frontend then
+  goes to `/brochure/{entryId}`. It searches EVERY `source="adultempire"`
+  collection first -- studio rows overlap the brochure shelves heavily, and two
+  entries for one storefront id means two detail pages disagreeing about
+  whether it was requested.
+- The router holds ONE `StudioService` for the process. The 1 req/s pacing
+  lives on the client instance, so building one per request resets it and
+  turns a polite crawler into concurrent bursts.
+- The directory sync is CRON, not interval (weekly, overnight): a several-
+  minute crawl on an interval drifts to whenever the process last restarted.
+  `ScheduledFunctionConfig` gained an optional `cron` key for this. It also
+  runs once immediately when the table is empty, so enabling it does not leave
+  the section blank until Sunday.
+
+## Resolving brochure entries to TPDB (the "old detail page" bug)
+- `/brochure/[id]` picks its view from `entry.tpdb_id`: set means redirect to
+  the full TPDB page, null means render the storefront page. So an entry that
+  was never resolved is stuck on the storefront view FOREVER.
+- Until `BrochureService.resolve_batch` existed, `enrich_entry` ran only when a
+  title was REQUESTED. Measured on the live database: 573 of 576 Adult Empire
+  entries had `tpdb_id` null. This looked like "the TPDB page only works for
+  new titles" -- it was really "it only works for requested ones".
+- TRAP: `resolve_batch` selects on `matched_at IS NULL`, not on `tpdb_id IS
+  NULL`. About one title in five has no TPDB record at all (bare one-word
+  titles, pre-1980 releases); keying off the id alone re-asks TPDB about every
+  known miss on every run, forever, and starves the never-tried entries.
+- A miss stamps `matched_at` but KEEPS `match_state = self_sourced`. Demoting
+  it to `unmatched` (as the awards path does) would make `actionable` false and
+  take away a title that downloads perfectly from storefront metadata. An award
+  entry with no TPDB record is a dead row; a storefront entry is not.
+- It has its own timer, separate from `_enrich_brochure`. That one is paced by
+  Adult Empire's 1 req/s courtesy delay, this one by TPDB's rate limit; sharing
+  a timer makes each wait out the other's budget.
+
 ## Sources evaluated and rejected for ranking/awards
 - TPDB has no ranking of any kind: `rating` is 0 on every record, `order_by`
   and `sort` are accepted but ignored, and there is no popularity or view field.

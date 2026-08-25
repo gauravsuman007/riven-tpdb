@@ -78,6 +78,27 @@ _CAST = re.compile(r'href="/\d+/[a-z0-9-]+-pornstars\.html"[^>]*>\s*([^<]+?)\s*<
 _ALSO_BOUGHT = re.compile(r'href="/(\d+)/([a-z0-9-]+)-porn-movies\.html"')
 _MOVIE_HREF = re.compile(r"^/(\d+)/([a-z0-9-]+)-porn-movies\.html$")
 
+# Studios. The directory comes from the sitemaps rather than a browse page:
+# `/all-porn-movie-studios.html` renders only a handful of studios in HTML and
+# the rest some other way, while robots.txt points at these three explicitly.
+# They overlap heavily and are unioned by id.
+STUDIO_SITEMAPS = (
+    "/sitemaps/studio/sitemap.xml",
+    "/sitemaps/studio-videos/sitemap.xml",
+    "/sitemaps/studio-blu-rays/sitemap.xml",
+)
+
+# Sorts a studio page accepts. Deliberately not the full set the page offers
+# (price, title, year, added) -- these are the two that rank by demand, which
+# is the only thing worth a row of its own. There is no rating sort; the site
+# carries a rating per title but will not order by it.
+STUDIO_SORTS = ("bestseller", "trending")
+
+_SITEMAP_LOC = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>")
+_STUDIO_PATH = re.compile(r"/(\d+)/studio/([a-z0-9-]+)\.html$")
+_STUDIO_NAME = re.compile(r'<h1 class="list-page__headline[^"]*">\s*(.*?)\s*</h1>', re.S)
+_STUDIO_COUNT = re.compile(r'class="list-page__results"><strong>([\d,]+)</strong>')
+
 
 @dataclass(slots=True)
 class RankedTitle:
@@ -99,6 +120,19 @@ class RankedTitle:
     duration_minutes: int | None = None
     performers: list[str] = field(default_factory=list)
     also_bought: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class StudioRef:
+    """A studio as the sitemaps know it, before its page has been read."""
+
+    ae_id: str
+    slug: str
+    path: str
+
+    # Only the studio page carries these, so they stay unset until it is read.
+    name: str | None = None
+    title_count: int | None = None
 
 
 class AdultEmpireError(Exception):
@@ -188,6 +222,130 @@ class AdultEmpireClient:
             return item
 
         return parse_detail(body, item)
+
+
+    # ---------------------------------------------------------------- studios
+
+    def studio_refs(self) -> list[StudioRef]:
+        """Every studio the sitemaps list, unioned by id.
+
+        The three sitemaps are the movie, video and Blu-ray catalogues. A
+        studio usually appears in more than one under different slugs; the
+        first slug seen wins, and since the movie sitemap is read first that
+        is the ``-porn-movies`` form, which is the catalogue the ranked
+        listings and :func:`parse_listing` are built around.
+        """
+
+        found: dict[str, StudioRef] = {}
+
+        for sitemap in STUDIO_SITEMAPS:
+            try:
+                body = self._get(sitemap)
+            except AdultEmpireError as exc:
+                # One catalogue's sitemap being unavailable should cost its
+                # exclusive studios, not the whole directory.
+                logger.warning(f"Adult Empire sitemap {sitemap} failed: {exc}")
+                continue
+
+            for ref in parse_studio_refs(body):
+                found.setdefault(ref.ae_id, ref)
+
+        return list(found.values())
+
+    def studio_detail(self, ref: StudioRef) -> StudioRef:
+        """Fill in the studio's display name and title count.
+
+        Worth the request: the slug does not round-trip to a name. "roccos"
+        and "the-fashionistas" have no apostrophe and no article position to
+        recover, so a derived name would be visibly wrong on the exact studios
+        a user is most likely to have saved.
+        """
+
+        try:
+            body = self._get(ref.path)
+        except AdultEmpireError as exc:
+            logger.debug(f"Adult Empire studio page failed for {ref.slug}: {exc}")
+            return ref
+
+        return parse_studio_detail(body, ref)
+
+    def studio_listing(
+        self, ref: StudioRef, sort: str, pages: int = 1
+    ) -> list[RankedTitle]:
+        """A studio's catalogue in one of its ranked orders.
+
+        Not cached. A studio page is one request and the ordering is the whole
+        value of it; mirroring two orders for every studio would be twenty
+        thousand rows rebuilt weekly to serve pages mostly never opened.
+        """
+
+        if sort not in STUDIO_SORTS:
+            raise AdultEmpireError(
+                f"Unknown studio sort {sort!r}; have {sorted(STUDIO_SORTS)}"
+            )
+
+        out: list[RankedTitle] = []
+
+        for page in range(1, pages + 1):
+            query = f"?sort={sort}" + (f"&page={page}" if page > 1 else "")
+
+            try:
+                body = self._get(ref.path + query)
+            except AdultEmpireError as exc:
+                logger.warning(
+                    f"Adult Empire studio {ref.slug} {sort} page {page}: {exc}"
+                )
+                break
+
+            found = parse_listing(body, sort, start_rank=len(out) + 1)
+
+            if not found:
+                break
+
+            out.extend(found)
+
+            if len(found) < ITEMS_PER_PAGE:
+                break
+
+        return out
+
+
+def parse_studio_refs(xml: str) -> list[StudioRef]:
+    """Extract studio ids and slugs from a sitemap."""
+
+    out: list[StudioRef] = []
+
+    for loc in _SITEMAP_LOC.findall(xml):
+        match = _STUDIO_PATH.search(loc)
+
+        if not match:
+            continue
+
+        out.append(
+            StudioRef(
+                ae_id=match.group(1),
+                slug=match.group(2),
+                path=f"/{match.group(1)}/studio/{match.group(2)}.html",
+            )
+        )
+
+    return out
+
+
+def parse_studio_detail(html: str, ref: StudioRef) -> StudioRef:
+    """Read the display name and title count off a studio page."""
+
+    name = _STUDIO_NAME.search(html)
+    count = _STUDIO_COUNT.search(html)
+
+    if name:
+        # The headline can carry markup around the name on some studios.
+        ref.name = _unescape(re.sub(r"<[^>]+>", "", name.group(1)).strip()) or None
+
+    if count:
+        ref.title_count = int(count.group(1).replace(",", ""))
+
+    return ref
 
 
 def parse_listing(html: str, listing: str, start_rank: int = 1) -> list[RankedTitle]:

@@ -217,6 +217,50 @@ def test_manual_scrape_resolves_before_falling_back():
     )
 
 
+def test_resolution_does_not_re_ask_about_known_misses():
+    """Guard the filter in the shipped resolve_batch.
+
+    About one title in five has no TPDB record at all. Selecting on
+    "tpdb_id is null" alone would hand those same entries back on every run
+    forever, spending the entire TPDB rate limit re-confirming misses and
+    starving the entries that have never been tried. The `matched_at` clause
+    is what makes an attempt stick, so it is worth a test of its own.
+    """
+
+    text = (SRC / "program/services/recommendations/brochure.py").read_text()
+    body = text[text.index("def resolve_batch("):]
+
+    assert "CollectionEntry.matched_at.is_(None)" in body, (
+        "resolve_batch selects entries without recording that they were "
+        "attempted, so every known miss is retried on every run"
+    )
+
+
+def test_a_miss_stays_requestable():
+    """A failed TPDB lookup must not take away a working title.
+
+    The tempting move is to mark a miss `unmatched`, as the awards path does.
+    That would be wrong here: an award entry with no TPDB record is a dead
+    row, but a storefront entry carries its own studio, year and cast and is
+    downloadable on those alone. `actionable` is the thing that must survive.
+    """
+
+    from datetime import datetime
+
+    session = _session()
+    entry = _entry(session, match_state="self_sourced")
+
+    # What resolve_batch does on a miss.
+    assert enrich(entry, None) is False
+    entry.matched_at = datetime.now()
+
+    assert entry.match_state == "self_sourced"
+    assert entry.actionable is True, (
+        "a title TPDB could not match must still be requestable from the "
+        "storefront metadata it already has"
+    )
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

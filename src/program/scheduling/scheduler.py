@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from program.db import db_functions
 from program.db.db import db_session, vacuum_and_analyze_index_maintenance
 from program.media.item import Episode, MediaItem, Movie, Show
+from program.media.studio import Studio
 from program.media.state import States
 from program.scheduling.models import ScheduledStatus, ScheduledTask
 from program.settings import settings_manager
@@ -31,11 +32,23 @@ if TYPE_CHECKING:
     from program.program import Program
     from program.services.awards.service import AwardsService
     from program.services.recommendations.brochure import BrochureService
+    from program.services.recommendations.studios import StudioService
     from program.services.recommendations.enrichment import TpdbEnricher
 
 
-class ScheduledFunctionConfig(TypedDict):
+class ScheduledFunctionConfig(TypedDict, total=False):
+    """How one internal periodic function is triggered.
+
+    ``interval`` is the default and covers everything that just needs to
+    happen every N seconds. ``cron`` exists for jobs that must land at a
+    particular time of day rather than N seconds after the last restart -- a
+    weekly job on an interval drifts to whenever the process last came up,
+    which for a several-minute crawl is the difference between running at 3am
+    and running in the middle of the evening.
+    """
+
     interval: int
+    cron: dict[str, object]
 
 
 class ProgramScheduler:
@@ -53,6 +66,7 @@ class ProgramScheduler:
         # settings even when award collections are switched off.
         self._awards: "AwardsService | None" = None
         self._brochure: "BrochureService | None" = None
+        self._studios: "StudioService | None" = None
         self._tpdb_enricher: "TpdbEnricher | None" = None
 
     def start(self) -> None:
@@ -116,12 +130,55 @@ class ProgramScheduler:
             scheduled_functions[self._enrich_brochure] = {
                 "interval": brochure.enrich_interval
             }
+            scheduled_functions[self._resolve_brochure] = {
+                "interval": brochure.resolve_interval
+            }
+
+            if brochure.studios_enabled:
+                # Weekly and overnight: the directory is one storefront
+                # request per studio at a one-second courtesy delay, so it is
+                # several minutes of crawling for data that changes about
+                # never.
+                scheduled_functions[self._sync_studios] = {
+                    "cron": {
+                        "day_of_week": brochure.studio_sync_day,
+                        "hour": brochure.studio_sync_hour,
+                        "minute": 0,
+                    }
+                }
+                # Artwork, on the other hand, is a TPDB lookup per studio and
+                # is what makes the section look like anything, so it fills in
+                # on the ordinary batch cadence rather than waiting a week.
+                scheduled_functions[self._enrich_studios] = {
+                    "interval": brochure.enrich_interval
+                }
 
         # Add scheduler processing and monitoring
         scheduled_functions[self._process_scheduled_tasks] = {"interval": 60}
         scheduled_functions[self._monitor_ongoing_schedules] = {"interval": 15 * 60}
 
         for func, config in scheduled_functions.items():
+            cron = config.get("cron")
+
+            if cron:
+                self.scheduler.add_job(
+                    func,
+                    "cron",
+                    id=f"{func.__name__}",
+                    max_instances=1,
+                    replace_existing=True,
+                    # No `next_run_time` here, unlike the interval jobs. The
+                    # whole point of a cron job is that it runs at its hour;
+                    # firing a multi-minute overnight crawl immediately on
+                    # every restart would defeat it.
+                    misfire_grace_time=60 * 60,
+                    **cron,
+                )
+
+                logger.debug(f"Scheduled {func.__name__} at {cron}.")
+
+                continue
+
             self.scheduler.add_job(
                 func,
                 "interval",
@@ -218,12 +275,30 @@ class ProgramScheduler:
         if brochure.enabled:
             wanted[self._sync_brochure] = brochure.refresh_interval
             wanted[self._enrich_brochure] = brochure.enrich_interval
+            wanted[self._resolve_brochure] = brochure.resolve_interval
+
+            if brochure.studios_enabled:
+                wanted[self._enrich_studios] = brochure.enrich_interval
+
+        # Cron rather than interval, and therefore kept apart from `wanted`:
+        # the studio directory is a several-minute crawl that belongs at its
+        # hour, not N seconds after whenever the process last restarted.
+        cron_wanted: dict[Callable[..., None], dict[str, object]] = {}
+
+        if brochure.enabled and brochure.studios_enabled:
+            cron_wanted[self._sync_studios] = {
+                "day_of_week": brochure.studio_sync_day,
+                "hour": brochure.studio_sync_hour,
+                "minute": 0,
+            }
 
         managed = (
             self._sync_awards,
             self._resolve_awards,
             self._sync_brochure,
             self._enrich_brochure,
+            self._resolve_brochure,
+            self._enrich_studios,
         )
 
         for func in managed:
@@ -248,10 +323,46 @@ class ProgramScheduler:
                 self.scheduler.remove_job(job_id)
                 logger.debug(f"Removed scheduled job {job_id}")
 
+        for func in (self._sync_studios,):
+            job_id = func.__name__
+
+            if func in cron_wanted:
+                self.scheduler.add_job(
+                    func,
+                    "cron",
+                    id=job_id,
+                    max_instances=1,
+                    replace_existing=True,
+                    misfire_grace_time=60 * 60,
+                    **cron_wanted[func],
+                )
+                logger.debug(f"Scheduled {job_id} at {cron_wanted[func]}")
+
+                # The interval jobs above start immediately because the user
+                # just enabled them and expects to see something. A weekly
+                # overnight crawl cannot do that -- but neither can it leave
+                # the section empty until Sunday, so it runs once now if there
+                # is nothing to show yet. On a later settings save the
+                # directory is already populated and nothing is re-crawled.
+                if self._studio_directory_is_empty():
+                    self.scheduler.add_job(
+                        func,
+                        "date",
+                        run_date=datetime.now(),
+                        id=f"{job_id}_once",
+                        replace_existing=True,
+                        misfire_grace_time=60,
+                    )
+                    logger.debug(f"Scheduled {job_id} once, directory is empty")
+            elif self.scheduler.get_job(job_id) is not None:
+                self.scheduler.remove_job(job_id)
+                logger.debug(f"Removed scheduled job {job_id}")
+
         # The services cache their settings at construction, so a toggle has to
         # drop them or the next run would still see the old values.
         self._awards = None
         self._brochure = None
+        self._studios = None
         self._tpdb_enricher = None
 
     def _awards_service(self):
@@ -347,6 +458,76 @@ class ProgramScheduler:
                 self._tpdb_enricher.run()
         except Exception as exc:
             logger.error(f"TPDB backfill failed: {exc}")
+
+    @staticmethod
+    def _studio_directory_is_empty() -> bool:
+        """Whether the studio table has nothing in it yet.
+
+        Failure counts as "not empty" on purpose: a database that cannot be
+        read is not a reason to kick off a several-minute crawl.
+        """
+
+        try:
+            with db_session() as session:
+                return session.execute(select(Studio).limit(1)).first() is None
+        except SQLAlchemyError as exc:
+            logger.debug(f"Could not check the studio directory: {exc}")
+            return False
+
+    def _studio_service(self):
+        """The studio directory service, built lazily like the rest."""
+
+        from program.services.recommendations.studios import StudioService
+
+        if self._studios is None:
+            self._studios = StudioService()
+
+        return self._studios
+
+    def _sync_studios(self) -> None:
+        """Refresh the Adult Empire studio directory. Weekly, overnight."""
+
+        service = self._studio_service()
+
+        if not service.initialized:
+            return
+
+        try:
+            service.sync()
+        except Exception as exc:
+            logger.error(f"Adult Empire studio sync failed: {exc}")
+
+    def _enrich_studios(self) -> None:
+        """Attach TPDB logos and descriptions to studios that lack them."""
+
+        service = self._studio_service()
+
+        if not service.initialized:
+            return
+
+        try:
+            service.enrich_batch()
+        except Exception as exc:
+            logger.error(f"Adult Empire studio enrichment failed: {exc}")
+
+    def _resolve_brochure(self) -> None:
+        """Resolve catalogue entries against TPDB.
+
+        On its own timer rather than folded into ``_enrich_brochure``: that one
+        reads Adult Empire and is paced by the storefront's one-request-a-second
+        courtesy delay, while this one reads TPDB and is paced by TPDB's rate
+        limit. Sharing a timer would make each wait out the other's budget.
+        """
+
+        service = self._brochure_service()
+
+        if not service.initialized:
+            return
+
+        try:
+            service.resolve_batch()
+        except Exception as exc:
+            logger.error(f"Adult Empire TPDB resolution failed: {exc}")
 
     def _retry_library(self) -> None:
         """Retry items that failed to download by emitting events into the EM."""

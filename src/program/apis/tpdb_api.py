@@ -81,6 +81,10 @@ class TpdbSite(_TpdbModel):
     poster: str | None = None
     logo: str | None = None
     favicon: str | None = None
+    # Often a single line ("Tushy is a part of the Vixen Media Group network")
+    # and sometimes empty. Declared rather than left to `extra="allow"` so the
+    # studio directory can rely on it being a real, typed field.
+    description: str | None = None
     parent_id: int | None = None
     network_id: int | None = None
     parent: TpdbSiteParent | None = None
