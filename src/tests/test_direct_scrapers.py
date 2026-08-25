@@ -25,7 +25,10 @@ from program.services.directscrapers.ranking import (
     series_name,
 )
 from program.services.directscrapers.eporner import _DOWNLOAD_RE, EPornerScraper
+from program.services.directscrapers.hqporner import HQPornerScraper
+from program.services.directscrapers.paradisehill import ParadiseHillScraper
 from program.services.directscrapers.tnaflix import TnaflixScraper
+from program.services.directscrapers.tubepornclassic import TubePornClassicScraper
 from program.services.directscrapers.upornia import _best_size, _deobfuscate
 from program.services.directscrapers.xfreehd import XFreeHDScraper
 
@@ -301,6 +304,169 @@ check(
 )
 check("a Referer travels with the source", epo_sources[0].headers.get("Referer"))
 
+print("\nhqporner search parsing")
+hq_markup = """
+<html><body>
+  <section class="box features">
+    <div><section class="box feature">
+      <a class="image featured" href="/hdporn/127568-a_fuck_machine_can_only_fuck_us.html">
+        <img id="cover_127568" src="//fastporndelivery.hqporner.com/imgs/x/main.jpg" alt="x" />
+      </a>
+      <div id="span-case">
+        <h3 class="meta-data-title"><a href="/hdporn/127568-a_fuck_machine_can_only_fuck_us.html" class="click-trigger">a fuck machine can only fuck us</a></h3>
+        <span class="icon fa-clock-o meta-data">1h 1m 22s</span>
+      </div>
+    </section></div>
+  </section>
+</body></html>
+"""
+hq_scraper = HQPornerScraper()
+hq_scraper._get = lambda *a, **k: _FakeResponse(hq_markup)  # type: ignore[method-assign]
+hq_parsed = hq_scraper.search("anything")
+check(
+    "the outer 'features' wrapper is not mistaken for a card",
+    len(hq_parsed) == 1,
+    [p.title for p in hq_parsed],
+)
+hq_video = hq_parsed[0]
+check("id comes from the numeric href", hq_video.video_id == "127568")
+check("title comes from the title link", hq_video.title == "a fuck machine can only fuck us")
+check(
+    "a protocol-relative thumbnail is made absolute",
+    hq_video.thumbnail == "https://fastporndelivery.hqporner.com/imgs/x/main.jpg",
+    hq_video.thumbnail,
+)
+check("the hh mm ss duration is parsed", hq_video.duration == 3682)
+
+print("\nhqporner embed resolution")
+hq_video_page = '<html><body><iframe src="//mydaddy.cc/video/abc/"></iframe></body></html>'
+hq_embed_page = (
+    r'<script>$("#jw").html("<video><source src=\"//cdn/360.mp4\" title=\"360p\" '
+    r'type=\"video/mp4\" /></video>");do_pl2();</script>'
+    r'<script>$("#jw").html("<video><source src=\"//cdn/360.mp4\" title=\"360p\" '
+    r'type=\"video/mp4\" /><source src=\"//cdn/720.mp4\" title=\"720p60\" '
+    r'type=\"video/mp4\" /></video>");</script>'
+)
+hq_responses = iter([_FakeResponse(hq_video_page), _FakeResponse(hq_embed_page)])
+hq_scraper._get = lambda *a, **k: next(hq_responses)  # type: ignore[method-assign]
+hq_sources = hq_scraper.resolve("127568")
+check(
+    "the adblock and full variants collapse to one 360p entry",
+    len(hq_sources) == 2,
+    hq_sources,
+)
+check(
+    "the higher resolution sorts first",
+    hq_sources[0].label == "720p",
+    [s.label for s in hq_sources],
+)
+check("a Referer travels with the source", hq_sources[0].headers.get("Referer"))
+
+print("\nparadisehill search parsing")
+ph_markup = """
+<html><body>
+  <div class="item list-film-item">
+    <a href="/5c92abf9b4493/">
+      <picture><img itemprop="image" src="/images/x/preview.webp"></picture>
+      <span class="mask"><div><span itemprop="name">Lesbian Seductions Older Younger 24</span></div></span>
+    </a>
+  </div>
+  <div class="item list-film-item">
+    <a href="/categories/"><span itemprop="name">Not a title</span></a>
+  </div>
+</body></html>
+"""
+ph_scraper = ParadiseHillScraper()
+ph_scraper._get = lambda *a, **k: _FakeResponse(ph_markup)  # type: ignore[method-assign]
+ph_parsed = ph_scraper.search("anything")
+check(
+    "a navigation link masquerading as an item is excluded",
+    len(ph_parsed) == 1,
+    [p.video_id for p in ph_parsed],
+)
+ph_video = ph_parsed[0]
+check("the slug is the video id", ph_video.video_id == "5c92abf9b4493")
+check("title comes from itemprop=name", ph_video.title == "Lesbian Seductions Older Younger 24")
+check(
+    "a relative thumbnail is made absolute",
+    ph_video.thumbnail == "https://en.paradisehill.cc/images/x/preview.webp",
+    ph_video.thumbnail,
+)
+
+print("\nparadisehill part resolution")
+ph_video_page = (
+    'var videoList = [{"sources":[{"src":"https:\\/\\/v1.paradisehill.cc\\/a_part1.mp4",'
+    '"type":"video\\/mp4"}]},{"sources":[{"src":"https:\\/\\/v1.paradisehill.cc\\/a_part2.mp4",'
+    '"type":"video\\/mp4"}]}];'
+)
+ph_scraper._get = lambda *a, **k: _FakeResponse(ph_video_page)  # type: ignore[method-assign]
+ph_sources = ph_scraper.resolve("5c92abf9b4493")
+check("both parts are found", len(ph_sources) == 2, ph_sources)
+check(
+    "parts are labelled by position, not claimed as quality renditions",
+    [s.label for s in ph_sources] == ["Part 1", "Part 2"],
+    [s.label for s in ph_sources],
+)
+single_part_page = (
+    'var videoList = [{"sources":[{"src":"https:\\/\\/v1.paradisehill.cc\\/a_part1.mp4",'
+    '"type":"video\\/mp4"}]}];'
+)
+ph_scraper._get = lambda *a, **k: _FakeResponse(single_part_page)  # type: ignore[method-assign]
+single_sources = ph_scraper.resolve("5c92abf9b4493")
+check(
+    "a single part is not mislabelled as 'Part 1'",
+    single_sources[0].label == "Full film",
+    single_sources,
+)
+
+print("\ntubepornclassic (shares upornia's platform)")
+tpc_scraper = TubePornClassicScraper()
+tpc_scraper._get = lambda *a, **k: _FakeJsonResponse(  # type: ignore[method-assign]
+    {
+        "videos": [
+            {
+                "video_id": "1225749",
+                "title": "Hot And Steamy Lesbian Sex For 3 - Kali Kane",
+                "dir": "hot-and-steamy",
+                "duration": "08:06",
+                "file_dimensions": "720x480",
+                "file_formats": "||.mp4|720x480|486|42374810|17|30|0",
+                "scr": "https://tn.tubepornclassic.com/x.jpg",
+                "video_viewed": "1481",
+            }
+        ]
+    }
+)
+tpc_parsed = tpc_scraper.search("anything")
+check("one video is parsed", len(tpc_parsed) == 1, tpc_parsed)
+tpc_video = tpc_parsed[0]
+check("id comes through", tpc_video.video_id == "1225749")
+check("resolution is derived from file_dimensions", tpc_video.resolution == "480p")
+check("size is the largest rendition", tpc_video.size == 42374810)
+check("views are parsed", tpc_video.views == 1481)
+
+# A live capture, decoded through upornia's homoglyph logic unchanged -- this
+# is the check that justifies sharing the decoder rather than reimplementing it.
+tpc_scraper._get = lambda *a, **k: _FakeJsonResponse(  # type: ignore[method-assign]
+    [
+        {
+            "format": ".mp4",
+            "video_url": (
+                "L2dldF9maWxlLzМvZmЕ2NzМ0YjdhNThmNzJmМ2М2NjJjNzI5ZTc1YjI1МmЕ4NDllМWU0"
+                "МDVjLzЕyМjUwМDАvМTIyNTc0OS8xМjI1NzQ5Lm1wNС8,ZD00ODYmYnI9МTМxJnRpPTЕ"
+                "3ODc2OTМ1NTЕ~"
+            ),
+            "is_default": 1,
+        }
+    ]
+)
+tpc_sources = tpc_scraper.resolve("1225749")
+check(
+    "the shared decoder resolves a live-captured video_url",
+    len(tpc_sources) == 1 and tpc_sources[0].url.startswith("https://tubepornclassic.com/get_file/"),
+    tpc_sources,
+)
+
 print("\nrelevance scoring")
 
 
@@ -470,6 +636,26 @@ check(
     "a priority site outranks a higher-quality non-priority site",
     [v.site for v in tiered] == ["eporner", "a"],
     [(v.site, v.relevance, v.resolution) for v in tiered],
+)
+
+# Three tiers, each with a video ranked to look better than it should be
+# allowed to: tier 2 has by far the best score, tier 1 the best resolution,
+# yet tier order still wins outright.
+tier0 = [DirectVideo(site="tnaflix", video_id="1", title="x", page_url="", duration=1)]
+tier1 = [DirectVideo(site="hqporner", video_id="1", title="x", page_url="", resolution="2160p", duration=1)]
+tier2 = [DirectVideo(site="xfreehd", video_id="1", title="x", page_url="", duration=99999)]
+three_tiered = _merge_ranked(
+    {"xfreehd": None, "hqporner": None, "tnaflix": None},  # type: ignore[dict-item]
+    {
+        "tnaflix": [v.with_relevance(0.7) for v in tier0],
+        "hqporner": [v.with_relevance(0.7) for v in tier1],
+        "xfreehd": [v.with_relevance(1.0) for v in tier2],
+    },
+)
+check(
+    "three tiers sort in tier order regardless of score or resolution",
+    [v.site for v in three_tiered] == ["tnaflix", "hqporner", "xfreehd"],
+    [(v.site, v.relevance, v.resolution) for v in three_tiered],
 )
 
 

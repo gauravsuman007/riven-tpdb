@@ -13,8 +13,10 @@ from loguru import logger
 
 from program.services.directscrapers.base import DirectScraper
 from program.services.directscrapers.eporner import EPornerScraper
+from program.services.directscrapers.hqporner import HQPornerScraper
 from program.services.directscrapers.iporntv import IPornTVScraper
 from program.services.directscrapers.models import DirectSource, DirectVideo
+from program.services.directscrapers.paradisehill import ParadiseHillScraper
 from program.services.directscrapers.ranking import (
     MatchTarget,
     best_matches,
@@ -22,6 +24,7 @@ from program.services.directscrapers.ranking import (
     strip_punctuation,
 )
 from program.services.directscrapers.tnaflix import TnaflixScraper
+from program.services.directscrapers.tubepornclassic import TubePornClassicScraper
 from program.services.directscrapers.upornia import UporniaScraper
 from program.services.directscrapers.xfreehd import XFreeHDScraper
 
@@ -31,11 +34,20 @@ class DirectScraperService:
 
     key = "direct_scraping"
 
-    #: Shown ahead of the other three regardless of relevance. Both are a
-    #: bigger catalogue than the rest combined -- tnaflix alone answered
-    #: every measured query, eporner has a documented API instead of scraped
-    #: HTML -- so a user picking a source is better served starting here.
-    PRIORITY_SITES = frozenset({"tnaflix", "eporner"})
+    #: Sites are shown in tiers, ahead of relevance rather than ranked purely
+    #: by it: a lower tier always outranks a higher one, whatever the two
+    #: sites' scores say, and tier is a deliberate site preference rather than
+    #: something measured. Tier 0 is the biggest catalogue and the least
+    #: scraped (tnaflix answered every measured query; eporner has a
+    #: documented API). Tier 1 fills out the middle. Anything not listed here
+    #: sorts last, by relevance as before.
+    SITE_TIERS: dict[str, int] = {
+        "tnaflix": 0,
+        "eporner": 0,
+        "hqporner": 1,
+        "paradisehill": 1,
+        "tubepornclassic": 1,
+    }
 
     def __init__(self) -> None:
         self.services: dict[str, DirectScraper] = {
@@ -43,6 +55,9 @@ class DirectScraperService:
             for scraper in (
                 TnaflixScraper(),
                 EPornerScraper(),
+                HQPornerScraper(),
+                ParadiseHillScraper(),
+                TubePornClassicScraper(),
                 XFreeHDScraper(),
                 UporniaScraper(),
                 IPornTVScraper(),
@@ -200,17 +215,17 @@ def _merge_ranked(
     for is that the best video is at the top.
 
     Position within a site breaks ties, so two results a site itself ranked in
-    an order do not get shuffled out of it. A priority site's tier of 0 always
-    sorts ahead of a non-priority site's tier of 1, however the quality
-    compares -- that ordering is a deliberate site preference, not something
-    relevance should be allowed to override.
+    an order do not get shuffled out of it. A lower tier always sorts ahead of
+    a higher one, however the quality compares -- that ordering is a
+    deliberate site preference, not something relevance should be allowed to
+    override.
     """
 
     ranked: list[tuple[int, tuple, int, DirectVideo]] = []
     seen: set[str] = set()
 
     for key in selected:
-        tier = 0 if key in DirectScraperService.PRIORITY_SITES else 1
+        tier = DirectScraperService.SITE_TIERS.get(key, 2)
         for position, video in enumerate(results.get(key) or []):
             if video.key() in seen:
                 continue
