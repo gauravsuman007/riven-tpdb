@@ -312,6 +312,15 @@ Whisparr dependency. Regular movies/TV must never appear.
   write access, so `:ro` leaves status working and every control action
   failing. The local API is not a versioned public API, so every call in
   `tailscale.py` degrades to "unavailable" rather than raising.
+- TRAP, found live on first deploy: the image's default socket is
+  `/tmp/tailscaled.sock` INSIDE the tailscale container;
+  `/var/run/tailscale/tailscaled.sock` is only a symlink to it, kept for
+  host-mode compatibility. Sharing `/var/run/tailscale` alone shares the
+  symlink, not the socket it points at, which is outside the shared volume and
+  invisible to the backend -- status read "unreachable" even with the sidecar
+  logged in and healthy. Fixed by setting `TS_SOCKET=/var/run/tailscale/tailscaled.sock`
+  on the tailscale service, which makes the daemon bind its real socket inside
+  the shared directory instead of leaving a dangling link to it.
 - Exit nodes are only offered from peers with `ExitNodeOption`. Setting an id
   the daemon does not recognise is accepted silently and routes nothing, which
   is indistinguishable from a working tunnel -- so `set_exit_node` refuses

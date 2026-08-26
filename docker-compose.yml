@@ -104,6 +104,14 @@ services:
         environment:
             - TS_USERSPACE=true
             - TS_STATE_DIR=/var/lib/tailscale
+            # The image's default socket is /tmp/tailscaled.sock inside this
+            # container, with /var/run/tailscale/tailscaled.sock left as a
+            # symlink to it for host-mode compatibility. A symlink to a path
+            # outside the shared volume is useless to another container --
+            # confirmed live: the backend saw the link but nothing behind it.
+            # Pinning the real socket into the shared directory is what makes
+            # it actually reachable from riven-tpdb.
+            - TS_SOCKET=/var/run/tailscale/tailscaled.sock
             # Bind on all interfaces: the backend reaches this over the
             # compose network, not from inside this container.
             - TS_SOCKS5_SERVER=0.0.0.0:1055

@@ -313,6 +313,26 @@ def test_toggling_vpn_enabled_resets_the_cached_service():
     assert "reset()" in body
 
 
+def test_the_socket_is_pinned_into_the_shared_volume():
+    """Found live on first deploy: the image's real socket defaults to
+    /tmp/tailscaled.sock inside the sidecar, and /var/run/tailscale is only a
+    compatibility symlink to it. Sharing that directory alone shares the
+    symlink, not the socket -- status read "unreachable" with a healthy,
+    logged-in sidecar on the other end. TS_SOCKET is what makes the daemon
+    bind its real socket inside the shared directory instead."""
+
+    path = SRC.parent / "docker-compose.yml"
+
+    if not path.exists():
+        return
+
+    compose = path.read_text()
+    section = compose[compose.index("    tailscale:"):]
+    section = section[: section.index("    riven_postgres:")]
+
+    assert "TS_SOCKET=/var/run/tailscale/tailscaled.sock" in section
+
+
 for _name, _fn in sorted(list(globals().items())):
     if _name.startswith("test_") and callable(_fn):
         check(_name, _fn)
