@@ -30,6 +30,19 @@ HIDDEN_SECTIONS: dict[str, frozenset[str]] = {
     "scraping": frozenset(
         {"torrentio", "orionoid", "mediafusion", "comet", "rarbg", "aiostreams"}
     ),
+    # Provider wiring, not a user setting. `tailscale.auth_key` is the field
+    # that matters and it already has a dedicated write path: the VPN tab's
+    # control panel saves it as a side effect of clicking "Connect with key".
+    # Also rendering it here gave the page two auth-key inputs with no way to
+    # tell which one was live, and the failure mode was worse than confusing:
+    # saving a key through the generic form (not the panel) set
+    # tailscale.auth_key without ever calling connect(), so /vpn/connect's
+    # fallback to the stored key made every later "Log in" attempt silently
+    # try key auth instead of generating a login URL -- the button the user
+    # was looking for never had a reason to appear. `socket_path` and
+    # `proxy_url` are container wiring meant to match docker-compose, the same
+    # reasoning that keeps RIVEN_* infra out of the settings UI elsewhere.
+    "vpn": frozenset({"tailscale"}),
 }
 
 

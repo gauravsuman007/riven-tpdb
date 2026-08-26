@@ -353,6 +353,43 @@ def test_the_active_exit_nodes_name_is_resolved_server_side():
     )
 
 
+# ------------------------------------------------------ deterministic connect
+
+
+def test_connect_never_substitutes_a_stored_key_for_an_omitted_one():
+    """The actual bug behind "the login URL button never shows up".
+
+    The two buttons in the VPN tab are separate precisely so each is
+    deterministic: "Generate login link" always means interactive login,
+    "Connect with key" always means the typed key. A router that silently
+    fell back to whatever key happened to be saved meant the login-link
+    button could try key auth instead the moment any key had ever been
+    stored -- with no auth_url ever coming back and nothing to click.
+    """
+
+    text = (SRC / "routers/secure/vpn.py").read_text()
+    body = text[text.index("def vpn_connect("):]
+    body = body[: body.index("def vpn_disconnect(")]
+
+    assert "settings.tailscale.auth_key or None" not in body, (
+        "connect() falls back to a stored key when the request omitted one"
+    )
+    assert 'key = (body.auth_key or "").strip() or None' in body
+
+
+def test_tailscale_settings_are_hidden_from_the_generic_form():
+    """Guard the fix for "two auth key fields".
+
+    program/settings/visibility.py is where sections get hidden from the
+    schema the settings UI renders from; this checks the VPN entry landed
+    there, not just that the mechanism exists.
+    """
+
+    text = (SRC / "program/settings/visibility.py").read_text()
+
+    assert '"vpn": frozenset({"tailscale"})' in text
+
+
 for _name, _fn in sorted(list(globals().items())):
     if _name.startswith("test_") and callable(_fn):
         check(_name, _fn)

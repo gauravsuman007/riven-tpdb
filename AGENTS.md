@@ -328,6 +328,21 @@ Whisparr dependency. Regular movies/TV must never appear.
 - The VPN settings tab carries a custom control panel (`vpn-control.svelte`)
   alongside the generated form, because logging in and picking an exit node are
   actions against a running daemon, not values to save.
+- TRAP, reported by the user as "two auth key fields" and "no login URL
+  button": `TailscaleModel.tailscale` used to render in the generic schema
+  form AND in the control panel, and the generic form's copy had a worse
+  failure mode than duplication -- saving a key through it set
+  `settings.vpn.tailscale.auth_key` without ever calling `/vpn/connect`, and
+  the endpoint's old fallback (`body.auth_key or settings.tailscale.auth_key`)
+  meant every later "Log in" attempt silently tried key auth instead of
+  generating a URL, so the login-URL button never had a reason to appear.
+  Fixed two ways: `HIDDEN_SECTIONS["vpn"] = {"tailscale"}` in
+  `program/settings/visibility.py` removes the schema-rendered field entirely
+  (`socket_path`/`proxy_url` are container wiring, not user settings, same
+  reasoning as everywhere else in that module); `/vpn/connect` no longer
+  substitutes a stored key for an omitted one -- whichever of the panel's two
+  buttons was clicked ("Generate login link" vs "Connect with key") is exactly
+  what runs, deterministically.
 - The sidecar is OPTIONAL. Without it the backend works normally and the VPN
   tab reports "unreachable"; the repo's `docker-compose.yml` is the reference,
   and a deployment has to add the service to its own compose file.

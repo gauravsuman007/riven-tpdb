@@ -96,21 +96,30 @@ def vpn_connect(
 ) -> VpnStatusResponse:
     """Bring the tunnel up, by auth key or interactive login.
 
-    A key supplied here is saved, because the alternative is asking for it
-    again after every restart. A key already in settings is used when none is
-    supplied, which is what makes the tunnel come back on its own.
+    The two paths in the VPN tab are separate buttons precisely so this can
+    stay deterministic: whichever one was clicked is exactly what runs here.
+    A stored key is never substituted for an omitted one -- that used to be
+    the behaviour, and it meant "Generate login link" would silently attempt
+    key auth instead of an interactive login the moment any key had ever been
+    saved, with the login-URL button then having nothing to show for it. If
+    stored-key auto-reconnect on restart is ever wanted, it belongs in the
+    service's own startup path, not folded into what this explicit action
+    means.
+
+    A key supplied here is saved, so it survives a restart without asking
+    again -- but only for the "Connect with key" path, which is the one this
+    request actually is.
     """
 
-    settings = settings_manager.settings.vpn
-    key = (body.auth_key or "").strip() or settings.tailscale.auth_key or None
+    key = (body.auth_key or "").strip() or None
 
-    if body.auth_key and body.auth_key.strip():
-        settings.tailscale.auth_key = body.auth_key.strip()
+    if key:
+        settings_manager.settings.vpn.tailscale.auth_key = key
         settings_manager.save()
 
-    # The service caches its settings at construction, so a key or a toggle
-    # saved a moment ago would otherwise not be seen until a restart.
-    reset()
+        # The service caches its settings at construction, so a key saved a
+        # moment ago would otherwise not be seen until a restart.
+        reset()
 
     logger.debug(f"VPN connect requested ({'key' if key else 'interactive'})")
 
