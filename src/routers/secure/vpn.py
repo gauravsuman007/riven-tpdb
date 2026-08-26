@@ -37,6 +37,11 @@ class VpnStatusResponse(BaseModel):
     auth_url: str | None = None
     hostname: str | None = None
     exit_node: str | None = None
+    # Resolved server-side so callers never have to cross-reference
+    # exit_nodes themselves -- every caller of this endpoint (the direct-search
+    # panel, the streaming banner, the settings tab) would otherwise duplicate
+    # the same lookup.
+    exit_node_name: str | None = None
     exit_nodes: list[ExitNodeModel] = []
     route_scraping: bool = False
     route_streaming: bool = False
@@ -54,6 +59,9 @@ def _response(status: VpnStatus) -> VpnStatusResponse:
         auth_url=status.auth_url,
         hostname=status.hostname,
         exit_node=status.exit_node,
+        exit_node_name=next(
+            (node.name for node in status.exit_nodes if node.active), None
+        ),
         exit_nodes=[
             ExitNodeModel(
                 id=node.id,

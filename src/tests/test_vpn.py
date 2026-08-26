@@ -333,6 +333,26 @@ def test_the_socket_is_pinned_into_the_shared_volume():
     assert "TS_SOCKET=/var/run/tailscale/tailscaled.sock" in section
 
 
+# ------------------------------------------------------ exit node naming
+
+
+def test_the_active_exit_nodes_name_is_resolved_server_side():
+    """Guard the shipped _response in routers/secure/vpn.py.
+
+    Every caller of GET /vpn/status (the direct-search panel, the streaming
+    banner, the settings tab) needs the active exit node's name to build its
+    message. Resolving it here once means none of them re-implement the same
+    "find the active one in exit_nodes" lookup.
+    """
+
+    text = (SRC / "routers/secure/studios.py").parent.joinpath("vpn.py").read_text()
+
+    assert "exit_node_name" in text
+    assert "node.active" in text, (
+        "the active exit node's name is not resolved in the status response"
+    )
+
+
 for _name, _fn in sorted(list(globals().items())):
     if _name.startswith("test_") and callable(_fn):
         check(_name, _fn)
