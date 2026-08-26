@@ -102,7 +102,18 @@ class StudioRow(BaseModel):
     titles: list[StudioTitle]
 
 
-class StudioDetail(StudioResponse):
+class StudioRows(BaseModel):
+    """A studio's ranked rows, on their own.
+
+    Split from the studio itself because the two have wildly different costs.
+    The studio is a database read; the rows are two live page reads of
+    someone else's shop, serialised behind a one-request-a-second courtesy
+    delay, so they take several seconds and nothing can make them faster.
+    Serving them together meant the page could not paint until the storefront
+    answered -- a blank screen for the whole wait, to show a name and a logo
+    that were ready immediately.
+    """
+
     rows: list[StudioRow]
 
 
@@ -133,7 +144,11 @@ def _response(studio: Studio) -> StudioResponse:
 def list_studios(
     saved: Annotated[bool | None, Query()] = None,
     search: Annotated[str | None, Query()] = None,
-    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    # The ceiling has to clear the whole directory in one request: the
+    # picker filters in the browser as the user types, and a cap below
+    # the catalogue size would silently hide studios from the search
+    # rather than fail visibly. ~1,200 studios today.
+    limit: Annotated[int, Query(ge=1, le=5000)] = 200,
 ) -> list[StudioResponse]:
     """The studio directory.
 
@@ -192,11 +207,29 @@ def _set_saved(studio_id: int, saved: bool) -> StudioResponse:
 
 
 @router.get("/{studio_id}", operation_id="get_studio")
-def studio_detail(
+def studio_detail(studio_id: Annotated[int, Path()]) -> StudioResponse:
+    """One studio. A database read, so it answers immediately.
+
+    Deliberately does not include the ranked rows -- see :class:`StudioRows`.
+    """
+
+    with db_session() as session:
+        studio = session.get(Studio, studio_id)
+
+        if studio is None:
+            raise HTTPException(status_code=404, detail="No such studio")
+
+        return _response(studio)
+
+
+@router.get("/{studio_id}/rows", operation_id="get_studio_rows")
+def studio_rows(
     studio_id: Annotated[int, Path()],
     per_row: Annotated[int, Query(ge=1, le=48)] = 12,
-) -> StudioDetail:
-    """A studio with its ranked rows, read live from the storefront.
+) -> StudioRows:
+    """A studio's ranked rows, read live from the storefront.
+
+    Slow by nature and fetched separately so the page can paint without it.
 
     A row that fails comes back empty rather than failing the request: these
     are two independent page reads of someone else's shop, and one being
@@ -209,7 +242,6 @@ def studio_detail(
         if studio is None:
             raise HTTPException(status_code=404, detail="No such studio")
 
-        payload = _response(studio)
         studios = service()
 
         rows: list[StudioRow] = []
@@ -238,7 +270,7 @@ def studio_detail(
                 )
             )
 
-        return StudioDetail(**payload.model_dump(), rows=rows)
+        return StudioRows(rows=rows)
 
 
 class PromoteResponse(BaseModel):
