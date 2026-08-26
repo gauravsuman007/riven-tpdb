@@ -285,6 +285,34 @@ def test_the_sidecar_stays_in_userspace_mode():
     assert not grants, f"kernel-mode capabilities granted: {grants}"
 
 
+# --------------------------------------------------------- settings wiring
+
+
+def test_toggling_vpn_enabled_resets_the_cached_service():
+    """Guard the shipped Program.start wiring.
+
+    The VPN service caches its settings at construction, same as brochure and
+    awards. Those have a dedicated "set enabled" endpoint that calls
+    refresh_content_jobs(); VPN is edited through the generic settings form
+    instead, which has no such hook. Without an observer, flipping
+    vpn.enabled saves correctly and the already-built service keeps
+    answering as if nothing changed until something unrelated rebuilds it --
+    exactly what was found live: status reported enabled=true, state=disabled.
+    """
+
+    text = (SRC / "program/program.py").read_text()
+
+    assert "settings_manager.register_observer(_reset_vpn_service)" in text, (
+        "no observer resets the VPN service on a settings change"
+    )
+
+    body = text[text.index("def _reset_vpn_service"):]
+    body = body[: body.index("class Program")]
+
+    assert "from program.services.vpn import reset" in body
+    assert "reset()" in body
+
+
 for _name, _fn in sorted(list(globals().items())):
     if _name.startswith("test_") and callable(_fn):
         check(_name, _fn)

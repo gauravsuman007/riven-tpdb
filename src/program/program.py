@@ -81,6 +81,19 @@ class Services:
         return getattr(self, key)
 
 
+def _reset_vpn_service() -> None:
+    """Drop the cached VpnService so a settings change takes effect.
+
+    A module-level function rather than a Program method: it must not hold a
+    reference to the Program instance, since observers are never
+    unregistered and a stale one would be a leak.
+    """
+
+    from program.services.vpn import reset
+
+    reset()
+
+
 class Program(threading.Thread):
     """Program class"""
 
@@ -193,6 +206,13 @@ class Program(threading.Thread):
 
         settings_manager.register_observer(self.initialize_apis)
         settings_manager.register_observer(self.initialize_services)
+        # The VPN service caches its settings at construction like the other
+        # content services, but has no dedicated "set enabled" endpoint the
+        # way brochure/awards do -- it is edited through the generic settings
+        # form. Without this, toggling vpn.enabled saves correctly but the
+        # already-built service keeps answering as if it were still disabled
+        # until something else happens to rebuild it.
+        settings_manager.register_observer(_reset_vpn_service)
 
         os.makedirs(data_dir_path, exist_ok=True)
 
