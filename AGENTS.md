@@ -278,6 +278,51 @@ Whisparr dependency. Regular movies/TV must never appear.
   Adult Empire's 1 req/s courtesy delay, this one by TPDB's rate limit; sharing
   a timer makes each wait out the other's budget.
 
+## VPN routing (Tailscale today, swappable)
+- `program/services/vpn/` is a provider seam: `base.py` states the contract,
+  `tailscale.py` implements it, `__init__.py` owns POLICY. Callers ask the
+  SERVICE, never a provider, and never "is the VPN on" -- they ask whether a
+  named purpose (`SCRAPING`, `STREAMING`) is routed. Adding WireGuard means one
+  class plus one enum value.
+- FAILS CLOSED, and this is the load-bearing property. If a purpose is routed
+  and the tunnel is down, `proxy_for` raises `VpnUnavailable` and the route
+  returns 503. It must NEVER fall back to a direct connection: someone routing
+  scraper traffic is controlling where it appears to come from, and quietly
+  using the host's address instead defeats the only reason the setting exists,
+  invisibly. Guarded by tests.
+- Only the streaming-site scrapers are ever routed. TPDB, the debrid
+  providers, the indexers and the library scan always go out directly.
+- TRAP: the proxy is applied in `_RoutedSession.request` (a `requests.Session`
+  subclass), NOT in `DirectScraper._get`. `_get` looks like the obvious place
+  and is wrong -- `iporntv` calls `self.session.head` directly to probe a
+  rendition, and that request would go out around the tunnel while everything
+  else went through it. The scraper still works and the video still plays; only
+  the exit address is wrong, which is invisible. Overriding `request` covers
+  every verb and every future call site by construction.
+- TRAP: the proxy URL must be `socks5h://`, not `socks5://`. Plain `socks5`
+  resolves hostnames locally, handing every scraped site to the host's own
+  resolver -- exactly what routing the traffic was meant to avoid.
+- The daemon is a SIDECAR container in USERSPACE mode (`TS_USERSPACE=true`),
+  deliberately with no `NET_ADMIN` and no `/dev/net/tun`. Kernel mode captures
+  the whole container's routing table and there would be no way to route only
+  the scrapers. Do not "fix" this into kernel mode.
+- Control (login, exit node) goes over `tailscaled`'s local API on its unix
+  socket, shared between the containers by the `tailscale-sock` volume. That
+  mount must be READ-WRITE on the backend: connecting to a unix socket needs
+  write access, so `:ro` leaves status working and every control action
+  failing. The local API is not a versioned public API, so every call in
+  `tailscale.py` degrades to "unavailable" rather than raising.
+- Exit nodes are only offered from peers with `ExitNodeOption`. Setting an id
+  the daemon does not recognise is accepted silently and routes nothing, which
+  is indistinguishable from a working tunnel -- so `set_exit_node` refuses
+  unknown ids rather than passing them through.
+- The VPN settings tab carries a custom control panel (`vpn-control.svelte`)
+  alongside the generated form, because logging in and picking an exit node are
+  actions against a running daemon, not values to save.
+- The sidecar is OPTIONAL. Without it the backend works normally and the VPN
+  tab reports "unreachable"; the repo's `docker-compose.yml` is the reference,
+  and a deployment has to add the service to its own compose file.
+
 ## Sources evaluated and rejected for ranking/awards
 - TPDB has no ranking of any kind: `rating` is 0 on every record, `order_by`
   and `sort` are accepted but ignored, and there is no popularity or view field.

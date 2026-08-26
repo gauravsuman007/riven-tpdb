@@ -1,0 +1,289 @@
+"""VPN routing policy, and the failure mode that matters.
+
+The interesting behaviour here is not "does it proxy". It is what happens when
+a purpose is configured to go through the tunnel and the tunnel is not up. The
+answer has to be "refuse", because the alternative -- quietly using the host's
+own connection -- defeats the only reason anyone routes this traffic, and does
+it without a symptom anyone would notice.
+
+Stdlib only; the provider is a stub, since what is under test is the policy.
+"""
+
+import importlib.util
+import sys
+import types
+from pathlib import Path
+
+SRC = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SRC))
+
+
+class _Logger:
+    def __getattr__(self, _):
+        return lambda *args, **kwargs: None
+
+
+sys.modules.setdefault("loguru", types.ModuleType("loguru"))
+sys.modules["loguru"].logger = _Logger()
+
+
+def _load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+VPN = SRC / "program" / "services" / "vpn"
+
+for pkg in ("program", "program.services", "program.services.vpn"):
+    sys.modules.setdefault(pkg, types.ModuleType(pkg))
+
+base = _load("program.services.vpn.base", VPN / "base.py")
+
+
+class _Settings:
+    class vpn:
+        enabled = True
+        provider = "tailscale"
+        route_scraping = True
+        route_streaming = False
+
+        class tailscale:
+            socket_path = "/nonexistent.sock"
+            proxy_url = "socks5h://tailscale:1055"
+
+
+_sm = types.ModuleType("program.settings")
+_sm.settings_manager = types.SimpleNamespace(settings=_Settings)
+sys.modules["program.settings"] = _sm
+
+# The real provider talks to a daemon over a unix socket; the policy under
+# test never needs one.
+_ts = types.ModuleType("program.services.vpn.tailscale")
+
+
+class _StubProvider:
+    key = "tailscale"
+
+    def __init__(self, connected=True):
+        self.connected = connected
+        self.disconnected = False
+
+    def status(self):
+        return base.VpnStatus(
+            provider="tailscale",
+            connected=self.connected,
+            state="running" if self.connected else "needslogin",
+        )
+
+    def proxy_url(self):
+        return "socks5h://tailscale:1055" if self.connected else None
+
+    def connect(self, auth_key=None):
+        self.connected = True
+        return self.status()
+
+    def disconnect(self):
+        self.connected = False
+        self.disconnected = True
+
+    def set_exit_node(self, node_id):
+        return self.status()
+
+
+_ts.TailscaleProvider = lambda **kwargs: _StubProvider()
+sys.modules["program.services.vpn.tailscale"] = _ts
+
+vpn_mod = _load("program.services.vpn.service_under_test", VPN / "__init__.py")
+
+PASSED, FAILED = [], []
+
+
+def check(name, fn):
+    try:
+        fn()
+    except AssertionError as exc:
+        FAILED.append((name, str(exc)))
+    except Exception as exc:  # noqa: BLE001
+        FAILED.append((name, f"{type(exc).__name__}: {exc}"))
+    else:
+        PASSED.append(name)
+
+
+def _service(connected=True, **overrides):
+    for key, value in overrides.items():
+        setattr(_Settings.vpn, key, value)
+
+    service = vpn_mod.VpnService()
+    service.provider = _StubProvider(connected=connected)
+    service._status = None
+    return service
+
+
+def _reset_settings():
+    _Settings.vpn.enabled = True
+    _Settings.vpn.route_scraping = True
+    _Settings.vpn.route_streaming = False
+
+
+# ------------------------------------------------------------ fail closed
+
+
+def test_a_routed_purpose_refuses_when_the_tunnel_is_down():
+    """The whole point. Falling back to a direct connection here would send
+    the traffic out of the host's own address -- silently, and precisely when
+    the user had asked for the opposite."""
+
+    _reset_settings()
+    service = _service(connected=False)
+
+    raised = False
+    try:
+        service.proxy_for(vpn_mod.SCRAPING)
+    except vpn_mod.VpnUnavailable:
+        raised = True
+
+    assert raised, "returned a direct connection instead of refusing"
+
+
+def test_the_refusal_says_what_is_wrong():
+    """"Search failed" is not actionable; "the VPN is not connected" is."""
+
+    _reset_settings()
+    service = _service(connected=False)
+
+    try:
+        service.proxy_for(vpn_mod.SCRAPING)
+        raise AssertionError("did not raise")
+    except vpn_mod.VpnUnavailable as exc:
+        assert "not connected" in str(exc).lower()
+
+
+def test_an_unrouted_purpose_is_not_affected_by_the_tunnel_being_down():
+    """Streaming is off here, so playback must work regardless."""
+
+    _reset_settings()
+    service = _service(connected=False)
+
+    assert service.proxy_for(vpn_mod.STREAMING) is None
+
+
+# --------------------------------------------------------------- routing
+
+
+def test_a_routed_purpose_gets_the_proxy():
+    _reset_settings()
+    service = _service(connected=True)
+
+    assert service.proxy_for(vpn_mod.SCRAPING) == "socks5h://tailscale:1055"
+
+
+def test_an_unrouted_purpose_gets_nothing_even_when_connected():
+    """Being connected is not permission to route everything through it."""
+
+    _reset_settings()
+    service = _service(connected=True)
+
+    assert service.proxy_for(vpn_mod.STREAMING) is None
+
+
+def test_the_two_purposes_are_independent():
+    """The reason there are two switches rather than one."""
+
+    _reset_settings()
+    service = _service(connected=True, route_scraping=False, route_streaming=True)
+
+    assert service.proxy_for(vpn_mod.SCRAPING) is None
+    assert service.proxy_for(vpn_mod.STREAMING) == "socks5h://tailscale:1055"
+
+
+def test_disabling_the_vpn_routes_nothing():
+    _reset_settings()
+    service = _service(connected=True, enabled=False)
+
+    assert service.proxy_for(vpn_mod.SCRAPING) is None
+    assert service.proxy_for(vpn_mod.STREAMING) is None
+    _Settings.vpn.enabled = True
+
+
+def test_requests_shaped_proxies_cover_both_schemes():
+    """A scraper that proxied http but not https would leak every https call,
+    which is all of them."""
+
+    _reset_settings()
+    proxies = _service(connected=True).proxies_for(vpn_mod.SCRAPING)
+
+    assert proxies == {
+        "http": "socks5h://tailscale:1055",
+        "https": "socks5h://tailscale:1055",
+    }
+
+
+# ------------------------------------------------------- leak-proofing
+
+
+def test_every_scraper_request_goes_through_the_routed_session():
+    """Guard the session-level hook.
+
+    Applying the proxy in the scrapers' `_get` helper looks equivalent and is
+    not: iporntv calls `self.session.head` directly to probe a rendition, and
+    that request would go out around the tunnel while everything else went
+    through it. The scraper still works and the video still plays, so nothing
+    looks wrong -- only the exit address is.
+    """
+
+    text = (SRC / "program/services/directscrapers/base.py").read_text()
+
+    assert "class _RoutedSession(requests.Session)" in text
+    assert "def request(self, method, url, **kwargs)" in text
+    assert "self.session = _RoutedSession()" in text, (
+        "scrapers build a plain requests.Session, so routing is bypassed"
+    )
+
+
+def test_dns_is_resolved_at_the_exit_node():
+    """socks5h, not socks5. With plain socks5 the hostname is resolved
+    locally, which hands every scraped site to the host's own resolver --
+    the exact thing routing the traffic was meant to avoid."""
+
+    text = (SRC / "program/settings/models.py").read_text()
+    section = text[text.index("class TailscaleModel"):]
+    section = section[: section.index("class VpnModel")]
+
+    assert "socks5h://" in section
+
+
+def test_the_sidecar_stays_in_userspace_mode():
+    """Kernel mode captures the whole container's routing table, which would
+    silently route TPDB, the debrid provider and the library scan too."""
+
+    compose = (SRC.parent / "docker-compose.yml").read_text()
+    section = compose[compose.index("    tailscale:"):]
+    section = section[: section.index("    riven_postgres:")]
+
+    assert "TS_USERSPACE=true" in section
+
+    # Checked as an actual capability grant, not as the string appearing
+    # somewhere: the service's own comment explains why NET_ADMIN is absent,
+    # and a bare substring test fails on the explanation.
+    grants = [
+        line for line in section.splitlines()
+        if "cap_add" in line or "/dev/net/tun" in line
+    ]
+    grants = [line for line in grants if not line.strip().startswith("#")]
+
+    assert not grants, f"kernel-mode capabilities granted: {grants}"
+
+
+for _name, _fn in sorted(list(globals().items())):
+    if _name.startswith("test_") and callable(_fn):
+        check(_name, _fn)
+
+print(f"\n{len(PASSED)} passed, {len(FAILED)} failed")
+
+for _name, _err in FAILED:
+    print(f"  FAIL {_name}: {_err}")
+
+sys.exit(1 if FAILED else 0)

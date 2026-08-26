@@ -42,6 +42,13 @@ services:
         volumes:
             - /path/to/riven/data:/riven/data
             - /path/to/riven/mount:/mount:rshared,z
+            # How the VPN tab reads tunnel status and drives login and
+            # exit-node selection. Read-write, and it has to be: connecting to
+            # a unix socket requires write access, so a :ro mount here would
+            # leave status working and every control action failing.
+            # Harmless when the tailscale service is not running -- the socket
+            # is simply absent and the VPN reports itself unreachable.
+            - tailscale-sock:/var/run/tailscale
         depends_on:
             riven_postgres:
                 condition: service_healthy
@@ -79,6 +86,42 @@ services:
                 condition: service_started
 
 
+    # Optional. Only needed if you switch on Settings -> VPN; the backend
+    # works normally without this service, and everything except the streaming
+    # -site scrapers always goes out directly regardless.
+    #
+    # Userspace networking is the whole reason this can be selective. In
+    # kernel mode tailscaled would capture the backend's entire routing table
+    # -- TPDB, the debrid provider, the indexers, the library scan -- and
+    # there would be no way to route only the scrapers. Here it routes
+    # nothing by itself and instead offers a SOCKS5 proxy that the backend
+    # points selected traffic at.
+    tailscale:
+        image: tailscale/tailscale:latest
+        container_name: riven-tailscale
+        hostname: riven-tpdb
+        restart: unless-stopped
+        environment:
+            - TS_USERSPACE=true
+            - TS_STATE_DIR=/var/lib/tailscale
+            # Bind on all interfaces: the backend reaches this over the
+            # compose network, not from inside this container.
+            - TS_SOCKS5_SERVER=0.0.0.0:1055
+            - TS_OUTBOUND_HTTP_PROXY_LISTEN=0.0.0.0:1055
+            # Leave unset to log in interactively from Settings -> VPN. An
+            # auth key entered in the UI is stored by the backend instead, so
+            # do not add a hardcoded fallback here.
+            - TS_AUTHKEY=${TS_AUTHKEY:-}
+        volumes:
+            - ./tailscale-state:/var/lib/tailscale
+            # Shared so the backend can drive login and exit-node selection
+            # over tailscaled's control socket. Without this the tunnel can
+            # still come up from TS_AUTHKEY, but the VPN tab cannot manage it.
+            - tailscale-sock:/var/run/tailscale
+        # Deliberately no NET_ADMIN and no /dev/net/tun: userspace mode needs
+        # neither, and granting them invites someone to "fix" it into kernel
+        # mode later, which would silently route everything.
+
     riven_postgres:
         image: postgres:17-alpine
         container_name: riven-db
@@ -105,3 +148,7 @@ services:
         volumes:
         - /path/to/jellyfin/config:/config
         - /path/to/riven/mount:/mount:rslave,z
+
+volumes:
+    # Carries only tailscaled's control socket between the two containers.
+    tailscale-sock:

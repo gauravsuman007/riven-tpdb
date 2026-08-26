@@ -21,6 +21,37 @@ BROWSER_HEADERS = {
 }
 
 
+class _RoutedSession(requests.Session):
+    """A session that honours the VPN routing policy on every request.
+
+    The policy is applied here, at the session level, rather than in the
+    scrapers' ``_get`` helper. That looks like the obvious place until you
+    notice a scraper reaching for ``self.session.head`` directly -- iporntv
+    does, to probe a rendition -- and that request would then go out around
+    the tunnel while everything else went through it. A leak like that is
+    invisible from the outside: the scraper works, the video plays, and only
+    the exit address is wrong.
+
+    Overriding ``request`` covers every verb and every future call site by
+    construction, so the leak cannot be reintroduced by writing ordinary code.
+    """
+
+    def request(self, method, url, **kwargs):  # type: ignore[override]
+        # Imported here rather than at module scope: the settings module pulls
+        # in a large part of the application, and the scrapers are constructed
+        # during service startup.
+        from program.services.vpn import SCRAPING, vpn
+
+        # Never override an explicit choice by a caller.
+        if "proxies" not in kwargs:
+            proxies = vpn().proxies_for(SCRAPING)
+
+            if proxies:
+                kwargs["proxies"] = proxies
+
+        return super().request(method, url, **kwargs)
+
+
 class DirectScraper(ABC):
     """A site that can be searched for videos and resolved to media URLs."""
 
@@ -33,7 +64,7 @@ class DirectScraper(ABC):
     rate_limit: float = 1.0
 
     def __init__(self) -> None:
-        self.session = requests.Session()
+        self.session = _RoutedSession()
         self.session.headers.update(BROWSER_HEADERS)
         self.initialized = True
 

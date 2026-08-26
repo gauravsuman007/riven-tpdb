@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from program.db.db import db_session
 from program.media.item import MediaItem
 from program.services.directscrapers import DirectScraperService, MatchTarget
+from program.services.vpn import SCRAPING, STREAMING, VpnUnavailable, vpn
 
 
 router = APIRouter(
@@ -130,6 +131,17 @@ def direct_search(
     if not target.title:
         raise HTTPException(status_code=400, detail="Nothing to search for")
 
+    # Checked once, up front. The routing itself is enforced inside the
+    # scrapers' session, but letting it fail there would surface as eight
+    # separate "could not reach this site" errors -- which is true, and
+    # useless, because the reason is the same for all of them and is not the
+    # sites' fault.
+    try:
+        vpn().proxy_for(SCRAPING)
+    except VpnUnavailable as exc:
+        logger.warning(f"Direct search blocked, VPN unavailable: {exc}")
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     selected = [s.strip() for s in sites.split(",")] if sites else None
     results, errors = _service.search(target, limit_per_site=limit, sites=selected)
 
@@ -219,7 +231,22 @@ async def direct_stream(
     if "range" in request.headers:
         headers["Range"] = request.headers["range"]
 
-    client = httpx.AsyncClient(follow_redirects=True, timeout=30.0)
+    # Routed separately from the search above: streaming is the bandwidth-heavy
+    # half, and wanting searches tunnelled but playback direct (or the reverse)
+    # is a reasonable position rather than an edge case.
+    try:
+        proxy = vpn().proxy_for(STREAMING)
+    except VpnUnavailable as exc:
+        # Deliberately not falling back to a direct connection. Someone who
+        # routes playback is controlling where it appears to come from, and
+        # quietly using the host's own address instead would defeat the only
+        # reason the setting exists -- invisibly, mid-play.
+        logger.warning(f"Direct stream blocked, VPN unavailable: {exc}")
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    client = httpx.AsyncClient(
+        follow_redirects=True, timeout=30.0, proxy=proxy
+    )
     try:
         upstream = await client.send(
             client.build_request("GET", source.url, headers=headers),

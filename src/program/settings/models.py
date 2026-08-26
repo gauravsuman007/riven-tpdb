@@ -1284,6 +1284,77 @@ class LocalAccessModel(Observable):
     )
 
 
+class TailscaleModel(Observable):
+    """Tailscale-specific wiring. Everything here is about reaching the sidecar.
+
+    The daemon runs as a separate container in userspace networking mode. That
+    is not a packaging preference -- kernel mode captures the whole container's
+    routing table, and there would be no way to send only the scrapers through
+    it while TPDB, the debrid provider and the library scan went out normally.
+    """
+
+    auth_key: str = Field(
+        default="",
+        description=(
+            "A reusable Tailscale auth key. Leave empty to log in "
+            "interactively from the VPN tab instead."
+        ),
+    )
+    socket_path: str = Field(
+        default="/var/run/tailscale/tailscaled.sock",
+        description=(
+            "Path to the sidecar's control socket, shared in by the compose "
+            "file. This is how exit nodes and login are driven."
+        ),
+    )
+    proxy_url: str = Field(
+        default="socks5h://tailscale:1055",
+        description=(
+            "The sidecar's SOCKS5 address. socks5h rather than socks5 so DNS "
+            "is resolved at the exit node -- resolving locally would leak "
+            "every scraped hostname to the host's own resolver."
+        ),
+    )
+
+
+class VpnModel(Observable):
+    """Route selected traffic through a VPN.
+
+    Deliberately selective. The two switches exist because searching a few
+    sites and streaming gigabytes through an exit node are different
+    propositions, and wanting one routed but not the other is a reasonable
+    position rather than an edge case.
+
+    Nothing else in the application is affected: TPDB, the debrid providers,
+    the indexers and the library scan always go out directly.
+    """
+
+    enabled: bool = Field(default=False, description="Route traffic through a VPN")
+    provider: Literal["tailscale"] = Field(
+        default="tailscale", description="Which VPN provider to use"
+    )
+    route_scraping: bool = Field(
+        default=False,
+        description=(
+            "Send streaming-site searches through the VPN. If the tunnel is "
+            "down, searches fail rather than falling back to a direct "
+            "connection."
+        ),
+    )
+    route_streaming: bool = Field(
+        default=False,
+        description=(
+            "Send video playback from streaming sites through the VPN. This "
+            "is the bandwidth-heavy one. If the tunnel is down, playback "
+            "fails rather than falling back to a direct connection."
+        ),
+    )
+    tailscale: TailscaleModel = Field(
+        default_factory=lambda: TailscaleModel(),
+        description="Tailscale settings",
+    )
+
+
 class AppModel(Observable):
     version: str = Field(default_factory=get_version, description="Application version")
     api_key: str = Field(default="", description="API key for Riven API access")
@@ -1309,6 +1380,10 @@ class AppModel(Observable):
     local_access: LocalAccessModel = Field(
         default_factory=lambda: LocalAccessModel(),
         description="Passwordless access for trusted local networks",
+    )
+    vpn: VpnModel = Field(
+        default_factory=lambda: VpnModel(),
+        description="Route scraper and streaming traffic through a VPN",
     )
     filesystem: FilesystemModel = Field(
         default_factory=lambda: FilesystemModel(),
