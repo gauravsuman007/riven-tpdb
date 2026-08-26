@@ -46,14 +46,18 @@ class VpnService:
 
     def __init__(self) -> None:
         self.settings = settings_manager.settings.vpn
-        self.provider: VpnProvider | None = None
         self._status: VpnStatus | None = None
         self._checked_at = 0.0
 
-        if not self.settings.enabled:
-            self.initialized = False
-            return
-
+        # Deliberately NOT gated on `self.settings.enabled`. Logging in,
+        # checking status and choosing an exit node are account-management
+        # actions -- someone setting this up for the first time needs all
+        # three before there is any reason to flip "enabled" on, and gating
+        # provider construction on it meant "Generate login link" returned a
+        # silent, error-free "disabled" status with nothing visibly
+        # different from a successful click. `enabled` (together with
+        # `route_scraping`/`route_streaming`) still gates ROUTING -- see
+        # `routes()` below -- which is the thing it should gate.
         self.provider = self._build()
         self.initialized = self.provider is not None
 

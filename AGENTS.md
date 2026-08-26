@@ -328,6 +328,15 @@ Whisparr dependency. Regular movies/TV must never appear.
 - The VPN settings tab carries a custom control panel (`vpn-control.svelte`)
   alongside the generated form, because logging in and picking an exit node are
   actions against a running daemon, not values to save.
+- TRAP, reported as "Generate login link does nothing": `VpnService.__init__`
+  used to skip building a provider entirely unless `vpn.enabled` was already
+  true, so clicking either login button before that toggle was flipped hit
+  `self.provider is None` and returned a silent, error-free `state: disabled`
+  -- indistinguishable from a successful click. Logging in, checking status
+  and choosing an exit node are account-management actions that must work
+  before there is any reason to enable routing, not after. Fixed by always
+  building the provider; `enabled` (with `route_scraping`/`route_streaming`)
+  still gates `routes()`/`proxy_for()`, which is the thing it should gate.
 - TRAP, reported by the user as "two auth key fields" and "no login URL
   button": `TailscaleModel.tailscale` used to render in the generic schema
   form AND in the control panel, and the generic form's copy had a worse

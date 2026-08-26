@@ -390,6 +390,51 @@ def test_tailscale_settings_are_hidden_from_the_generic_form():
     assert '"vpn": frozenset({"tailscale"})' in text
 
 
+# --------------------------------------------------- construction vs enabled
+
+
+def test_construction_builds_a_provider_even_when_disabled():
+    """The actual bug: "Generate login link" did nothing.
+
+    VpnService used to skip building a provider at all unless
+    settings.vpn.enabled was already true, so clicking either login button
+    before that toggle was flipped hit `self.provider is None` and came back
+    as a silent, error-free "disabled" status -- indistinguishable from a
+    successful click. Logging in, checking status and picking an exit node
+    are account-management actions that have to work before there is any
+    reason to enable routing, not after.
+    """
+
+    _reset_settings()
+    _Settings.vpn.enabled = False
+
+    service = vpn_mod.VpnService()
+
+    assert service.provider is not None, (
+        "no provider was built while vpn.enabled was false, so nothing "
+        "the VPN tab's buttons call could ever do anything"
+    )
+    assert service.initialized is True
+
+    _Settings.vpn.enabled = True
+
+
+def test_routing_is_still_gated_on_enabled():
+    """The fix must not have thrown out the actual gate.
+
+    Building a provider regardless of `enabled` is correct -- login should
+    work either way -- but whether traffic actually goes through it must
+    still depend on it, or turning "enabled" off would stop being a real
+    off switch.
+    """
+
+    _reset_settings()
+    service = _service(connected=True, enabled=False)
+
+    assert service.proxy_for(vpn_mod.SCRAPING) is None
+    assert service.proxy_for(vpn_mod.STREAMING) is None
+
+
 for _name, _fn in sorted(list(globals().items())):
     if _name.startswith("test_") and callable(_fn):
         check(_name, _fn)
