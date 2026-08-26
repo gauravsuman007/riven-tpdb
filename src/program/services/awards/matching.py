@@ -22,6 +22,17 @@ ACCEPT_SCORE = 6.0
 # Below this the titles are too different to consider whatever else agrees.
 MIN_TITLE_RATIO = 0.6
 
+# Below this, the candidate's title carries too much the entry's does not
+# account for, and it is a different film however well everything else agrees.
+#
+# This exists because `title_ratio` normalises by the SHORTER side, so a title
+# that is a strict subset of another scores a perfect 1.0: "Pirates" against
+# "Butthole Pirates" was 1.00, and since the two share a studio, a year and a
+# cast member, the wrong film scored 10.5 against an accept bar of 6.0 and was
+# handed over with total confidence. Containment alone cannot tell a film from
+# its spin-off; only the tokens left unexplained can.
+MIN_TITLE_SYMMETRY = 0.7
+
 
 def title_ratio(left: str, right: str) -> float:
     """Token overlap, normalised by the shorter side.
@@ -29,6 +40,10 @@ def title_ratio(left: str, right: str) -> float:
     Normalising by the shorter side means "Strip" matching inside
     "Strip: Director's Cut" still scores well, which is the common shape of a
     TPDB title against an award listing.
+
+    Deliberately kept asymmetric -- see :func:`title_symmetry`, which supplies
+    the other half of the picture. This one says "is the shorter title fully
+    present", that one says "is there anything left over".
     """
 
     a, b = set(tokenise(left)), set(tokenise(right))
@@ -37,6 +52,27 @@ def title_ratio(left: str, right: str) -> float:
         return 0.0
 
     return len(a & b) / min(len(a), len(b))
+
+
+def title_symmetry(left: str, right: str) -> float:
+    """Token overlap, normalised by the LONGER side.
+
+    The complement of :func:`title_ratio`. Where that one is blind to extra
+    tokens, this one is exactly as sensitive to them as it should be: a title
+    that is a strict subset of another scores 1.0 there and below 1.0 here, in
+    proportion to how much is unaccounted for.
+
+    "Pirates" against "Butthole Pirates" scores 0.5 -- half the candidate's
+    title is a word the entry never mentions, which is the whole difference
+    between a film and someone else's parody of it.
+    """
+
+    a, b = set(tokenise(left)), set(tokenise(right))
+
+    if not a or not b:
+        return 0.0
+
+    return len(a & b) / max(len(a), len(b))
 
 
 @dataclass(slots=True)
@@ -48,6 +84,9 @@ class Match:
     title: str
     poster: str | None = None
     title_ratio: float = 0.0
+    # How much of the LONGER title the overlap accounts for. Low means the
+    # candidate carries words the entry never mentioned.
+    title_symmetry: float = 0.0
     studio: bool = False
     year_delta: int | None = None
     performers: int = 0
@@ -87,6 +126,14 @@ class Match:
         if self.volume_conflict or self.title_ratio < MIN_TITLE_RATIO:
             return False
 
+        # A gate rather than a score contribution, and that is the point.
+        # Studio, cast and year together are worth 5.5 points, so whenever a
+        # film and its spin-off share all three -- which is the normal case,
+        # not an unlucky one -- no amount of score weighting lets the title
+        # decide. It has to be able to veto.
+        if self.title_symmetry < MIN_TITLE_SYMMETRY:
+            return False
+
         return self.score >= ACCEPT_SCORE
 
 
@@ -121,9 +168,12 @@ def evaluate_candidate(
     )
 
     match.title_ratio = title_ratio(entry_title, tpdb_title or "")
+    match.title_symmetry = title_symmetry(entry_title, tpdb_title or "")
 
     if match.title_ratio:
-        match.reasons.append(f"title:{match.title_ratio:.2f}")
+        match.reasons.append(
+            f"title:{match.title_ratio:.2f}/{match.title_symmetry:.2f}"
+        )
 
     # A numbered instalment that disagrees is a different film, however well
     # the rest lines up -- "Anal Savages 11" is not "Anal Savages 3".

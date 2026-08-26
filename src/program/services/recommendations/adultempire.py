@@ -69,6 +69,9 @@ _CARD_POSTER = re.compile(r'src="(https://[^"]+?/products/[^"]+?\.jpg)"')
 # Boxcovers come in sized variants; "m" is the grid thumbnail and "h" the large
 # one. Asking for the large art up front avoids a second fetch per title.
 _POSTER_SIZE = re.compile(r"(\d+)m\.jpg$")
+_DETAIL_TITLE = re.compile(
+    r'<h1 class="movie-page__heading__title">\s*(.*?)\s*</h1>', re.S
+)
 _RATING = re.compile(r'rating-stars-avg">\s*([\d.]+)\s*<')
 _STUDIO = re.compile(r'/\d+/studio/[a-z0-9-]+\.html"[^>]*>\s*([^<]+?)\s*</a>')
 _YEAR = re.compile(r"<small>Production Year:</small>\s*(\d{4})")
@@ -420,6 +423,16 @@ def large_poster(url: str) -> str:
 
 def parse_detail(html: str, item: RankedTitle) -> RankedTitle:
     """Fill a ranked item in from its detail page."""
+
+    # Only when the caller has none. A listing already supplies the title and
+    # that is the one the brochure shows; this is for callers that start from
+    # a bare product id -- promoting a studio row, which otherwise has no
+    # title at all and used to fall back to "Adult Empire 5426".
+    if not item.title:
+        heading = _DETAIL_TITLE.search(html)
+
+        if heading:
+            item.title = _unescape(re.sub(r"<[^>]+>", "", heading.group(1)).strip())
 
     rating = _RATING.search(html)
 

@@ -361,6 +361,71 @@ def test_a_movie_category_with_no_title_is_not_media():
     assert not entry.is_media
 
 
+# ------------------------------------------------- title symmetry (the gate)
+
+
+def _pirates(tpdb_title):
+    """A candidate that agrees on studio, year and cast -- only the title differs.
+
+    This is the shape that broke: a film and its parody share everything a
+    catalogue records except the name.
+    """
+
+    return matching.evaluate_candidate(
+        entry_title="Pirates",
+        entry_studio="Digital Playground",
+        entry_year=2005,
+        entry_performers=["Jesse Jane"],
+        tpdb_id="x",
+        tpdb_kind="movie",
+        tpdb_title=tpdb_title,
+        tpdb_site="Digital Playground",
+        tpdb_date="2005-09-26",
+        tpdb_performers=["Jesse Jane"],
+        year_offset=0,
+    )
+
+
+def test_a_superset_title_is_refused():
+    """The reported bug, exactly. Opening Pirates from the brochure showed
+    metadata for "Butthole Pirates" -- a real film, same studio, same year,
+    same cast, scoring 10.5 against an accept bar of 6.0 because containment
+    rated a one-word title a perfect match for anything containing it."""
+
+    wrong = _pirates("Butthole Pirates")
+
+    assert wrong.title_ratio == 1.0, "containment still sees a perfect match"
+    assert wrong.title_symmetry == 0.5
+    assert not wrong.accepted, f"accepted the wrong film at {wrong.score}"
+
+
+def test_the_real_title_still_matches():
+    right = _pirates("Pirates")
+
+    assert right.title_symmetry == 1.0
+    assert right.accepted
+
+
+def test_a_sequel_is_not_the_original():
+    """"Pirates II: Stagnetti's Revenge" is a different film, and it shares
+    even more with the original than the parody does."""
+
+    assert not _pirates("Pirates II Stagnettis Revenge").accepted
+
+
+def test_the_gate_can_veto_a_high_score():
+    """Studio, cast and year are worth 5.5 together, so with a perfect
+    containment score nothing below the title level could ever reject. The
+    symmetry check has to be a gate, not another weighted term."""
+
+    wrong = _pirates("Butthole Pirates")
+
+    assert wrong.score >= matching.ACCEPT_SCORE, (
+        "the score alone still clears the bar -- which is why this is a gate"
+    )
+    assert not wrong.accepted
+
+
 for _name, _fn in sorted(list(globals().items())):
     if _name.startswith("test_") and callable(_fn):
         check(_name, _fn)
