@@ -116,15 +116,43 @@ def _forward_headers(request: Request) -> dict[str, str]:
     return headers
 
 
-def _response_headers(source: httpx.Response) -> dict[str, str]:
-    return {
-        key: value
-        for key, value in source.headers.items()
+def _response_headers(source: httpx.Response) -> list[tuple[str, str]]:
+    """Headers to relay, preserving repeats.
+
+    A LOGIN RESPONSE SETS THREE SEPARATE `Set-Cookie` HEADERS. Returning a
+    `dict` here (the original shape) silently drops all but one of them --
+    Python dict keys are unique, so three `(set-cookie, ...)` pairs collapse
+    to whichever came last, and the client never receives the actual session
+    cookie. That is exactly what made a proxied login appear to succeed (200,
+    no error) while every subsequent request still looked signed out: only a
+    disposable 60s-lived cookie was making it through, never the real one.
+    A `list[tuple]` plus `MutableHeaders.append` (below) is what actually
+    preserves every value.
+    """
+
+    return [
+        (key, value)
+        for key, value in source.headers.multi_items()
         # Content-Length is dropped because injection changes the body, and
         # Content-Encoding because httpx has already decompressed it.
         if key.lower() not in _HOP_BY_HOP
         and key.lower() not in {"content-length", "content-encoding"}
-    }
+    ]
+
+
+def _apply_headers(response: Response, headers: list[tuple[str, str]]) -> Response:
+    """Attach possibly-repeated headers to a Response without collapsing them.
+
+    `Response(headers=...)` only accepts a single-value mapping; appending
+    through `response.headers` (Starlette's `MutableHeaders`) adds a new
+    header line per call instead of overwriting, which is required for
+    multiple `Set-Cookie` values to survive.
+    """
+
+    for key, value in headers:
+        response.headers.append(key, value)
+
+    return response
 
 
 async def proxy(request: Request, path: str) -> Response:
@@ -164,27 +192,6 @@ async def proxy(request: Request, path: str) -> Response:
     content_type = upstream.headers.get("content-type", "")
     headers = _response_headers(upstream)
 
-    # TEMPORARY diagnostics for the WebView login investigation. Deliberately
-    # redacts cookie VALUES (session tokens) but logs their name + attributes,
-    # since Secure/SameSite/Domain is exactly what decides whether a WebView's
-    # cookie jar keeps or silently drops one. Remove once the login flow is
-    # confirmed working end-to-end.
-    cookie_shapes = []
-    for key, raw in upstream.headers.multi_items():
-        if key.lower() != "set-cookie":
-            continue
-        name = raw.split("=", 1)[0]
-        attrs = raw.split(";", 1)[1].strip() if ";" in raw else ""
-        cookie_shapes.append(f"{name}[{attrs}]")
-
-    logger.info(
-        f"webui proxy: {request.method} /{path} -> {upstream.status_code} "
-        f"ct={content_type!r} origin_sent={_forward_headers(request).get('origin')!r} "
-        f"cookie_in={request.headers.get('cookie', '(none)')[:60]!r} "
-        f"set-cookie={cookie_shapes if cookie_shapes else 'no'} "
-        f"location={upstream.headers.get('location')!r}"
-    )
-
     # Only HTML documents get the injection; assets stream through untouched.
     if "text/html" in content_type.lower():
         text = upstream.text
@@ -199,11 +206,13 @@ async def proxy(request: Request, path: str) -> Response:
             else:
                 text = _INJECT + text
 
-        return Response(
-            content=text,
-            status_code=upstream.status_code,
-            headers=headers,
-            media_type=content_type,
+        return _apply_headers(
+            Response(
+                content=text,
+                status_code=upstream.status_code,
+                media_type=content_type,
+            ),
+            headers,
         )
 
     async def stream() -> Any:
@@ -212,11 +221,13 @@ async def proxy(request: Request, path: str) -> Response:
         finally:
             await client.aclose()
 
-    return StreamingResponse(
-        stream(),
-        status_code=upstream.status_code,
-        headers=headers,
-        media_type=content_type or None,
+    return _apply_headers(
+        StreamingResponse(
+            stream(),
+            status_code=upstream.status_code,
+            media_type=content_type or None,
+        ),
+        headers,
     )
 
 
