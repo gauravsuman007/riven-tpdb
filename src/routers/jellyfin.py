@@ -27,7 +27,7 @@ from sqlalchemy import func, or_, select
 
 from program.db.db import db_session
 from program.media.item import MediaItem
-from program.services.jellyfin_server import auth, capabilities, ids, mapping
+from program.services.jellyfin_server import auth, capabilities, ids, mapping, webapp
 from program.services.streaming import transcode
 from program.settings import settings_manager
 
@@ -113,6 +113,49 @@ def system_info_public() -> dict[str, Any]:
     require_enabled()
 
     return _public_info()
+
+
+# --------------------------------------------------------------------------
+# The web app the WebView shells load.
+#
+# Jellyfin for Android (mobile) and the LG webOS app ship no UI -- they fetch
+# one from the server. Both are unauthenticated on purpose: the client asks
+# for them before it has any credentials. See `jellyfin_server/webapp.py` for
+# the reverse-engineered contract, especially why the bundle path is load
+# bearing and must not be renamed.
+# --------------------------------------------------------------------------
+
+
+@router.get("/")
+def web_index() -> Response:
+    require_enabled()
+
+    return Response(
+        content=webapp.index_html(),
+        media_type="text/html; charset=utf-8",
+        # The shell re-fetches this on every launch; letting a proxy pin an
+        # old copy would strand clients on a stale bundle path.
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get(webapp.BUNDLE_PATH)
+def web_bundle() -> Response:
+    """Serve the app from the path that marks the client connected.
+
+    `JellyfinWebViewClient` calls `onConnectedToWebapp()` the moment it sees a
+    request whose path matches `.*/main\\.[^/\\s]+\\.bundle\\.js`, without ever
+    reading the response -- so answering here is what dismisses the client's
+    10-second connection timeout.
+    """
+
+    require_enabled()
+
+    return Response(
+        content=webapp.bundle_js(),
+        media_type="application/javascript; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/System/Info")
