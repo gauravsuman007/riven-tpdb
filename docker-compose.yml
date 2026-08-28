@@ -151,6 +151,16 @@ services:
             timeout: 5s
             retries: 5
 
+    # OPTIONAL, and think before using it: this is a real Jellyfin pointed at
+    # the Riven mount. Its library scan runs ffprobe over every file and seeks
+    # through it for chapter images, and RivenVFS serves those bytes by
+    # pulling them from your debrid provider -- a scheduled scan against a
+    # debrid-backed mount hammers your own account, and the scraper will also
+    # ignore the TPDB metadata Riven already has.
+    #
+    # To watch on a TV, prefer Settings -> Library -> Jellyfin server, which
+    # makes Riven answer the Jellyfin protocol itself with no scanning at all.
+    # See README.md ("Watching on a TV").
     jellyfin:
         image: jellyfin/jellyfin
         container_name: jellyfin

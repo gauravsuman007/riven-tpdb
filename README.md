@@ -223,6 +223,62 @@ them from the environment. TPDB-specific variables:
 | `RIVEN_SCRAPING_JACKETT_URL`      | Jackett URL (default `http://localhost:9117`)      |
 | `RIVEN_SCRAPING_JACKETT_API_KEY`  | Jackett API key                                    |
 
+## Watching on a TV (Jellyfin clients)
+
+Riven can answer the Jellyfin client protocol, so the library plays on Apple
+TV, Android TV, Roku, Kodi, phones and anything else that has a Jellyfin app
+-- without writing a client for each of those platforms.
+
+This is the opposite direction from `updaters.jellyfin`, which tells a *real*
+Jellyfin server to rescan a folder. Here Riven **is** the server. That
+distinction matters: a real media server pointed at the RivenVFS mount runs
+ffprobe over every file and seeks through it for chapter images, and RivenVFS
+serves those bytes by pulling them from your debrid provider. A scheduled
+library scan against a debrid mount is a very effective way to hammer your own
+account. Serving the protocol directly avoids the scan entirely -- metadata
+comes from Riven's database, which already holds better data (performers,
+sites, TPDB ids) than any media-server scraper would find for a scene.
+
+### Setting it up
+
+1. **Settings -> Library -> Jellyfin server**: turn it on.
+2. Optionally set **Advertised URL** to how clients reach Riven, e.g.
+   `http://192.168.1.10:8080`. Needed if Riven is behind a reverse proxy or a
+   non-default port.
+3. In any Jellyfin app, **add a server** with that address.
+4. Log in with the configured username (default `riven`) and **your Riven API
+   key as the password**.
+
+There is no separate Jellyfin password on purpose: the API key is the one
+secret Riven has, so this cannot grant access the existing API would refuse,
+and there is no second credential to manage or leak.
+
+### What works
+
+Browsing and search (including by performer name), posters, per-item detail
+with cast and studio, and playback with real codec negotiation -- the client
+sends its DeviceProfile, and Riven direct-streams when the client can decode
+the file and transcodes when it cannot, instead of guessing.
+
+### Known limits
+
+- **Auto-discovery usually needs host networking.** Riven answers the Jellyfin
+  UDP broadcast on port 7359, but in the default bridge-networked compose
+  setup a LAN broadcast never reaches the container. Adding the server by
+  address works regardless, and is the reliable option.
+- **Watch state is not synced.** Clients report progress and Riven accepts it,
+  but resume points and watched flags are not stored yet, so they do not
+  follow you between the web UI and a TV.
+- **The web UI is still where you manage things.** Adding titles, scraper
+  settings, plugins and the "search streaming sites" feature are not part of
+  the Jellyfin protocol and are not exposed to TV clients -- see below.
+- **Direct-scrape (tube site) search is web-only.** Jellyfin clients browse a
+  library the server already knows about; there is no protocol concept for
+  "search an external site and play a result".
+- **Plex and Emby are not supported and are not planned.** Plex anchors server
+  identity to plex.tv with certificates that cannot be minted locally; Emby's
+  clients are closed source. See `AGENTS.md` for the full reasoning.
+
 ## Direct-scrape scraper plugins
 
 Besides scraping torrent indexers, Riven can search streaming sites directly

@@ -762,3 +762,46 @@ this section if absent). Decisions so far, so they are not relitigated:
 - Start by measuring, not by implementing the documented API: stub
   `/System/Info/Public` plus auth, log every inbound request, point a real
   client at it and let it state its requirements.
+
+## Jellyfin masquerade -- built
+`program/services/jellyfin_server/` plus `routers/jellyfin.py`, mounted at the
+app ROOT (clients build absolute paths and cannot be given a prefix). Off by
+default; every route 404s while `jellyfin_server.enabled` is false.
+- TRAP, and it cost a debugging cycle: Jellyfin's server is ASP.NET, whose
+  routing is CASE-INSENSITIVE. Real clients rely on it -- the Python client
+  library probes `/system/info/public`, not `/System/Info/Public`. FastAPI
+  matches case-sensitively, so a real client 404s on its first request and
+  reports the server unreachable. `_CaseInsensitiveRoute` recompiles
+  Starlette's `path_regex` with IGNORECASE. A hand-written curl script CANNOT
+  find this, because the same person writes both ends and uses the documented
+  casing on both; it took `jellyfin-apiclient-python`. This is the concrete
+  case for measuring real clients.
+- Route order matters: `/Users/AuthenticateByName`, `/Users/Me` and
+  `/Users/Public` must stay declared BEFORE `/Users/{user_id}` or the
+  catch-all swallows them.
+- One secret, not two. The Jellyfin password IS `settings.api_key` and the
+  issued token is that same key, so there is no session store, nothing expires
+  on restart, and this path cannot grant what the existing API would refuse.
+  Do not add a user table here without a reason that survives that argument.
+- Be permissive on auth headers: we are the SERVER and do not choose what the
+  client sends. `Authorization: MediaBrowser`, `X-Emby-Authorization`,
+  `X-Emby-Token`, `X-MediaBrowser-Token` and the `api_key` query parameter are
+  all accepted, permanently. The 10.11 deprecation aims at client authors, and
+  TV apps update slowly. Stream URLs especially need the query form -- clients
+  hand a bare URL to a platform player that sends no custom headers.
+- Browse endpoints answer from Postgres and MUST NOT probe. `PlaybackInfo` is
+  the ONE route allowed to probe, because the user just pressed play and is
+  about to pull the file anyway. Doing it per grid tile is the library-scan
+  behaviour that makes a media server unusable against a debrid VFS.
+- Measured, and the reason the probe fallback exists at all: of 64 filesystem
+  entries in the live library, 64 had a MediaMetadata row and ZERO were
+  probed -- the metadata is filename-parsed, so only 4 carried a video codec.
+  Trusting stored metadata alone told every client "direct" and would have
+  shown a black screen on any TV that could not decode the file.
+- `SupportsDirectPlay` is false by design: direct play means the CLIENT opens
+  the path itself, and ours is inside a FUSE mount no client can reach.
+  Direct STREAM is the equivalent.
+- Discovery (UDP 7359) works but is bridge-networked here, so LAN broadcast
+  never reaches it and clients must add the server by address. Making it work
+  needs `network_mode: host`, which on this deployment would collide with the
+  separate real Jellyfin already running host-networked on 7359/8096.
