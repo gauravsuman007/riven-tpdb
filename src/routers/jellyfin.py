@@ -470,6 +470,55 @@ def _probe_from_stored(metadata) -> transcode.MediaProbe | None:
     )
 
 
+def _probe_live(item_id: int) -> transcode.MediaProbe | None:
+    """Probe the real file, resolving a fresh provider link first.
+
+    Only ever called from PlaybackInfo. Failure returns None rather than
+    raising: a probe that did not work should cost the viewer a direct-play
+    attempt, not an error dialog.
+    """
+
+    from program.services.streaming import playback_url
+
+    try:
+        media = playback_url.resolve(item_id, check=True)
+
+        return transcode.probe(media.url, cache_key=media.filename)
+    except Exception as exc:
+        logger.debug(f"Jellyfin live probe failed for item {item_id}: {exc}")
+
+        return None
+
+
+def _streams_from_probe(probe: transcode.MediaProbe) -> list[dict[str, Any]]:
+    """Minimal MediaStreams for a file we only know from a live probe."""
+
+    streams: list[dict[str, Any]] = [
+        {
+            "Type": "Video",
+            "Index": 0,
+            "Codec": probe.video_codec,
+            "Width": probe.width,
+            "Height": probe.height,
+            "DisplayTitle": probe.video_codec or "Video",
+            "IsDefault": True,
+        }
+    ]
+
+    if probe.audio_codec:
+        streams.append(
+            {
+                "Type": "Audio",
+                "Index": 1,
+                "Codec": probe.audio_codec,
+                "DisplayTitle": probe.audio_codec,
+                "IsDefault": True,
+            }
+        )
+
+    return streams
+
+
 @router.post("/Items/{item_id}/PlaybackInfo")
 @router.get("/Items/{item_id}/PlaybackInfo")
 async def playback_info(item_id: str, request: Request, identity: Identity) -> dict[str, Any]:
@@ -512,12 +561,33 @@ async def playback_info(item_id: str, request: Request, identity: Identity) -> d
         probe = _probe_from_stored(metadata)
 
         if probe is None:
-            # Never analysed. Assume it plays and let the client tell us
-            # otherwise, rather than reading the file to find out -- see the
-            # docstring on _probe_from_stored.
-            mode, reason = "direct", "no stored analysis; offering direct stream"
+            # Nothing stored. Probe the file now -- and note that this is the
+            # ONE place in this router allowed to, because the user has just
+            # pressed play and is about to pull the whole file anyway, so a
+            # few megabytes of header costs nothing against what follows.
+            # Browsing must never reach here: doing this per grid tile is the
+            # library-scan failure recorded in AGENTS.md.
+            #
+            # It matters that this fallback exists at all. Most entries in a
+            # real library carry filename-parsed metadata with no codec in it,
+            # so without a probe every client would be told "direct" and a TV
+            # that cannot decode the file would show a black screen rather
+            # than transcoding.
+            probe = _probe_live(parsed)
+
+        if probe is None or not probe.video_codec:
+            mode, reason = "direct", "could not determine codecs; offering direct stream"
         else:
             mode, reason = transcode.decide(probe, caps)
+
+            # Fill in what the client asks about but stored metadata lacked.
+            source["Container"] = source["Container"] or probe.container
+            source["RunTimeTicks"] = source["RunTimeTicks"] or mapping.to_ticks(
+                probe.duration
+            )
+
+            if not source["MediaStreams"]:
+                source["MediaStreams"] = _streams_from_probe(probe)
 
         logger.debug(
             f"Jellyfin PlaybackInfo item {parsed} for {identity.label}: "
