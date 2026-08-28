@@ -1442,6 +1442,17 @@ class DirectScrapingModel(Observable):
             "edited here directly."
         ),
     )
+    site_order: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Scraper keys in the order their results should appear. A site "
+            "listed earlier always outranks a later one, whatever the two "
+            "results' relevance scores say -- this is a stated preference, "
+            "not a measurement. Anything not listed sorts after everything "
+            "that is. Written by the Plugins tab's reorder controls, not "
+            "meant to be edited here directly."
+        ),
+    )
     results_per_site: int = Field(
         default=3,
         ge=1,

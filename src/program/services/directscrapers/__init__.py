@@ -121,6 +121,11 @@ class DirectScraperService:
     #: scraped (tnaflix answered every measured query; eporner has a
     #: documented API). Tier 1 fills out the middle. Anything not listed here
     #: sorts last, by relevance as before.
+    #:
+    #: These are only the FALLBACK. `direct_scraping.site_order`, set from the
+    #: Plugins tab, takes precedence when it is non-empty -- see
+    #: `site_tier()`. They still matter for a fresh install, where nothing has
+    #: been reordered yet.
     SITE_TIERS: dict[str, int] = {
         "tnaflix": 0,
         "eporner": 0,
@@ -329,6 +334,29 @@ def _unique_by_id(videos: list[DirectVideo]) -> list[DirectVideo]:
     return unique
 
 
+def site_tier(key: str) -> int:
+    """How early this site's results sort, lower first.
+
+    A user-stated order wins outright over the built-in defaults: someone who
+    moves fpoxxx to the top means it, and having a measured default quietly
+    outrank that would make the control look broken. Sites the user has not
+    placed sort after every site they have, so a newly-dropped plugin cannot
+    silently land above a deliberate choice.
+    """
+
+    from program.settings import settings_manager
+
+    order = settings_manager.settings.direct_scraping.site_order
+
+    if order:
+        try:
+            return order.index(key)
+        except ValueError:
+            return len(order)
+
+    return DirectScraperService.SITE_TIERS.get(key, 2)
+
+
 def _merge_ranked(
     selected: dict[str, DirectScraper], results: dict[str, list[DirectVideo]]
 ) -> list[DirectVideo]:
@@ -351,7 +379,7 @@ def _merge_ranked(
     seen: set[str] = set()
 
     for key in selected:
-        tier = DirectScraperService.SITE_TIERS.get(key, 2)
+        tier = site_tier(key)
         for position, video in enumerate(results.get(key) or []):
             if video.key() in seen:
                 continue

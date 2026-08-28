@@ -314,11 +314,15 @@ class ScraperInfoModel(BaseModel):
 class PluginsResponse(BaseModel):
     plugin_dir: str
     scrapers: list[ScraperInfoModel]
+    #: The stated display order, best first. Empty means "never reordered",
+    #: in which case the built-in defaults apply.
+    site_order: list[str] = []
 
 
 def _plugins_response() -> PluginsResponse:
     return PluginsResponse(
         plugin_dir=settings_manager.settings.direct_scraping.plugin_dir,
+        site_order=list(settings_manager.settings.direct_scraping.site_order),
         scrapers=[
             ScraperInfoModel(
                 key=info.key,
@@ -387,6 +391,41 @@ def direct_plugin_set_enabled(
         disabled.add(key)
 
     settings.disabled = sorted(disabled)
+    settings_manager.save()
+    reset_direct_service()
+
+    return _plugins_response()
+
+
+class SiteOrderBody(BaseModel):
+    order: list[str]
+
+
+@router.post("/plugins/order", operation_id="direct_plugins_set_order")
+def direct_plugins_set_order(body: SiteOrderBody) -> PluginsResponse:
+    """Set the order scraper results are displayed in, best first.
+
+    Written straight to `direct_scraping.site_order` rather than through the
+    generic settings form, for the same reason `disabled` is -- see
+    `settings/visibility.py`.
+
+    Unknown keys are dropped rather than rejected: the list is built from a
+    registry that can change under the user (a plugin file deleted while the
+    settings tab is open), and failing the whole reorder because one stale
+    key came back would be a worse answer than saving the part that still
+    means something.
+    """
+
+    known = {info.key for info in describe_scrapers()}
+    seen: set[str] = set()
+    order: list[str] = []
+
+    for key in body.order:
+        if key in known and key not in seen:
+            seen.add(key)
+            order.append(key)
+
+    settings_manager.settings.direct_scraping.site_order = order
     settings_manager.save()
     reset_direct_service()
 

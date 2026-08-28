@@ -392,11 +392,99 @@ class TorBoxDownloader(DownloaderBase):
             )
 
             if queued_id:
+                # Promote it immediately rather than leaving it sitting there.
+                #
+                # MEASURED, not assumed: this account had 202 torrents in the
+                # queued list, the oldest five days old, none of which had
+                # ever reached the download list. TorBox does not drain that
+                # queue on its own while slots are busy or the account is in
+                # cooldown, and nothing here used to touch it -- the queue id
+                # was raised, caught, and discarded -- so a request could be
+                # accepted and then silently never download at all.
+                if self._start_queued(queued_id):
+                    started = self._find_torrent_id(infohash)
+
+                    if started is not None:
+                        return started
+
+                # Still queued: the caller's existing handling is right, it
+                # just should not be the FIRST thing tried.
                 raise TorBoxQueued(queued_id)
 
             raise TorBoxError("No torrent ID returned by TorBox")
 
         return str(torrent_id)
+
+    def _start_queued(self, queued_id: int | str) -> bool:
+        """Ask TorBox to promote a queued torrent into a real download.
+
+        Returns whether it was accepted. Never raises: this runs inside
+        `add_torrent`'s queued path, where the fallback (report it as queued)
+        is already a correct outcome -- a failure here should cost the
+        promotion, not the add.
+        """
+
+        assert self.api
+
+        try:
+            response = self.api.session.post(
+                "queued/controlqueued",
+                json={
+                    "queued_id": queued_id,
+                    "operation": "start",
+                    "type": "torrent",
+                },
+            )
+
+            self._maybe_backoff(response)
+
+            if not response.ok:
+                logger.debug(
+                    f"TorBox would not start queued download {queued_id}: "
+                    f"{self._handle_error(response)}"
+                )
+                return False
+
+            return True
+        except Exception as exc:
+            logger.debug(f"Could not start queued TorBox download {queued_id}: {exc}")
+            return False
+
+    def _find_torrent_id(self, infohash: str) -> str | None:
+        """The torrent id TorBox gave this infohash, if it now has one.
+
+        Needed because `controlqueued` reports success without returning the
+        new id, and the caller's whole contract is to hand one back.
+        """
+
+        assert self.api
+
+        try:
+            response = self.api.session.get(
+                "torrents/mylist", params={"bypass_cache": "true"}
+            )
+
+            self._maybe_backoff(response)
+
+            if not response.ok:
+                return None
+
+            data = self._payload(response)
+
+            if not isinstance(data, list):
+                return None
+
+            wanted = infohash.lower()
+
+            for entry in data:
+                plain = self._to_plain(entry)
+                if str(plain.get("hash") or "").lower() == wanted:
+                    found = plain.get("id")
+                    return str(found) if found is not None else None
+        except Exception as exc:
+            logger.debug(f"Could not resolve a torrent id for {infohash}: {exc}")
+
+        return None
 
     def select_files(self, torrent_id: int | str, file_ids: list[int]) -> None:
         """No-op: TorBox makes every file in a torrent available."""

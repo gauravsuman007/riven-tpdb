@@ -55,7 +55,12 @@ HIDDEN_SECTIONS: dict[str, frozenset[str]] = {
     # strings editor saved through the generic form and the toggle's
     # `/settings/set/direct_scraping.disabled` both writing the same key with
     # no way to tell which one is current.
-    "direct_scraping": frozenset({"disabled"}),
+    # `site_order` joins `disabled` here for the identical reason: the
+    # Plugins tab's reorder controls own it, and a raw list-of-strings editor
+    # in the generic form would be a second write path to the same value.
+    # `results_per_site` is deliberately NOT hidden -- it has no other write
+    # path, so hiding it would leave no way to set it at all.
+    "direct_scraping": frozenset({"disabled", "site_order"}),
 }
 
 
