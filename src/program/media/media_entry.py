@@ -52,6 +52,13 @@ class MediaEntry(FilesystemEntry):
     provider: Mapped[str | None]
     provider_download_id: Mapped[str | None]
 
+    # Infohash of the Stream this entry was downloaded from, so a candidate
+    # release that is already downloaded can be identified and re-activated
+    # without downloading it again.
+    stream_infohash: Mapped[str | None] = mapped_column(
+        sqlalchemy.String, nullable=True, index=True
+    )
+
     # Library Profile References (list of profile keys from settings.json)
     library_profiles: Mapped[list[str] | None] = mapped_column(
         sqlalchemy.JSON,
@@ -162,6 +169,8 @@ class MediaEntry(FilesystemEntry):
         provider_download_id: str,
         file_size: int = 0,
         media_metadata: MediaMetadata | None = None,
+        stream_infohash: str | None = None,
+        is_active: bool = True,
     ) -> "MediaEntry":
         """
         Create a MediaEntry representing a virtual (RivenVFS) media file.
@@ -173,6 +182,8 @@ class MediaEntry(FilesystemEntry):
             provider_download_id (str): Provider-specific download identifier.
             file_size (int): Size of the file in bytes; defaults to 0.
             media_metadata (dict, optional): Cached media metadata to avoid re-parsing/probing.
+            stream_infohash (str, optional): Infohash of the Stream this entry came from.
+            is_active (bool): Whether RivenVFS should currently serve this entry.
 
         Returns:
             MediaEntry: A new MediaEntry instance populated with the provided values.
@@ -184,6 +195,8 @@ class MediaEntry(FilesystemEntry):
             provider_download_id=provider_download_id,
             file_size=file_size,
             media_metadata=media_metadata,
+            stream_infohash=stream_infohash,
+            is_active=is_active,
         )
 
     @classmethod
@@ -255,6 +268,7 @@ class MediaEntry(FilesystemEntry):
                 "unrestricted_url": self.unrestricted_url,
                 "provider": self.provider,
                 "provider_download_id": self.provider_download_id,
+                "stream_infohash": self.stream_infohash,
             }
         )
 

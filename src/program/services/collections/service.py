@@ -24,6 +24,8 @@ Three things can be added, and they differ in where the metadata comes from:
 import re
 from datetime import datetime
 
+from program.utils.time import utcnow
+
 from kink import di
 from loguru import logger
 from sqlalchemy import select
@@ -60,7 +62,7 @@ def slugify(name: str) -> str:
 
     slug = _SLUG_STRIP.sub("-", name.strip().lower()).strip("-")
 
-    return slug or datetime.now().strftime("%Y%m%d%H%M%S")
+    return slug or utcnow().strftime("%Y%m%d%H%M%S")
 
 
 def unique_key(session: Session, name: str) -> str:
@@ -221,7 +223,7 @@ def add_tpdb_title(
         tpdb_id=tpdb_id,
         tpdb_kind=kind,
         match_state=MATCH_MATCHED,
-        matched_at=datetime.now(),
+        matched_at=utcnow(),
     )
 
     session.add(entry)

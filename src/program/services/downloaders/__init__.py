@@ -13,6 +13,7 @@ from program.media.item import (
 from program.media.state import States
 from program.media.stream import Stream
 from program.media.media_entry import MediaEntry
+from program.utils.time import utcnow
 from program.media.models import ActiveStream, MediaMetadata
 from program.services.downloaders.models import (
     DebridFile,
@@ -240,7 +241,7 @@ class Downloader(Runner[None, DownloaderBase]):
                     + f"; re-checking in {self.uncached_poll_minutes}m",
                 )
 
-                return datetime.now() + timedelta(
+                return utcnow() + timedelta(
                     minutes=self.uncached_poll_minutes
                 )
 
@@ -258,7 +259,7 @@ class Downloader(Runner[None, DownloaderBase]):
             f"retrying in {self.uncached_poll_minutes}m"
         )
 
-        return datetime.now() + timedelta(minutes=self.uncached_poll_minutes)
+        return utcnow() + timedelta(minutes=self.uncached_poll_minutes)
 
     def _uncached_wait_started(self, item: MediaItem, stream: Stream) -> datetime:
         """When we first asked a provider to fetch this stream.
@@ -274,7 +275,7 @@ class Downloader(Runner[None, DownloaderBase]):
 
         key = (item.id, stream.infohash)
 
-        return self._uncached_since.setdefault(key, datetime.now())
+        return self._uncached_since.setdefault(key, utcnow())
 
     def validate(self):
         if not self.initialized_services:
@@ -297,7 +298,7 @@ class Downloader(Runner[None, DownloaderBase]):
 
 
         # Check if all services are in cooldown due to circuit breaker
-        now = datetime.now()
+        now = utcnow()
 
         available_services = [
             service
@@ -327,11 +328,35 @@ class Downloader(Runner[None, DownloaderBase]):
         tried_streams = 0
         uncached_streams = list[Stream]()
 
+        # A candidate release being fetched to replace an already-downloaded
+        # active_stream, in the background, without disturbing it.
+        candidate_mode = bool(
+            item.downloading_stream_hash
+            and item.active_stream
+            and item.downloading_stream_hash != item.active_stream.infohash
+            and item.media_entry is not None
+        )
+
         try:
             # Sort streams by resolution and rank (highest first) using simple, fast sorting
             sorted_streams = sort_streams_by_quality(
                 item.streams, preferred_hash=item.preferred_stream_hash
             )
+
+            if candidate_mode:
+                sorted_streams = [
+                    s for s in sorted_streams if s.infohash == item.downloading_stream_hash
+                ]
+
+                if not sorted_streams:
+                    logger.warning(
+                        f"Candidate stream {item.downloading_stream_hash} not found "
+                        f"for {item.log_string} ({item.id}), abandoning candidate fetch"
+                    )
+                    item.downloading_stream_hash = None
+                    candidate_mode = False
+
+            previous_entry = item.media_entry if candidate_mode else None
 
             for stream in sorted_streams:
                 # Try each available service for this stream before blacklisting
@@ -374,7 +399,9 @@ class Downloader(Runner[None, DownloaderBase]):
                             service,
                         )
 
-                        if self.update_item_attributes(item, download_result, service):
+                        if self.update_item_attributes(
+                            item, download_result, service, keep_existing=candidate_mode
+                        ):
                             logger.log(
                                 "DEBRID",
                                 f"Downloaded {item.log_string} from '{stream.raw_title}' [{stream.infohash}] using {service.key}",
@@ -392,7 +419,7 @@ class Downloader(Runner[None, DownloaderBase]):
                         # This specific service hit circuit breaker, set cooldown and try next service
                         cooldown_duration = timedelta(minutes=1)
                         self._service_cooldowns[service.key] = (
-                            datetime.now() + cooldown_duration
+                            utcnow() + cooldown_duration
                         )
                         logger.warning(
                             f"Circuit breaker OPEN for {service.key}, trying next service for stream {stream.infohash}"
@@ -526,6 +553,11 @@ class Downloader(Runner[None, DownloaderBase]):
                     f"tried {tried_streams} stream(s), none were cached on "
                     f"{', '.join(s.key for s in self.initialized_services)}"
                 )
+
+                if candidate_mode:
+                    # Give up on the background candidate; the existing
+                    # active download is untouched and keeps playing.
+                    item.downloading_stream_hash = None
         else:
             # Clear service cooldowns on successful download
             self._service_cooldowns.clear()
@@ -533,6 +565,9 @@ class Downloader(Runner[None, DownloaderBase]):
             # This item is done waiting on any uncached fetch.
             for key in [k for k in self._uncached_since if k[0] == item.id]:
                 self._uncached_since.pop(key, None)
+
+            if candidate_mode:
+                self._swap_active_filesystem_entry(item, previous_entry)
 
             yield RunnerResult(media_items=[item])
 
@@ -590,6 +625,7 @@ class Downloader(Runner[None, DownloaderBase]):
         download_result: DownloadedTorrent,
         service: DownloaderBase | None = None,
         processed_episode_ids: set[str] | None = None,
+        keep_existing: bool = False,
     ) -> bool:
         """Update the item attributes with the downloaded files and active stream."""
 
@@ -653,6 +689,7 @@ class Downloader(Runner[None, DownloaderBase]):
                     episode_cap,
                     processed_episode_ids,
                     service,
+                    keep_existing,
                 ):
                     found = True
 
@@ -671,6 +708,7 @@ class Downloader(Runner[None, DownloaderBase]):
         episode_cap: int | None = None,
         processed_episode_ids: set[str] | None = None,
         service: DownloaderBase | None = None,
+        keep_existing: bool = False,
     ) -> bool:
         """
         Determine whether a parsed file corresponds to the given media item (movie, show, season, or episode) and update the item's attributes when matches are found.
@@ -709,6 +747,7 @@ class Downloader(Runner[None, DownloaderBase]):
                 download_result,
                 service,
                 file_data,
+                keep_existing=keep_existing,
             )
 
             return True
@@ -857,6 +896,40 @@ class Downloader(Runner[None, DownloaderBase]):
             container=container,
         )
 
+    def _swap_active_filesystem_entry(
+        self, item: MediaItem, previous_entry: "MediaEntry | None"
+    ) -> None:
+        """Re-mount RivenVFS for `item` after a background candidate download.
+
+        `_update_attributes` already flipped `is_active` in the DB, so
+        `item.filesystem_entry`/`media_entry` now resolve to the new entry.
+        `previous_entry` (captured before that flip) is unregistered directly
+        rather than via `RivenVFS.remove`, which reads that same property and
+        would try to unmount the wrong (new) entry.
+        """
+
+        from program.program import riven
+
+        if not riven.services:
+            return
+
+        filesystem_service = riven.services.filesystem
+        riven_vfs = filesystem_service.riven_vfs
+
+        if not riven_vfs:
+            return
+
+        if previous_entry is not None:
+            video_paths = riven_vfs._unregister_filesystem_entry(previous_entry)
+            previous_entry.available_in_vfs = False
+
+            for subtitle in item.subtitles:
+                riven_vfs._unregister_filesystem_entry(subtitle, video_paths=video_paths)
+                subtitle.available_in_vfs = False
+
+        riven_vfs.add(item)
+        item.store_state()
+
     def _update_attributes(
         self,
         item: Movie | Episode,
@@ -864,6 +937,7 @@ class Downloader(Runner[None, DownloaderBase]):
         download_result: DownloadedTorrent,
         service: DownloaderBase | None = None,
         file_data: ParsedData | None = None,
+        keep_existing: bool = False,
     ) -> None:
         """
         Update the media item's active stream and filesystem entries using a debrid file from a completed download.
@@ -918,14 +992,26 @@ class Downloader(Runner[None, DownloaderBase]):
                 provider_download_id=str(download_result.info.id),
                 file_size=debrid_file.filesize,
                 media_metadata=media_metadata,
+                stream_infohash=download_result.infohash,
+                is_active=not keep_existing,
             )
 
             # Populate library profiles
             entry.library_profiles = library_profiles
 
-            # Clear existing entries and add the new one
-            item.filesystem_entries.clear()
-            item.filesystem_entries.append(entry)
+            if keep_existing:
+                # This is a candidate release fetched in the background: keep
+                # the currently active entry as a downloaded alternate rather
+                # than discarding it, and make the new one active.
+                for existing in item.filesystem_entries:
+                    existing.is_active = False
+
+                item.filesystem_entries.append(entry)
+                item.downloading_stream_hash = None
+            else:
+                # Clear existing entries and add the new one
+                item.filesystem_entries.clear()
+                item.filesystem_entries.append(entry)
 
             logger.debug(
                 f"Created MediaEntry for {item.log_string} with original_filename={debrid_file.filename}"

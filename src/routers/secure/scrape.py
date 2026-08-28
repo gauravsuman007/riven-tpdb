@@ -53,6 +53,7 @@ from program.settings import settings_manager
 from program.utils.request import SmartSession
 from program.settings.models import RTNSettingsModel
 from program.types import Event
+from program.utils.time import utcnow
 from program.utils.torrent import extract_infohash
 
 from ..models.shared import MessageResponse
@@ -77,7 +78,16 @@ class Stream(BaseModel):
 class ScrapeStreamEvent(BaseModel):
     """Event model for SSE streaming scrape results."""
 
-    event: Literal["start", "progress", "streams", "complete", "error"]
+    # "error" is fatal -- ends the whole scrape (e.g. "Item not found").
+    # "service_error" is scoped to one scraper: it raised (network error, bad
+    # config, timeout) rather than genuinely finding nothing, and the other
+    # services' results still arrive normally. Before this event existed, a
+    # scraper failure and a real empty result were indistinguishable -- both
+    # showed as "0 streams found" with no way to tell a broken indexer from a
+    # quiet one.
+    event: Literal[
+        "start", "progress", "streams", "complete", "error", "service_error"
+    ]
     service: str | None = None
     message: str | None = None
     streams: dict[str, Stream] | None = None
@@ -573,7 +583,7 @@ def resolve_media_item(
                     {
                         "tpdb_id": tpdb_id,
                         "requested_by": "riven",
-                        "requested_at": datetime.now(),
+                        "requested_at": utcnow(),
                     }
                 )
             elif tmdb_id and media_type == "movie":
@@ -581,7 +591,7 @@ def resolve_media_item(
                     {
                         "tmdb_id": tmdb_id,
                         "requested_by": "riven",
-                        "requested_at": datetime.now(),
+                        "requested_at": utcnow(),
                     }
                 )
             elif tvdb_id and media_type == "tv":
@@ -589,7 +599,7 @@ def resolve_media_item(
                     {
                         "tvdb_id": tvdb_id,
                         "requested_by": "riven",
-                        "requested_at": datetime.now(),
+                        "requested_at": utcnow(),
                     }
                 )
             elif imdb_id:
@@ -598,7 +608,7 @@ def resolve_media_item(
                         "imdb_id": imdb_id,
                         "tvdb_id": tvdb_id,
                         "requested_by": "riven",
-                        "requested_at": datetime.now(),
+                        "requested_at": utcnow(),
                     }
                 )
 
@@ -837,10 +847,24 @@ def scrape_item(
                             items_to_scrape = [item]  # Fallback if no seasons
 
                     for target_item in items_to_scrape:
-                        for service_name, parsed_streams in scraper.scrape_streaming(
-                            target_item, manual=True
-                        ):
+                        for (
+                            service_name,
+                            parsed_streams,
+                            service_error,
+                        ) in scraper.scrape_streaming(target_item, manual=True):
                             services_completed += 1
+
+                            if service_error:
+                                error_event = ScrapeStreamEvent(
+                                    event="service_error",
+                                    service=service_name,
+                                    message=service_error,
+                                    services_completed=services_completed,
+                                    total_services=total_services * len(items_to_scrape),
+                                )
+                                yield f"data: {error_event.model_dump_json()}\n\n"
+                                continue
+
                             new_streams: dict[str, Stream] = {}
 
                             # Streaming mode is the one the UI uses, so this is
@@ -1019,7 +1043,7 @@ def queue_release(
         # requested, so it exists only as a transient Movie built from the
         # cached entry. It has to be a row before a stream can point at it.
         if item.id is None:
-            item.requested_at = item.requested_at or datetime.now()
+            item.requested_at = item.requested_at or utcnow()
             item.requested_by = item.requested_by or "manual_scrape"
             item.store_state()
             session.add(item)

@@ -19,6 +19,8 @@ no TPDB lookup to be actionable. It is requestable the moment it is cached.
 
 from datetime import datetime
 
+from program.utils.time import utcnow
+
 from loguru import logger
 from sqlalchemy import select
 
@@ -155,7 +157,7 @@ class BrochureService:
                 if external_id not in fresh and entry.media_item_id is None:
                     session.delete(entry)
 
-            collection.refreshed_at = datetime.now()
+            collection.refreshed_at = utcnow()
             collection.name = name
             collection.description = description
             session.commit()
@@ -296,7 +298,7 @@ class BrochureService:
                     # storefront's own metadata, and demoting it to
                     # `unmatched` would make `actionable` false and take away
                     # a title that works.
-                    entry.matched_at = datetime.now()
+                    entry.matched_at = utcnow()
 
                 # Per entry, for the same reason as enrichment: a batch is
                 # minutes of rate-limited work to lose on a crash.

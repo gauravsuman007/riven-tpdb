@@ -36,11 +36,13 @@ class FilesystemEntry(Base):
     )
 
     created_at: Mapped[datetime] = mapped_column(
-        sqlalchemy.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
+        sqlalchemy.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
     )
 
     updated_at: Mapped[datetime] = mapped_column(
-        sqlalchemy.DateTime,
+        sqlalchemy.DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
@@ -49,6 +51,14 @@ class FilesystemEntry(Base):
     # Availability flag: set to True once added to the VFS
     available_in_vfs: Mapped[bool] = mapped_column(
         sqlalchemy.Boolean, default=False, nullable=False
+    )
+
+    # Whether this is the entry RivenVFS currently serves for its MediaItem.
+    # A candidate-release re-download keeps the previously-downloaded entry
+    # around with is_active=False instead of deleting it, so switching back
+    # to it later doesn't require re-fetching.
+    is_active: Mapped[bool] = mapped_column(
+        sqlalchemy.Boolean, default=True, nullable=False
     )
 
     # Foreign key to MediaItem (many FilesystemEntries can belong to one MediaItem)
@@ -91,5 +101,6 @@ class FilesystemEntry(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "available_in_vfs": self.available_in_vfs,
+            "is_active": self.is_active,
             "media_item_id": self.media_item_id,
         }

@@ -2,6 +2,8 @@ import threading
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+
+from program.utils.time import utcnow
 from queue import Queue, Empty
 
 
@@ -99,7 +101,7 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
                     f"Failed scraping after {item.failed_attempts}/{self.max_failed_attempts} tries with no new streams: {item.log_string}"
                 )
 
-        item.set("scraped_at", datetime.now())
+        item.set("scraped_at", utcnow())
         item.set("scraped_times", item.scraped_times + 1)
 
         yield RunnerResult(media_items=[item])
@@ -206,7 +208,7 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
         self,
         item: MediaItem,
         manual: bool = False,
-    ) -> Generator[tuple[str, dict[str, Stream]], None, None]:
+    ) -> Generator[tuple[str, dict[str, Stream], str | None], None, None]:
         """Scrape an item and yield results incrementally as each scraper finishes.
 
         Args:
@@ -214,9 +216,15 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
             manual: If True, bypass content filters for manual scraping.
 
         Yields:
-            Tuples of (service_name, parsed_streams_dict) as each service completes.
+            Tuples of (service_name, parsed_streams_dict, error) as each
+            service completes. `error` is the exception message when the
+            service raised outright -- distinct from an empty dict, which
+            means the service ran fine and genuinely found nothing. Before
+            this, both cases looked identical to a caller: a scraper that was
+            actually unreachable (bad URL, auth failure, timeout) reported
+            "0 streams," indistinguishable from a real empty result.
         """
-        results_queue: Queue[tuple[str, dict[str, ScrapeResult]]] = Queue()
+        results_queue: Queue[tuple[str, dict[str, ScrapeResult], str | None]] = Queue()
         all_raw_results = dict[str, ScrapeResult]()
         results_lock = threading.RLock()
 
@@ -226,13 +234,10 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
             """Run a single service and put results in the queue."""
             try:
                 service_results = svc.run(item)
-                if service_results:
-                    results_queue.put((svc.key, service_results))
-                else:
-                    results_queue.put((svc.key, {}))
+                results_queue.put((svc.key, service_results or {}, None))
             except Exception as e:
                 logger.error(f"Error running {svc.key}: {e}")
-                results_queue.put((svc.key, {}))
+                results_queue.put((svc.key, {}, str(e)))
 
         services = self._eligible_services(item)
 
@@ -257,7 +262,9 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
 
             while services_completed < total_services:
                 try:
-                    service_name, raw_results = results_queue.get(timeout=60.0)
+                    service_name, raw_results, service_error = results_queue.get(
+                        timeout=60.0
+                    )
                     services_completed += 1
 
                     if raw_results:
@@ -270,9 +277,9 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
                             manual=manual,
                         )
 
-                        yield (service_name, parsed_streams)
+                        yield (service_name, parsed_streams, None)
                     else:
-                        yield (service_name, {})
+                        yield (service_name, {}, service_error)
 
                 except Empty:
                     logger.warning("Timeout waiting for scraper results")
@@ -293,7 +300,7 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
 
         is_scrapeable = (
             not item.scraped_at
-            or (datetime.now() - item.scraped_at).total_seconds() > scrape_time
+            or (utcnow() - item.scraped_at).total_seconds() > scrape_time
         )
 
         if not is_scrapeable:

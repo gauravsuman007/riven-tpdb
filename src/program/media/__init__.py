@@ -1,6 +1,6 @@
 from .item import Episode, MediaItem, Movie, Season, Show
 from .collection import Collection, CollectionEntry
-from .studio import Studio
+from .studio import Studio, StudioRowEntry
 from .state import States
 from .filesystem_entry import FilesystemEntry
 from .media_entry import MediaEntry
@@ -15,6 +15,7 @@ __all__ = [
     "Collection",
     "CollectionEntry",
     "Studio",
+    "StudioRowEntry",
     "Episode",
     "MediaItem",
     "Movie",

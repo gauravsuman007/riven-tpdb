@@ -17,6 +17,7 @@ from loguru import logger
 from sqlalchemy import select
 
 from program.core.runner import MediaItemGenerator, RunnerResult
+from program.utils.time import utcnow
 from program.db.db import db_session
 from program.media.collection import CollectionEntry
 from program.media.item import MediaItem, Movie
@@ -108,7 +109,7 @@ def build_movie(entry: CollectionEntry) -> Movie:
             "performers": list(entry.performers or []),
             "poster_path": entry.poster_path,
             "requested_by": "adultempire",
-            "requested_at": datetime.now(),
+            "requested_at": utcnow(),
         }
     )
 
@@ -142,7 +143,7 @@ class AdultEmpireIndexer(BaseIndexer):
 
         if item.type == "mediaitem":
             indexed = self.copy_items(item, build_movie(entry))
-            indexed.indexed_at = datetime.now()
+            indexed.indexed_at = utcnow()
 
             if log_msg:
                 logger.debug(
@@ -155,7 +156,7 @@ class AdultEmpireIndexer(BaseIndexer):
 
         if isinstance(item, Movie):
             self._apply(item, entry)
-            item.indexed_at = datetime.now()
+            item.indexed_at = utcnow()
             yield RunnerResult(media_items=[item])
 
     @staticmethod

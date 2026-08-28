@@ -19,6 +19,8 @@ no error to notice.
 
 from datetime import datetime
 
+from program.utils.time import utcnow
+
 from kink import di
 from loguru import logger
 
@@ -158,7 +160,7 @@ def enrich_entry(entry: CollectionEntry) -> bool:
     entry.tpdb_kind = match.kind
     entry.match_score = match.score
     entry.match_state = MATCH_MATCHED
-    entry.matched_at = datetime.now()
+    entry.matched_at = utcnow()
 
     if match.poster:
         entry.poster_path = match.poster

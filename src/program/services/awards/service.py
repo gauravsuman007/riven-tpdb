@@ -19,6 +19,8 @@ thousands of titles into the library.
 
 from datetime import datetime
 
+from program.utils.time import utcnow
+
 from kink import di
 from loguru import logger
 from sqlalchemy import func, select, update
@@ -160,7 +162,7 @@ class AwardsService:
                     )
                     added += 1
 
-                collection.refreshed_at = datetime.now()
+                collection.refreshed_at = utcnow()
 
             removed = self._prune_nominees(session) if not keep_nominees else 0
             demoted = self._prune_person_awards(session)
@@ -295,7 +297,7 @@ class AwardsService:
                     logger.error(f"Failed to resolve {entry.title!r}: {exc}")
                     match = None
 
-                entry.matched_at = datetime.now()
+                entry.matched_at = utcnow()
 
                 if match is None:
                     entry.match_state = MATCH_UNMATCHED
@@ -475,7 +477,7 @@ class AwardsService:
                     {
                         "tpdb_id": entry.tpdb_id,
                         "requested_by": "awards",
-                        "requested_at": datetime.now(),
+                        "requested_at": utcnow(),
                     }
                 )
 

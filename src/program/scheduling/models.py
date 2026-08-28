@@ -9,6 +9,7 @@ from sqlalchemy import Index
 from sqlalchemy.orm import Mapped, mapped_column
 
 from program.db.base_model import Base
+from program.utils.time import utcnow
 
 
 class ScheduledStatus(str, Enum):
@@ -43,7 +44,7 @@ class ScheduledTask(Base):
         default=ScheduledStatus.Pending,
     )
     created_at: Mapped[datetime] = mapped_column(
-        sqlalchemy.DateTime, default=datetime.now
+        sqlalchemy.DateTime(timezone=True), default=utcnow
     )
     executed_at: Mapped[datetime | None]
     reason: Mapped[str | None]

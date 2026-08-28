@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
+
+from program.utils.time import utcnow
 from typing import TYPE_CHECKING, TypedDict
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -19,7 +21,7 @@ from sqlalchemy.orm import Session
 from program.db import db_functions
 from program.db.db import db_session, vacuum_and_analyze_index_maintenance
 from program.media.item import Episode, MediaItem, Movie, Show
-from program.media.studio import Studio
+from program.media.studio import Studio, StudioRowEntry
 from program.media.state import States
 from program.scheduling.models import ScheduledStatus, ScheduledTask
 from program.settings import settings_manager
@@ -78,6 +80,7 @@ class ProgramScheduler:
         # one-off when the weekly studio cron would otherwise leave the
         # directory empty until its first firing.
         self._kickoff_studios_if_empty()
+        self._kickoff_studio_rows_if_needed()
         self.scheduler.start()
 
     def stop(self) -> None:
@@ -144,6 +147,16 @@ class ProgramScheduler:
                 # several minutes of crawling for data that changes about
                 # never.
                 scheduled_functions[self._sync_studios] = {
+                    "cron": {
+                        "day_of_week": brochure.studio_sync_day,
+                        "hour": brochure.studio_sync_hour,
+                        "minute": 0,
+                    }
+                }
+                # Same weekly slot as the directory sync -- see
+                # StudioService.sync_rows for why this is scoped to saved
+                # studios and stays cheap.
+                scheduled_functions[self._sync_studio_rows] = {
                     "cron": {
                         "day_of_week": brochure.studio_sync_day,
                         "hour": brochure.studio_sync_hour,
@@ -295,6 +308,11 @@ class ProgramScheduler:
                 "hour": brochure.studio_sync_hour,
                 "minute": 0,
             }
+            cron_wanted[self._sync_studio_rows] = {
+                "day_of_week": brochure.studio_sync_day,
+                "hour": brochure.studio_sync_hour,
+                "minute": 0,
+            }
 
         managed = (
             self._sync_awards,
@@ -327,7 +345,7 @@ class ProgramScheduler:
                 self.scheduler.remove_job(job_id)
                 logger.debug(f"Removed scheduled job {job_id}")
 
-        for func in (self._sync_studios,):
+        for func in (self._sync_studios, self._sync_studio_rows):
             job_id = func.__name__
 
             if func in cron_wanted:
@@ -349,6 +367,7 @@ class ProgramScheduler:
                 # is nothing to show yet. On a later settings save the
                 # directory is already populated and nothing is re-crawled.
                 self._kickoff_studios_if_empty()
+                self._kickoff_studio_rows_if_needed()
             elif self.scheduler.get_job(job_id) is not None:
                 self.scheduler.remove_job(job_id)
                 logger.debug(f"Removed scheduled job {job_id}")
@@ -454,6 +473,56 @@ class ProgramScheduler:
         except Exception as exc:
             logger.error(f"TPDB backfill failed: {exc}")
 
+    def _kickoff_studio_rows_if_needed(self) -> None:
+        """Cache rows once, now, for any saved studio that has none yet.
+
+        Covers both a fresh install and the more common case: a studio saved
+        between weekly runs, which would otherwise show no rows until the
+        following Sunday. A studio that already has cached rows is left
+        alone, so this never re-crawls a studio the weekly job already
+        covered.
+        """
+
+        brochure = settings_manager.settings.content.brochure
+
+        if not brochure.enabled or not brochure.studios_enabled:
+            return
+
+        if self.scheduler is None:
+            return
+
+        try:
+            with db_session() as session:
+                needs_rows = (
+                    session.execute(
+                        select(Studio.id)
+                        .where(Studio.saved.is_(True))
+                        .where(
+                            ~Studio.id.in_(
+                                select(StudioRowEntry.studio_id).distinct()
+                            )
+                        )
+                        .limit(1)
+                    ).first()
+                    is not None
+                )
+        except SQLAlchemyError as exc:
+            logger.debug(f"Could not check the studio row cache: {exc}")
+            return
+
+        if not needs_rows:
+            return
+
+        self.scheduler.add_job(
+            self._sync_studio_rows,
+            "date",
+            run_date=datetime.now(),
+            id="_sync_studio_rows_once",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.debug("Scheduled a one-off studio row cache sync for unsynced studios")
+
     def _kickoff_studios_if_empty(self) -> None:
         """Sync the studio directory once, now, if there is nothing in it.
 
@@ -520,6 +589,21 @@ class ProgramScheduler:
         except Exception as exc:
             logger.error(f"Adult Empire studio sync failed: {exc}")
 
+    def _sync_studio_rows(self) -> None:
+        """Refresh cached rows for saved studios. Same weekly slot as the
+        directory sync -- see StudioService.sync_rows for why this is
+        deliberately scoped to saved studios only."""
+
+        service = self._studio_service()
+
+        if not service.initialized:
+            return
+
+        try:
+            service.sync_rows()
+        except Exception as exc:
+            logger.error(f"Studio row cache refresh failed: {exc}")
+
     def _enrich_studios(self) -> None:
         """Attach TPDB logos and descriptions to studios that lack them."""
 
@@ -576,7 +660,7 @@ class ProgramScheduler:
                 session.execute(
                     select(ScheduledTask)
                     .where(ScheduledTask.status == ScheduledStatus.Pending)
-                    .where(ScheduledTask.scheduled_for <= datetime.now())
+                    .where(ScheduledTask.scheduled_for <= utcnow())
                     .order_by(ScheduledTask.scheduled_for.asc())
                 )
                 .unique()
@@ -599,7 +683,7 @@ class ProgramScheduler:
         """
         try:
             with db_session() as session:
-                now = datetime.now()
+                now = utcnow()
                 due_tasks = self._get_pending_scheduled_tasks(session)
                 if not due_tasks:
                     return
@@ -649,12 +733,12 @@ class ProgramScheduler:
                 session,
                 task,
                 ScheduledStatus.Completed,
-                datetime.now(),
+                utcnow(),
             )
         except Exception as e:
             session.rollback()
             self._mark_task_status(
-                session, task, ScheduledStatus.Failed, datetime.now()
+                session, task, ScheduledStatus.Failed, utcnow()
             )
             logger.exception(f"Failed processing ScheduledTask {task.id}: {e}")
 
@@ -725,7 +809,7 @@ class ProgramScheduler:
         """
 
         offset_seconds = settings_manager.settings.indexer.schedule_offset_minutes * 60
-        now = datetime.now()
+        now = utcnow()
 
         try:
             with db_session() as session:

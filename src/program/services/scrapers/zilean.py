@@ -84,10 +84,14 @@ class Zilean(ScraperService[ZileanConfig]):
         except Exception as e:
             if "rate limit" in str(e).lower() or "429" in str(e):
                 logger.debug(f"Zilean rate limit exceeded for item: {item.log_string}")
-            else:
-                logger.exception(f"Zilean exception thrown: {e}")
+                return {}
 
-        return {}
+            logger.exception(f"Zilean exception thrown: {e}")
+
+            # Re-raise so scrapers/__init__.py's run_service_streaming can
+            # surface this as a real failure rather than "0 streams found",
+            # which is what a genuine empty result also looks like.
+            raise
 
     def _build_query_params(self, item: MediaItem) -> Params:
         """Build the query params for the Zilean API"""

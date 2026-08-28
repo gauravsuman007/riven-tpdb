@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Path, Query
 from kink import di
 from loguru import logger
 from pydantic import BaseModel
-from sqlalchemy import Integer, func, select
+from sqlalchemy import Integer, func, or_, select
 
 from program.db.db import db_session
 from program.media.collection import (
@@ -30,6 +30,7 @@ from program.media.item import MediaItem
 from program.services.collections import service as user_collections
 from program.services.recommendations.tpdb_lookup import enrich_entry
 from program.settings import settings_manager
+from program.utils.time import utcnow
 from routers.models.shared import MessageResponse
 
 router = APIRouter(prefix="/collections", tags=["collections"])
@@ -331,7 +332,7 @@ def request_entry(
             {
                 **payload,
                 "requested_by": "collections",
-                "requested_at": datetime.now(),
+                "requested_at": utcnow(),
             }
         )
 
@@ -445,6 +446,32 @@ def get_entry(entry_id: Annotated[int, Path()]) -> CollectionEntryResponse:
 
         if entry is None:
             raise HTTPException(status_code=404, detail="No such entry")
+
+        if entry.media_item_id is None and (entry.tpdb_id or entry.external_id):
+            # Insurance, not the fix: `media_item_id` should already be set by
+            # `_link_collection_entries` (program/db/db_functions.py) once the
+            # title this entry named is actually indexed. This fallback only
+            # covers the narrow window between "indexed" and "linked", or a
+            # future request path that forgets to link -- it must not be the
+            # only thing keeping this page honest. Without either, this
+            # endpoint is the brochure detail page's status source, and a
+            # stale `media_item_id` is exactly the "request never seems to
+            # finish" bug this fixes.
+            conditions = []
+
+            if entry.tpdb_id:
+                conditions.append(MediaItem.tpdb_id == entry.tpdb_id)
+
+            if entry.external_id:
+                conditions.append(MediaItem.adultempire_id == entry.external_id)
+
+            match = session.execute(
+                select(MediaItem.id).where(or_(*conditions))
+            ).scalars().first()
+
+            if match is not None:
+                entry.media_item_id = match
+                session.commit()
 
         states: dict[int, str] = {}
 

@@ -2,14 +2,21 @@
 
 A studio is deliberately *not* a :class:`~program.media.collection.Collection`.
 A collection is a fixed list of titles that a sync rebuilds wholesale; a studio
-is a catalogue that can be sorted several ways, and its rows are read live from
-the storefront rather than stored. Storing them would mean two collections per
-studio times a hundred studios -- twenty thousand rows rebuilt weekly to serve
-a page almost nobody opens.
+is a catalogue that can be sorted several ways, and its rows used to be read
+live from the storefront on every request -- several seconds per page load,
+serialised behind a one-request-a-second courtesy delay.
 
-What is stored is the studio itself, because the list of studios is the part
-that is slow to obtain (three sitemaps plus a TPDB lookup each) and almost
-never changes.
+``StudioRowEntry`` is the one deliberate exception to "never stored": the top
+`N` (default 25) titles of each row, but *only* for studios with ``saved=True``
+-- the two or three a user actually follows, not the full ~1,200-studio
+directory. That bound is what keeps this from becoming the "twenty thousand
+rows rebuilt weekly" outcome the live-read design was built to avoid: capped
+per studio, and only for studios someone opted into. Refreshed weekly
+alongside the directory sync, by :meth:`StudioService.sync_rows`.
+
+What is stored otherwise is the studio itself, because the list of studios is
+the part that is slow to obtain (three sitemaps plus a TPDB lookup each) and
+almost never changes.
 
 ``saved`` is what the brochure's studios section lists. The full hundred is a
 directory to pick from, not a shelf: showing all of them would bury the two or
@@ -23,6 +30,7 @@ import sqlalchemy
 from sqlalchemy.orm import Mapped, mapped_column
 
 from program.db.base_model import Base
+from program.utils.time import utcnow
 
 
 class Studio(Base):
@@ -64,20 +72,56 @@ class Studio(Base):
         sqlalchemy.Boolean, default=False, index=True, server_default="false"
     )
     saved_at: Mapped[datetime | None] = mapped_column(
-        sqlalchemy.DateTime, nullable=True
+        sqlalchemy.DateTime(timezone=True), nullable=True
     )
 
     created_at: Mapped[datetime] = mapped_column(
-        sqlalchemy.DateTime, default=datetime.now
+        sqlalchemy.DateTime(timezone=True), default=utcnow
     )
     refreshed_at: Mapped[datetime | None] = mapped_column(
-        sqlalchemy.DateTime, nullable=True
+        sqlalchemy.DateTime(timezone=True), nullable=True
     )
     # Separate from refreshed_at so a studio TPDB has never heard of is not
     # re-looked-up on every weekly sync.
     tpdb_checked_at: Mapped[datetime | None] = mapped_column(
-        sqlalchemy.DateTime, nullable=True
+        sqlalchemy.DateTime(timezone=True), nullable=True
     )
 
     def __repr__(self) -> str:
         return f"<Studio {self.name} ({self.ae_id})>"
+
+
+class StudioRowEntry(Base):
+    """One cached title in one of a saved studio's ranked rows.
+
+    Keyed by ``(studio_id, sort, rank)`` rather than ``(studio_id, sort,
+    product_id)`` -- a rank position is what a weekly refresh overwrites, and
+    two rows for the same studio and sort should never both claim rank 1.
+    """
+
+    __tablename__ = "StudioRowEntry"
+
+    id: Mapped[int] = mapped_column(sqlalchemy.Integer, primary_key=True)
+    studio_id: Mapped[int] = mapped_column(
+        sqlalchemy.ForeignKey("Studio.id", ondelete="CASCADE"), index=True
+    )
+    # "bestseller" / "trending" -- see STUDIO_SORTS in adultempire.py.
+    sort: Mapped[str] = mapped_column(sqlalchemy.String, index=True)
+    rank: Mapped[int] = mapped_column(sqlalchemy.Integer)
+
+    product_id: Mapped[str] = mapped_column(sqlalchemy.String)
+    title: Mapped[str] = mapped_column(sqlalchemy.String)
+    poster: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True)
+
+    refreshed_at: Mapped[datetime] = mapped_column(
+        sqlalchemy.DateTime(timezone=True), default=utcnow
+    )
+
+    __table_args__ = (
+        sqlalchemy.UniqueConstraint(
+            "studio_id", "sort", "rank", name="ux_studio_row_entry_position"
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<StudioRowEntry studio={self.studio_id} {self.sort}#{self.rank}>"

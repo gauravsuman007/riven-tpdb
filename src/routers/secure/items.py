@@ -15,11 +15,14 @@ from program.db import db_functions
 from program.db.db import db_session
 from program.media.filesystem_entry import FilesystemEntry
 from program.media.item import Episode, MediaItem, Movie, Season, Show
+from program.media.models import ActiveStream
+from program.media.stream import Stream
 from program.media.state import States
 from program.settings import settings_manager
 from program.types import Event
 from program.program import Program
 from program.media.models import MediaMetadata
+from program.utils.time import to_iso_utc, utcnow
 
 from ..models.shared import IdListPayload, MessageResponse
 
@@ -406,7 +409,7 @@ async def add_items(
                         {
                             "tmdb_id": id,
                             "requested_by": "riven",
-                            "requested_at": datetime.now(),
+                            "requested_at": utcnow(),
                         }
                     )
 
@@ -427,7 +430,7 @@ async def add_items(
                         {
                             "tvdb_id": id,
                             "requested_by": "riven",
-                            "requested_at": datetime.now(),
+                            "requested_at": utcnow(),
                         }
                     )
                     if item:
@@ -446,7 +449,7 @@ async def add_items(
                         {
                             "tpdb_id": id,
                             "requested_by": "riven",
-                            "requested_at": datetime.now(),
+                            "requested_at": utcnow(),
                         }
                     )
                     if item:
@@ -521,6 +524,12 @@ class DownloadActivityResponse(BaseModel):
         list[DownloadActivityEntry],
         Field(description="Most recently completed items, newest first"),
     ]
+    page: Annotated[int, Field(description="Current page number, applies to `active`")]
+    limit: Annotated[int, Field(description="Rows per page, applies to `active`")]
+    total_active: Annotated[
+        int, Field(description="Total in-flight rows matching the filter, across all pages")
+    ]
+    total_pages: Annotated[int, Field(description="Total pages of `active` rows")]
 
 
 def _activity_entry(item: MediaItem) -> DownloadActivityEntry:
@@ -540,13 +549,13 @@ def _activity_entry(item: MediaItem) -> DownloadActivityEntry:
         state=state.name if state else States.Unknown.name,
         tpdb_id=item.tpdb_id,
         poster_path=item.poster_path,
-        requested_at=item.requested_at.isoformat() if item.requested_at else None,
-        scraped_at=item.scraped_at.isoformat() if item.scraped_at else None,
+        requested_at=to_iso_utc(item.requested_at),
+        scraped_at=to_iso_utc(item.scraped_at),
         scraped_times=item.scraped_times or 0,
         stream_count=len(item.streams or []),
         blacklisted_count=len(item.blacklisted_streams or []),
         file_size=file_size,
-        completed_at=max(created).isoformat() if created else None,
+        completed_at=to_iso_utc(max(created)) if created else None,
     )
 
 
@@ -562,6 +571,30 @@ async def get_download_activity(
         int,
         Query(description="Maximum rows per section", ge=1, le=100),
     ] = 25,
+    page: Annotated[
+        int,
+        Query(description="Page number, applies to `active` only", ge=1),
+    ] = 1,
+    states: Annotated[
+        list[States | StatesFilter] | None,
+        Query(
+            description="Restrict `active` to these states. Default is the "
+            "usual in-flight set (Requested/Indexed/Scraped/Downloaded/"
+            "Symlinked)."
+        ),
+    ] = None,
+    search: Annotated[
+        str | None,
+        Query(description="Filter `active` by title, case-insensitive"),
+    ] = None,
+    sort: Annotated[
+        list[SortOrderEnum] | None,
+        Query(
+            description="Sort order(s) for `active`. Multiple sorts allowed "
+            "but only one per type (title or date). Defaults to oldest "
+            "request first."
+        ),
+    ] = None,
 ) -> DownloadActivityResponse:
     """The two halves of "what is my downloader doing".
 
@@ -570,18 +603,59 @@ async def get_download_activity(
     has reached and how many scrape passes it has taken to get there. Items that
     have been scraped repeatedly without a usable stream are the ones actually
     stuck, and this makes that legible.
+
+    `recent` is not paginated/filtered -- it is a fixed-size "what just
+    finished" strip, not a list someone manages.
     """
 
+    active_states = (
+        [s for s in states if isinstance(s, States)]
+        if states and StatesFilter.All not in states
+        else list(_ACTIVE_STATES)
+    ) or list(_ACTIVE_STATES)
+
+    active_query = select(MediaItem).where(MediaItem.last_state.in_(active_states))
+
+    if search:
+        active_query = active_query.where(
+            func.lower(MediaItem.title).like(f"%{search.lower()}%")
+        )
+
+    if sort:
+        sort_types = set[str]()
+
+        for sort_criterion in sort:
+            sort_type = sort_criterion.sort_type
+
+            if sort_type in sort_types:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Multiple {sort_type} sort criteria provided. Only one sort per type is allowed.",
+                )
+
+            sort_types.add(sort_type)
+
+        for sort_criterion in sort:
+            if sort_criterion == SortOrderEnum.TITLE_ASC:
+                active_query = active_query.order_by(MediaItem.title.asc())
+            elif sort_criterion == SortOrderEnum.TITLE_DESC:
+                active_query = active_query.order_by(MediaItem.title.desc())
+            elif sort_criterion == SortOrderEnum.DATE_ASC:
+                active_query = active_query.order_by(MediaItem.requested_at.asc())
+            elif sort_criterion == SortOrderEnum.DATE_DESC:
+                active_query = active_query.order_by(MediaItem.requested_at.desc())
+    else:
+        # Oldest request first: whatever has been waiting longest is the
+        # thing worth looking at.
+        active_query = active_query.order_by(MediaItem.requested_at.asc())
+
     with db_session() as session:
+        total_active = session.execute(
+            select(func.count()).select_from(active_query.subquery())
+        ).scalar_one()
+
         active = (
-            session.execute(
-                select(MediaItem)
-                .where(MediaItem.last_state.in_(_ACTIVE_STATES))
-                # Oldest request first: whatever has been waiting longest is
-                # the thing worth looking at.
-                .order_by(MediaItem.requested_at.asc())
-                .limit(limit)
-            )
+            session.execute(active_query.offset((page - 1) * limit).limit(limit))
             .unique()
             .scalars()
             .all()
@@ -614,9 +688,15 @@ async def get_download_activity(
             .all()
         )
 
+        total_pages = (total_active + limit - 1) // limit if total_active else 1
+
         return DownloadActivityResponse(
             active=[_activity_entry(item) for item in active],
             recent=[_activity_entry(item) for item in recent],
+            page=page,
+            limit=limit,
+            total_active=total_active,
+            total_pages=total_pages,
         )
 
 
@@ -673,6 +753,16 @@ class LibraryStream(BaseModel):
     ]
     is_blacklisted: Annotated[
         bool, Field(description="Whether this release was rejected and will be skipped")
+    ]
+    is_downloaded: Annotated[
+        bool,
+        Field(
+            description="Whether this release has a downloaded file, active or kept as an alternate"
+        ),
+    ]
+    is_downloading: Annotated[
+        bool,
+        Field(description="Whether this release is being fetched in the background"),
     ]
 
 
@@ -762,7 +852,13 @@ def _library_streams(item: MediaItem) -> list[LibraryStream]:
 
     active_hash = item.active_stream.infohash if item.active_stream else None
     preferred_hash = item.preferred_stream_hash
+    downloading_hash = item.downloading_stream_hash
     blacklisted = {s.infohash for s in item.blacklisted_streams or []}
+    downloaded_hashes = {
+        entry.stream_infohash
+        for entry in item.filesystem_entries or []
+        if getattr(entry, "stream_infohash", None)
+    }
 
     # The two collections are meant to be disjoint, but a stream that appears
     # in both would otherwise be rendered twice.
@@ -780,7 +876,11 @@ def _library_streams(item: MediaItem) -> list[LibraryStream]:
     # retry, and the pinned or downloaded one has to be visible to be changed.
     kept = streams[:STREAM_LIST_LIMIT]
     kept_hashes = {stream.infohash for stream in kept}
-    must_show = blacklisted | {h for h in (active_hash, preferred_hash) if h}
+    must_show = (
+        blacklisted
+        | downloaded_hashes
+        | {h for h in (active_hash, preferred_hash, downloading_hash) if h}
+    )
 
     kept.extend(
         stream
@@ -807,6 +907,10 @@ def _library_streams(item: MediaItem) -> list[LibraryStream]:
             is_active=bool(active_hash and stream.infohash == active_hash),
             is_preferred=bool(preferred_hash and stream.infohash == preferred_hash),
             is_blacklisted=stream.infohash in blacklisted,
+            is_downloaded=stream.infohash in downloaded_hashes,
+            is_downloading=bool(
+                downloading_hash and stream.infohash == downloading_hash
+            ),
         )
         for stream in kept
     ]
@@ -1428,9 +1532,23 @@ async def get_item_streams(
             status_code=status.HTTP_404_NOT_FOUND, detail="Item not found"
         )
 
+    downloaded_hashes = {
+        entry.stream_infohash
+        for entry in item.filesystem_entries
+        if getattr(entry, "stream_infohash", None)
+    }
+    active_hash = item.active_stream.infohash if item.active_stream else None
+
+    def _annotate(stream: Stream) -> dict[str, Any]:
+        data = stream.to_dict()
+        data["is_active"] = stream.infohash == active_hash
+        data["is_downloaded"] = stream.infohash in downloaded_hashes
+        data["is_downloading"] = stream.infohash == item.downloading_stream_hash
+        return data
+
     return StreamsResponse(
         message=f"Retrieved streams for item {item_id}",
-        streams=[stream.to_dict() for stream in item.streams],
+        streams=[_annotate(stream) for stream in item.streams],
         blacklisted_streams=[stream.to_dict() for stream in item.blacklisted_streams],
     )
 
@@ -1510,17 +1628,43 @@ async def select_stream(
                 message="That release is already the one downloaded",
             )
 
+        # If this stream was already downloaded as a previous active/candidate
+        # entry, just switch back to it instead of re-downloading.
+        existing_entry = next(
+            (
+                entry
+                for entry in item.filesystem_entries
+                if getattr(entry, "stream_infohash", None) == infohash
+            ),
+            None,
+        )
+
+        has_active_download = item.active_stream is not None and item.media_entry is not None
+        previously_mounted_entry = item.media_entry if existing_entry is not None else None
+
         def mutation(i: MediaItem, s: Session):
             i.preferred_stream_hash = infohash
 
             if stream in (i.blacklisted_streams or []):
                 i.unblacklist_stream(stream)
 
-            # Drop the current download so the downloader runs again. Note this
-            # is deliberately NOT MediaItem.reset(): reset clears `streams`,
-            # which would throw away the candidate list the user just picked
-            # from and force a fresh scrape. Only the download is undone here.
-            _clear_download(i)
+            if existing_entry is not None:
+                # Already downloaded: flip which entry is active, no re-fetch.
+                for entry in i.filesystem_entries:
+                    entry.is_active = entry is existing_entry
+                i.active_stream = ActiveStream(
+                    infohash=infohash,
+                    id=getattr(existing_entry, "provider_download_id", None) or infohash,
+                )
+                i.downloading_stream_hash = None
+            elif has_active_download:
+                # Something is already playing: fetch this candidate in the
+                # background and switch once it succeeds, keeping the current
+                # download untouched in the meantime.
+                i.downloading_stream_hash = infohash
+            else:
+                # Nothing downloaded yet: original behavior, refetch inline.
+                _clear_download(i)
 
         apply_item_mutation(
             di[Program],
@@ -1532,7 +1676,42 @@ async def select_stream(
 
         session.commit()
 
+        if existing_entry is not None:
+            from program.program import riven
+
+            riven_vfs = riven.services.filesystem.riven_vfs if riven.services else None
+
+            if riven_vfs and previously_mounted_entry is not None:
+                # Unregister the entry that's actually still mounted (not
+                # `item.media_entry`, which already reflects the new active
+                # flag post-commit) before mounting the newly-active one.
+                if previously_mounted_entry is not existing_entry:
+                    video_paths = riven_vfs._unregister_filesystem_entry(
+                        previously_mounted_entry
+                    )
+                    previously_mounted_entry.available_in_vfs = False
+
+                    for subtitle in item.subtitles:
+                        riven_vfs._unregister_filesystem_entry(
+                            subtitle, video_paths=video_paths
+                        )
+                        subtitle.available_in_vfs = False
+
+                riven_vfs.add(item)
+                item.store_state()
+                session.commit()
+
+            return MessageResponse(
+                message=f"Switched playback to the already-downloaded release {stream.raw_title}",
+            )
+
         di[Program].em.add_event(Event("Downloader", item_id))
+
+        if has_active_download:
+            return MessageResponse(
+                message=f"Downloading {stream.raw_title} in the background; "
+                "playback will switch to it once it's ready",
+            )
 
         return MessageResponse(
             message=f"Selected {stream.raw_title}; it will be downloaded shortly",
@@ -1844,6 +2023,74 @@ async def unpause_items(
         message="Successfully unpaused items.",
         ids=parsed_ids,
     )
+
+
+def _active_download_ids(states: list[States] | None = None) -> list[int]:
+    """Ids of every item currently in the downloads dashboard's `active` set.
+
+    Shared by the queue-wide endpoints below so "pause everything visible" acts
+    on the same set the dashboard is showing, computed fresh rather than
+    trusting whatever the client last fetched.
+    """
+
+    with db_session() as session:
+        return list(
+            session.execute(
+                select(MediaItem.id).where(
+                    MediaItem.last_state.in_(states or _ACTIVE_STATES)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+@router.post(
+    "/downloads/pause_all",
+    summary="Pause All In-Flight Downloads",
+    description="Pause every item currently in the downloads dashboard's active set",
+    operation_id="pause_all_downloads",
+    response_model=PauseResponse,
+)
+async def pause_all_downloads() -> PauseResponse:
+    ids = _active_download_ids()
+
+    if not ids:
+        return PauseResponse(message="Nothing in flight to pause.", ids=[])
+
+    return await pause_items(IdListPayload(ids=[str(i) for i in ids]))
+
+
+@router.post(
+    "/downloads/resume_all",
+    summary="Resume All Paused Downloads",
+    description="Resume every item currently paused",
+    operation_id="resume_all_downloads",
+    response_model=PauseResponse,
+)
+async def resume_all_downloads() -> PauseResponse:
+    ids = _active_download_ids(states=[States.Paused])
+
+    if not ids:
+        return PauseResponse(message="Nothing paused to resume.", ids=[])
+
+    return await unpause_items(IdListPayload(ids=[str(i) for i in ids]))
+
+
+@router.delete(
+    "/downloads/cancel_all",
+    summary="Cancel All In-Flight Downloads",
+    description="Remove every item currently in the downloads dashboard's active set",
+    operation_id="cancel_all_downloads",
+    response_model=RemoveResponse,
+)
+async def cancel_all_downloads() -> RemoveResponse:
+    ids = _active_download_ids()
+
+    if not ids:
+        return RemoveResponse(message="Nothing in flight to cancel.", ids=[])
+
+    return await remove_item(IdListPayload(ids=[str(i) for i in ids]))
 
 
 class ReindexPayload(BaseModel):

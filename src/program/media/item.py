@@ -24,6 +24,7 @@ from program.db.base_model import Base
 from program.media.media_entry import MediaEntry
 from program.apis.tvdb_api import SeriesRelease
 from program.media.models import ActiveStream
+from program.utils.time import utcnow
 
 from .stream import Stream
 
@@ -74,8 +75,8 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         mapped_column(nullable=False)
     )
     requested_at: Mapped[datetime | None] = mapped_column(
-        sqlalchemy.DateTime,
-        default_factory=datetime.now,
+        sqlalchemy.DateTime(timezone=True),
+        default_factory=utcnow,
     )
     requested_by: Mapped[str | None]
     requested_id: Mapped[int | None]
@@ -89,6 +90,12 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
     # A release the user pinned from the detail page. The downloader tries it
     # ahead of its own quality ordering; None means "use the ordering".
     preferred_stream_hash: Mapped[str | None] = mapped_column(
+        sqlalchemy.String, default=None
+    )
+    # Set while a candidate release is being fetched in the background as a
+    # replacement for an already-downloaded active_stream. None the rest of
+    # the time; cleared once the fetch succeeds or is abandoned.
+    downloading_stream_hash: Mapped[str | None] = mapped_column(
         sqlalchemy.String, default=None
     )
     streams: Mapped[list[Stream]] = relationship(
@@ -178,7 +185,7 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         if item is None:
             return
 
-        self.requested_at = item.get("requested_at", datetime.now())
+        self.requested_at = item.get("requested_at", utcnow())
         self.requested_by = item.get("requested_by")
         self.requested_id = item.get("requested_id")
 
@@ -367,7 +374,7 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
 
         try:
             # Defensive: avoid scheduling in the past
-            if run_at <= datetime.now():
+            if run_at <= utcnow():
                 logger.debug(
                     f"Refusing to schedule past/now task for {self.log_string} at {run_at.isoformat()} [{task_type}]"
                 )
@@ -409,9 +416,11 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         if not self.aired_at:
             return False
 
-        now = datetime.now()
+        now = utcnow()
         if not isinstance(self.aired_at, datetime):  # pyright: ignore[reportUnnecessaryIsInstance]
             now = now.date()
+        elif self.aired_at.tzinfo is None:
+            now = now.replace(tzinfo=None)
         return self.aired_at <= now
 
     @property
@@ -637,21 +646,31 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
     @property
     def filesystem_entry(self) -> "FilesystemEntry | None":
         """
-        Return the first filesystem entry for this media item to preserve backward compatibility.
+        Return the filesystem entry RivenVFS should serve for this media item.
+
+        An item can hold more than one entry when a candidate-release
+        re-download kept the previous file as an available alternate; the
+        active one (`is_active=True`) wins. Falls back to the first entry if
+        none are flagged active (rows written before this flag existed).
 
         Returns:
-            The first `FilesystemEntry` instance if any exist, otherwise `None`.
+            The active `FilesystemEntry` instance if any exist, otherwise `None`.
         """
 
-        return self.filesystem_entries[0] if self.filesystem_entries else None
+        if not self.filesystem_entries:
+            return None
+
+        active = [entry for entry in self.filesystem_entries if entry.is_active]
+
+        return active[0] if active else self.filesystem_entries[0]
 
     @property
     def media_entry(self) -> "MediaEntry | None":
         """
-        Return the first MediaEntry for this media item, if any.
+        Return the active MediaEntry for this media item, if any.
 
         Returns:
-            The first `MediaEntry` instance if any exist, otherwise `None`.
+            The active `MediaEntry` instance if any exist, otherwise `None`.
         """
 
         media_entries = [
@@ -661,7 +680,9 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         if not media_entries:
             return None
 
-        return media_entries[0]
+        active = [entry for entry in media_entries if entry.is_active]
+
+        return active[0] if active else media_entries[0]
 
     @property
     def available_in_vfs(self) -> bool:

@@ -13,9 +13,11 @@ from sqlalchemy import func, inspect, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from program.media.collection import CollectionEntry
 from program.media.state import States
 from program.core.runner import MediaItemGenerator
 from program.db.base_model import get_base_metadata
+from program.utils.time import utcnow
 
 from .db import db, db_session
 
@@ -294,7 +296,7 @@ def create_calendar(session: Session | None = None) -> dict[int, dict[str, Any]]
             select(MediaItem)
             .options(selectinload(Show.seasons).selectinload(Season.episodes))
             .where(MediaItem.aired_at.is_not(None))
-            .where(MediaItem.aired_at >= datetime.now() - timedelta(days=30))
+            .where(MediaItem.aired_at >= utcnow() - timedelta(days=30))
             .execution_options(stream_results=True)
         ).unique()
 
@@ -342,6 +344,55 @@ def create_calendar(session: Session | None = None) -> dict[int, dict[str, Any]]
                 calendar[item.id]["episode"] = item.number
 
     return calendar
+
+
+def _link_collection_entries(session: Session, item: "MediaItem") -> None:
+    """Back-fill ``CollectionEntry.media_item_id`` once a title it named is
+    actually indexed.
+
+    This is THE place this linking happens, for every ``requested_by`` source
+    (the brochure's "collections", "awards", or anything future) -- not
+    duplicated per-caller. A request made through ``request_entry``
+    (routers/secure/collections.py) enqueues a transient, unpersisted
+    ``MediaItem``; the row does not exist, and has no ``id``, until the
+    Indexer runs and this function's caller commits it. Before this fix
+    nothing ever revisited the ``CollectionEntry`` afterwards, so its
+    ``media_item_id`` stayed NULL forever -- the entry's own `requested`/
+    `state` fields never updated (the brochure detail page looked frozen),
+    and a title with only an `adultempire_id` so far (no TPDB match yet) was
+    then invisible to the Library page's id-based lookups, which is why it
+    404'd once opened.
+
+    Matches on `tpdb_id` first, then `adultempire_id` -- the same two-step
+    lookup `_link_library` (program/services/collections/service.py) already
+    uses when adopting an existing item into a *new* collection membership.
+    This is the mirror image: adopting a *newly indexed* item into whichever
+    already-existing entries were waiting on it.
+    """
+
+    if not item.tpdb_id and not item.adultempire_id:
+        return
+
+    conditions = []
+
+    if item.tpdb_id:
+        conditions.append(CollectionEntry.tpdb_id == item.tpdb_id)
+
+    if item.adultempire_id:
+        conditions.append(CollectionEntry.external_id == item.adultempire_id)
+
+    entries = (
+        session.execute(
+            select(CollectionEntry)
+            .where(CollectionEntry.media_item_id.is_(None))
+            .where(or_(*conditions))
+        )
+        .scalars()
+        .all()
+    )
+
+    for entry in entries:
+        entry.media_item_id = item.id
 
 
 def run_thread_with_db_item(
@@ -445,6 +496,39 @@ def run_thread_with_db_item(
                         f"Item with ID {indexed_item.id} already exists, skipping save"
                     )
 
+                    # The transient `indexed_item` was never persisted here --
+                    # some earlier request already created this row. Still
+                    # link any CollectionEntry waiting on it: this path is
+                    # exactly how a second brochure request (or a race with
+                    # another source) for the same title would otherwise
+                    # leave its own entry's media_item_id null forever.
+                    from program.media.item import MediaItem
+
+                    existing_conditions = []
+
+                    if indexed_item.tpdb_id:
+                        existing_conditions.append(
+                            MediaItem.tpdb_id == indexed_item.tpdb_id
+                        )
+
+                    if indexed_item.adultempire_id:
+                        existing_conditions.append(
+                            MediaItem.adultempire_id == indexed_item.adultempire_id
+                        )
+
+                    existing_item = None
+
+                    if existing_conditions:
+                        existing_item = session.execute(
+                            select(MediaItem).where(or_(*existing_conditions))
+                        ).scalars().first()
+
+                    if existing_item is not None:
+                        _link_collection_entries(session, existing_item)
+                        session.commit()
+
+                        return existing_item.id
+
                     return indexed_item.id
 
                 indexed_item.store_state()
@@ -465,6 +549,9 @@ def run_thread_with_db_item(
                             return None
 
                         raise
+
+                    _link_collection_entries(session, indexed_item)
+                    session.commit()
 
                 return indexed_item.id
     else:

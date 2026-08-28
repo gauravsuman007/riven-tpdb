@@ -12,6 +12,7 @@ from loguru import logger
 
 from program.apis.tpdb_api import TpdbApi
 from program.core.runner import MediaItemGenerator, RunnerResult
+from program.utils.time import utcnow
 from program.media.item import MediaItem, Movie
 from program.services.indexers.base import BaseIndexer
 from program.services.indexers.tpdb_mapping import (
@@ -51,7 +52,7 @@ class TPDBIndexer(BaseIndexer):
         if item.type == "mediaitem":
             if indexed_item := self._create_movie_from_id(item.tpdb_id):
                 indexed_item = self.copy_items(item, indexed_item)
-                indexed_item.indexed_at = datetime.now()
+                indexed_item.indexed_at = utcnow()
                 if log_msg:
                     logger.debug(
                         f"Indexed Movie {indexed_item.log_string} "
@@ -64,7 +65,7 @@ class TPDBIndexer(BaseIndexer):
         # Re-indexing an existing Movie in place
         elif isinstance(item, Movie):
             if self._update_movie_metadata(item):
-                item.indexed_at = datetime.now()
+                item.indexed_at = utcnow()
                 if log_msg:
                     logger.debug(
                         f"Re-indexed Movie {item.log_string} (TPDB: {item.tpdb_id})"

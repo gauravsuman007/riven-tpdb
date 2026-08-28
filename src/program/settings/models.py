@@ -786,7 +786,21 @@ class BrochureModel(Observable):
         default=True,
         description=(
             "Mirror Adult Empire's studio directory so studios can be saved "
-            "and browsed. Their titles are read live and never stored."
+            "and browsed. A saved studio's rows are cached (see "
+            "studio_rows_top_n); everything else is read live and never "
+            "stored."
+        ),
+    )
+    studio_rows_top_n: int = Field(
+        default=25,
+        ge=1,
+        le=48,
+        description=(
+            "Titles to cache per row, for saved studios only. Refreshed on "
+            "the same weekly schedule as the studio directory sync "
+            "(studio_sync_day/studio_sync_hour) -- bounded to saved studios "
+            "and this count so caching rows never becomes the 'twenty "
+            "thousand rows a week' cost the live-read design exists to avoid."
         ),
     )
     studio_sync_day: str = Field(
@@ -822,13 +836,15 @@ class CollectionsModel(Observable):
     """User-created collections: named lists curated by hand."""
 
     sync_to_tpdb: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Also mark titles in your ThePornDB account's collection when you "
-            "add them here. TPDB has one flat collection per account with no "
-            "named lists, so only membership is mirrored -- not which "
-            "collection a title is in. It is also one-way: TPDB's API has no "
-            "delete, so removing a title here cannot un-collect it there."
+            "add them here -- this is the only 'add to collection' action; "
+            "there is no separate button for it. TPDB has one flat collection "
+            "per account with no named lists, so only membership is mirrored "
+            "-- not which collection a title is in. It is also one-way: "
+            "TPDB's API has no delete, so removing a title here cannot "
+            "un-collect it there."
         ),
     )
 

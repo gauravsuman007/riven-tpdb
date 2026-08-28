@@ -340,12 +340,21 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
             return self.scrape(item)
         except Exception as e:
             if "rate limit" in str(e).lower() or "429" in str(e):
+                # Expected and self-resolving -- the next scheduled pass tries
+                # again, so this is not a failure worth surfacing as one.
                 logger.debug(f"Prowlarr ratelimit exceeded for item: {item.log_string}")
+                return {}
             elif isinstance(e, RequestException):
                 logger.error(f"Prowlarr request exception: {e}")
             else:
                 logger.exception(f"Prowlarr failed to scrape item with error: {e}")
-        return {}
+
+            # Re-raise (rather than returning {}) so the caller can tell "this
+            # scraper is actually broken" apart from "this scraper ran fine
+            # and found nothing" -- see scrapers/__init__.py's
+            # run_service_streaming, which is what turns this into a visible
+            # error in the UI instead of a silent zero-result count.
+            raise
 
     def scrape(self, item: MediaItem) -> dict[str, ScrapeResult]:
         """Scrape a single item from all indexers at the same time, return a list of streams"""

@@ -17,7 +17,6 @@ click. Minting an entry for all forty-eight rows of every studio anyone
 glanced at is how a catalogue turns into a library by accident.
 """
 
-from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Path, Query
@@ -31,7 +30,7 @@ from program.media.collection import (
     Collection,
     CollectionEntry,
 )
-from program.media.studio import Studio
+from program.media.studio import Studio, StudioRowEntry
 from program.services.recommendations.adultempire import (
     AdultEmpireError,
     RankedTitle,
@@ -39,6 +38,7 @@ from program.services.recommendations.adultempire import (
 from program.services.indexers.adultempire_indexer import parse_released
 from program.services.recommendations.studios import StudioService
 from program.services.recommendations.tpdb_lookup import enrich_entry
+from program.utils.time import utcnow
 from routers.models.shared import MessageResponse
 
 router = APIRouter(prefix="/studios", tags=["studios"])
@@ -200,7 +200,7 @@ def _set_saved(studio_id: int, saved: bool) -> StudioResponse:
             raise HTTPException(status_code=404, detail="No such studio")
 
         studio.saved = saved
-        studio.saved_at = datetime.now() if saved else None
+        studio.saved_at = utcnow() if saved else None
         session.commit()
 
         return _response(studio)
@@ -227,9 +227,13 @@ def studio_rows(
     studio_id: Annotated[int, Path()],
     per_row: Annotated[int, Query(ge=1, le=48)] = 12,
 ) -> StudioRows:
-    """A studio's ranked rows, read live from the storefront.
+    """A studio's ranked rows.
 
-    Slow by nature and fetched separately so the page can paint without it.
+    Saved studios get their rows from the weekly cache (see
+    ``StudioService.sync_rows``) -- instant, capped at
+    ``studio_rows_top_n``. A studio that is not saved, or was saved too
+    recently for the cache to have run yet, falls back to a live read (same
+    as before this cache existed) so the page is never blank.
 
     A row that fails comes back empty rather than failing the request: these
     are two independent page reads of someone else's shop, and one being
@@ -247,27 +251,48 @@ def studio_rows(
         rows: list[StudioRow] = []
 
         for sort, name, description in ROWS:
-            try:
-                titles = studios.listing(studio, sort)
-            except AdultEmpireError as exc:
-                logger.warning(f"Studio {studio.name} {sort} row failed: {exc}")
-                titles = []
+            cached = (
+                session.execute(
+                    select(StudioRowEntry)
+                    .where(
+                        StudioRowEntry.studio_id == studio.id,
+                        StudioRowEntry.sort == sort,
+                    )
+                    .order_by(StudioRowEntry.rank.asc())
+                )
+                .scalars()
+                .all()
+            )
+
+            if cached:
+                row_titles = [
+                    StudioTitle(
+                        rank=entry.rank,
+                        product_id=entry.product_id,
+                        title=entry.title,
+                        poster=entry.poster,
+                    )
+                    for entry in cached[:per_row]
+                ]
+            else:
+                try:
+                    titles = studios.listing(studio, sort)
+                except AdultEmpireError as exc:
+                    logger.warning(f"Studio {studio.name} {sort} row failed: {exc}")
+                    titles = []
+
+                row_titles = [
+                    StudioTitle(
+                        rank=title.rank,
+                        product_id=title.product_id,
+                        title=title.title,
+                        poster=title.poster,
+                    )
+                    for title in titles[:per_row]
+                ]
 
             rows.append(
-                StudioRow(
-                    key=sort,
-                    name=name,
-                    description=description,
-                    titles=[
-                        StudioTitle(
-                            rank=title.rank,
-                            product_id=title.product_id,
-                            title=title.title,
-                            poster=title.poster,
-                        )
-                        for title in titles[:per_row]
-                    ],
-                )
+                StudioRow(key=sort, name=name, description=description, titles=row_titles)
             )
 
         return StudioRows(rows=rows)

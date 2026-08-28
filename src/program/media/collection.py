@@ -23,6 +23,7 @@ from sqlalchemy import Index, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from program.db.base_model import Base
+from program.utils.time import utcnow
 
 if TYPE_CHECKING:
     from program.media.item import MediaItem
@@ -47,10 +48,10 @@ class Collection(Base):
     poster_path: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
-        sqlalchemy.DateTime, default=datetime.now
+        sqlalchemy.DateTime(timezone=True), default=utcnow
     )
     refreshed_at: Mapped[datetime | None] = mapped_column(
-        sqlalchemy.DateTime, nullable=True
+        sqlalchemy.DateTime(timezone=True), nullable=True
     )
 
     entries: Mapped[list["CollectionEntry"]] = relationship(
@@ -108,7 +109,7 @@ class CollectionEntry(Base):
     # Exact release date where the source gives one. ``year`` alone is enough
     # for a feature, but the scrapers' date check is sharper with the real day.
     released_at: Mapped[datetime | None] = mapped_column(
-        sqlalchemy.DateTime, nullable=True
+        sqlalchemy.DateTime(timezone=True), nullable=True
     )
 
     # Source metadata, kept verbatim so a re-match can be retried later without
@@ -130,7 +131,7 @@ class CollectionEntry(Base):
     )
     match_score: Mapped[float | None] = mapped_column(sqlalchemy.Float, nullable=True)
     matched_at: Mapped[datetime | None] = mapped_column(
-        sqlalchemy.DateTime, nullable=True
+        sqlalchemy.DateTime(timezone=True), nullable=True
     )
 
     # Artwork copied off the matched TPDB record so a collection page can be

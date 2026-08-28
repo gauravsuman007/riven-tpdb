@@ -12,6 +12,8 @@ to improve what is actually owned, not to resolve a catalogue nobody asked for.
 
 from datetime import datetime
 
+from program.utils.time import utcnow
+
 from kink import di
 from loguru import logger
 from sqlalchemy import select
@@ -80,7 +82,7 @@ class TpdbEnricher:
                 if match.poster:
                     item.poster_path = match.poster
 
-                item.indexed_at = datetime.now()
+                item.indexed_at = utcnow()
                 session.commit()
                 enriched += 1
 

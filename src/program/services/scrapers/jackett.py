@@ -102,10 +102,14 @@ class Jackett(ScraperService[JackettConfig]):
         except Exception as e:
             if "rate limit" in str(e).lower() or "429" in str(e):
                 logger.debug(f"Jackett ratelimit exceeded for item: {item.log_string}")
-            else:
-                logger.error(f"Jackett failed to scrape item with error: {e}")
+                return {}
 
-        return {}
+            logger.error(f"Jackett failed to scrape item with error: {e}")
+
+            # Re-raise so scrapers/__init__.py's run_service_streaming can
+            # surface this as a real failure rather than "0 streams found",
+            # which is what a genuine empty result also looks like.
+            raise
 
     def scrape(self, item: MediaItem) -> dict[str, ScrapeResult]:
         """Scrape the given media item"""

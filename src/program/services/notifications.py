@@ -9,6 +9,7 @@ from loguru import logger
 from program.managers.sse_manager import sse_manager
 from program.media.item import Episode, MediaItem, Season
 from program.media.state import States
+from program.utils.time import to_iso_utc, utcnow
 from program.settings import settings_manager
 from program.core.runner import Runner
 from program.settings.models import NotificationsModel
@@ -144,7 +145,7 @@ class NotificationService(Runner[NotificationsModel, None, None]):
 
         assert item.requested_at
 
-        duration = round((datetime.now() - item.requested_at).total_seconds())
+        duration = round((utcnow() - item.requested_at).total_seconds())
 
         logger.success(f"{item.log_string} has been completed in {duration} seconds.")
 
@@ -154,7 +155,7 @@ class NotificationService(Runner[NotificationsModel, None, None]):
             "type": item.type,
             "year": item.aired_at.year if item.aired_at else None,
             "duration": duration,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": to_iso_utc(utcnow()),
             "log_string": item.log_string,
             "imdb_id": item.imdb_id,
         }
