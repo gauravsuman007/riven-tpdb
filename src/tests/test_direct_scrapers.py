@@ -515,6 +515,50 @@ check(
     relevance("The And Of", video("Anything At All")) == 1.0,
 )
 
+print("\nweak-title containment (docs/direct-scrape-matching-study.md)")
+# A one- or two-word title is the shape a wholly unrelated clip can satisfy by
+# accident: the whole title reappears somewhere inside a much longer sentence
+# that has nothing to do with the actual scene. Measured live: "Unfolding" and
+# "Disciplinary Action" both scored a perfect title-run match against several
+# such sentences, none of which named the credited cast.
+weak_target = MatchTarget.build(
+    "Unfolding", performers=["Cherie DeVille", "Seth Gamble"], studio="Adam & Eve"
+)
+check(
+    "a weak title buried in an unrelated sentence is rejected",
+    relevance(
+        weak_target,
+        video("A Love Story Captured: Beautiful and Passionate Sex Unfolding on Screen"),
+    )
+    < MIN_RELEVANCE,
+)
+check(
+    "the same weak title, credited performer named, is not rejected",
+    relevance(weak_target, video("Unfolding (Cherie DeVille, Seth Gamble)"))
+    >= MIN_RELEVANCE,
+)
+check(
+    "an exact match on a weak title has no bloat to penalise",
+    relevance(weak_target, video("Unfolding")) == 1.0,
+)
+check(
+    "a short site-prefix does not read as bloat",
+    relevance(weak_target, video("PureTaboo-Unfolding")) >= MIN_RELEVANCE,
+)
+# A custom search has no performer or studio to tell an appended name apart
+# from an unrelated sentence, so this gate does not apply there -- a real
+# limit of that path, not an inconsistency in this one.
+check(
+    "a bare string query has nothing to gate the weak title against",
+    relevance("Unfolding", video("A Love Story Captured: Beautiful and Passionate Sex Unfolding on Screen"))
+    >= MIN_RELEVANCE,
+)
+check(
+    "genre vocabulary alone is not distinctive",
+    relevance("Black Anal MILFs", video("Black Anal Cheating Housewife Gets Fucked"))
+    < MIN_RELEVANCE,
+)
+
 print("\nvolume handling")
 # Adult series reuse one name across instalments, so the number is the title.
 check(

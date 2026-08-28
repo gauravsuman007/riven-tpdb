@@ -44,6 +44,16 @@ _COMMON = frozenset({
     "want", "wants", "wanted", "like", "likes", "love", "loves",
     "let", "lets", "make", "makes", "take", "takes", "go", "goes",
     "big", "hot", "sexy", "best", "free", "full", "video", "porn", "sex",
+    # Genre/tag vocabulary. Measured against a 50-title, ~6,700-result study
+    # (see docs/direct-scrape-matching-study.md): these are near-universal
+    "action", "affair", "amateur", "anal", "ass", "babe", "bang", "banged",
+    "banging", "bbc", "black", "blonde", "blowjob", "boob", "boobs", "booty",
+    "brunette", "busty", "chick", "cock", "cougar", "cum", "cumshot", "dick",
+    "dp", "facial", "feels", "gets", "girl", "girls", "good", "hardcore",
+    "housewife", "latina", "lesbian", "maid", "married", "mature", "milf",
+    "mom", "mommy", "orgasm", "petite", "pounded", "pussy", "raw", "rides",
+    "riding", "slut", "squirt", "step", "stepmom", "stepdaughter", "teen",
+    "threesome", "tits", "wife", "young",
 })
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +127,19 @@ _CORROBORATION = 0.3
 #: reliably clears it -- "Deny It All You Want - Vanna Bardot" carries every
 #: token -- while a title sharing only filler cannot get near it.
 MIN_RELEVANCE = 0.65
+
+#: A target with fewer distinctive tokens than this cannot stand on title
+#: text alone -- see the containment check at the end of `relevance`.
+_WEAK_TITLE_TOKENS = 2
+
+#: This many tokens in the video title that neither the target's own words
+#: nor its known performers/studio explain is enough to call the containment
+#: coincidental rather than confirming.
+_BLOAT_LIMIT = 2
+
+#: Well under MIN_RELEVANCE: a weak title with unexplained bloat is filtered,
+#: not merely down-ranked.
+_WEAK_TITLE_CAP = 0.4
 
 _RESOLUTION_ORDER = {
     "2160p": 6,
@@ -235,6 +258,31 @@ def relevance(target: MatchTarget | str, video: DirectVideo) -> float:
             score *= 1.15
         elif found_volume is not None:
             score *= 0.5
+
+    # A title carrying one or two distinctive words is exactly the shape a
+    # wholly unrelated clip can satisfy by accident: "Unfolding" and
+    # "Disciplinary Action" both hit a perfect title-run score against
+    # sentences that have nothing to do with the actual scene, because
+    # nothing here requires the VIDEO's own extra words to be accounted for.
+    # Measured against a 50-title study (docs/direct-scrape-matching-study.md,
+    # ~6,700 results): about 80% of "confident" title-only matches on a weak
+    # title carried no performer or studio corroboration at all, and a manual
+    # sample of those was almost entirely wrong.
+    #
+    # Only applies when the target carries real performers/studio to check
+    # against -- a bare custom search has nothing to tell an appended name
+    # apart from an unrelated sentence, so it is left as it was; this is a
+    # real limit of that path, not an oversight.
+    distinctive_target = distinctive_tokens(target.title)
+    if len(distinctive_target) < _WEAK_TITLE_TOKENS and (
+        target.performers or target.studio
+    ):
+        accounted = distinctive_target | {
+            token for performer in target.performers for token in tokenise(performer)
+        } | set(tokenise(target.studio))
+        bloat = distinctive_tokens(video.title) - accounted
+        if len(bloat) >= _BLOAT_LIMIT:
+            score = min(score, _WEAK_TITLE_CAP)
 
     return round(min(1.0, score), 3)
 

@@ -622,6 +622,48 @@ that is not rendered is dropped from the submitted payload.
   media they now own. The `CollectionEntry` always survives -- it is a catalogue
   row, so the title stays browsable and re-requestable.
 
+## Direct-scrape matching (tube sites)
+- `services/directscrapers/ranking.py` scores results from the streaming-site
+  scrapers, not just titles: `MatchTarget` carries performers/studio/series,
+  and a bare performer-name match with no title agreement is deliberately
+  NOT enough (these actresses appear in hundreds of unrelated scenes).
+- TRAP, the SAME bug as the "Pirates" containment bug in
+  `services/awards/matching.py`, reapplied here: a query's tokens being
+  *contained* in a result said nothing about how much of the result was
+  unaccounted for. A one- or two-word title ("Unfolding", "Disciplinary
+  Action") cleared a perfect score against any sentence that happened to
+  contain the word, because the +0.25 "whole title as one run" bonus never
+  checked how much surrounding, unrelated text that run sat inside. Measured
+  live against a 50-title/6,700-result study: 80% of "confident" (score 1.0)
+  matches carried no performer/studio corroboration, and reading a sample of
+  those showed most were wrong. (`docs/` is gitignored, so the full study
+  writeup with the sample data lives only on whichever machine produced it --
+  the summary here is the durable copy; re-run the study rather than looking
+  for that file elsewhere.)
+- Fixed two ways: `_COMMON` was missing this vertical's own genre/tag
+  vocabulary ("anal", "milf", "feels", "good", "affair", ...) -- these were
+  scored as fully distinctive, which is why even 3+ word titles built from
+  generic descriptors collided constantly. Adding them alone fixed most
+  cases via the existing "nothing distinctive matched -> 0" rule. What is
+  left (a title with 0-1 distinctive tokens even after that) gets a
+  containment/bloat gate: if the video title carries 2+ distinctive tokens
+  that neither the target's words nor its known performers/studio explain,
+  the score is capped well under `MIN_RELEVANCE`.
+- TRAP: the bloat gate only fires when `target.performers or target.studio`
+  is non-empty. A bare custom search (the "Watch from a site" free-text
+  field) has no performer/studio data to tell an appended name apart from an
+  unrelated sentence, so it is left ungated -- a real limit of that path
+  (there is nothing to corroborate against), not an inconsistency.
+- Duration was the presumed strong corroborator going in and measured out
+  weak: only 5% of even the most confident matches had a duration close to
+  the target's runtime, because these sites overwhelmingly host individual
+  scenes cut from a feature, not the feature itself. Kept as a minor ordering
+  signal only (`sort_key`), not load-bearing.
+- Conclusion, and why this is rules rather than a model: 50 titles is a
+  validation set, nowhere near enough to train anything, and a wrong match
+  that looks confident is the worst failure mode in this codebase. Rules fail
+  with a traceable reason; a model fails silently at high confidence.
+
 ## TPDB search ordering
 TPDB's `q` search returns matches in no useful order, ignores every ordering
 parameter it accepts, and its page size is fixed at 20 whatever `per_page` says.
