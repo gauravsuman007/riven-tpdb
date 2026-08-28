@@ -1383,6 +1383,60 @@ class DirectScrapingModel(Observable):
     )
 
 
+class JellyfinServerModel(Observable):
+    """Serve the library to Jellyfin clients, so it plays on a television.
+
+    This is the opposite direction from `updaters.jellyfin`, which tells a real
+    Jellyfin server to rescan. Here Riven IS the server: clients authenticate
+    against it, browse the library out of Postgres, and stream through the
+    existing playback path. Nothing scans the VFS mount -- see AGENTS.md for
+    why letting a real media server near it is a trap.
+
+    There is no password field on purpose. The password is the Riven API key,
+    so this exposes no second credential and cannot grant access the existing
+    API would refuse.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Answer the Jellyfin client protocol. Log in from a Jellyfin app "
+            "with the username below and your Riven API key as the password."
+        ),
+    )
+    server_name: str = Field(
+        default="Riven",
+        description="Name clients show for this server in their server list",
+    )
+    username: str = Field(
+        default="riven",
+        description=(
+            "Username Jellyfin clients log in with. The password is always "
+            "the Riven API key."
+        ),
+    )
+    discovery: bool = Field(
+        default=True,
+        description=(
+            "Answer the UDP broadcast on port 7359 that lets Jellyfin apps "
+            "find this server without typing its address."
+        ),
+    )
+    library_name: str = Field(
+        default="Library",
+        description="Name of the single library clients see",
+    )
+    advertised_url: str = Field(
+        default="",
+        description=(
+            "Address discovery hands to clients, e.g. http://192.168.1.10:8080. "
+            "Leave blank to work it out from the network interface the client "
+            "reached us on, which is right unless Riven sits behind a reverse "
+            "proxy or a non-default port."
+        ),
+    )
+
+
 class AppModel(Observable):
     version: str = Field(default_factory=get_version, description="Application version")
     api_key: str = Field(default="", description="API key for Riven API access")
@@ -1416,6 +1470,10 @@ class AppModel(Observable):
     direct_scraping: DirectScrapingModel = Field(
         default_factory=lambda: DirectScrapingModel(),
         description="Direct streaming-site scrapers, built-in and plugin",
+    )
+    jellyfin_server: JellyfinServerModel = Field(
+        default_factory=lambda: JellyfinServerModel(),
+        description="Serve the library to Jellyfin clients (TV playback)",
     )
     filesystem: FilesystemModel = Field(
         default_factory=lambda: FilesystemModel(),

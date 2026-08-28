@@ -29,6 +29,7 @@ from program.settings.models import get_version
 from program.settings import settings_manager
 from program.utils.cli import handle_args
 from routers import app_router
+from routers.jellyfin import router as jellyfin_router
 
 
 class LoguruMiddleware(BaseHTTPMiddleware):
@@ -109,6 +110,11 @@ app.add_middleware(
 )
 
 app.include_router(app_router)
+# Mounted at the root, after the /api/v1 router. Jellyfin clients build
+# absolute paths (/System/Info/Public, /Users/AuthenticateByName) and cannot be
+# given a prefix; every route inside checks `jellyfin_server.enabled` and 404s
+# when the feature is off, so an unused masquerade adds no reachable surface.
+app.include_router(jellyfin_router)
 
 
 class Server(uvicorn.Server):

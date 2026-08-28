@@ -94,6 +94,26 @@ def _reset_vpn_service() -> None:
     reset()
 
 
+def _sync_jellyfin_discovery() -> None:
+    """Start or stop the UDP discovery responder to match the setting.
+
+    Registered as a settings observer for the same reason the VPN service is:
+    the responder is a long-lived thread built from settings, so toggling
+    `jellyfin_server.enabled` has to reach it or the setting appears to do
+    nothing until the next restart.
+    """
+
+    from program.services.jellyfin_server import discovery
+    from program.settings import settings_manager as manager
+
+    settings = manager.settings.jellyfin_server
+
+    if settings.enabled and settings.discovery:
+        discovery.start()
+    else:
+        discovery.stop()
+
+
 def _reset_direct_scraper_service() -> None:
     """Drop the cached scraper registry so a plugin toggle -- or a new file
     dropped into the plugin folder -- takes effect without a restart."""
@@ -223,6 +243,7 @@ class Program(threading.Thread):
         # until something else happens to rebuild it.
         settings_manager.register_observer(_reset_vpn_service)
         settings_manager.register_observer(_reset_direct_scraper_service)
+        settings_manager.register_observer(_sync_jellyfin_discovery)
 
         os.makedirs(data_dir_path, exist_ok=True)
 
@@ -231,6 +252,7 @@ class Program(threading.Thread):
             settings_manager.save()
 
         self.initialize_apis()
+        _sync_jellyfin_discovery()
 
         if not self.validate_database():
             # TODO: We should really make this configurable via frontend...

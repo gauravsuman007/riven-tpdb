@@ -67,6 +67,44 @@ BROWSER_AUDIO_CODECS = {"aac", "mp3", "opus", "vorbis", "flac"}
 BROWSER_CONTAINERS = {"mp4", "mov", "m4v", "webm"}
 
 
+@dataclass(frozen=True)
+class Capabilities:
+    """What one client can play without help.
+
+    A parameter rather than module constants because the playback decision
+    needs BOTH halves -- what the file contains and what this particular
+    client accepts -- and the second half is not a property of this server.
+    A browser, an Apple TV and a Roku have genuinely different answers, and a
+    Jellyfin client states its own in the DeviceProfile it sends us.
+
+    Hardcoding one client's answer is the bug this codebase already hit once,
+    from the other direction: the old player asked the browser about HEVC and
+    never looked at the file, so Firefox transcoded everything.
+    """
+
+    video_codecs: frozenset[str]
+    audio_codecs: frozenset[str]
+    containers: frozenset[str]
+
+    def plays_video(self, codec: str | None) -> bool:
+        return (codec or "") in self.video_codecs
+
+    def plays_audio(self, codec: str | None) -> bool:
+        # A file with no audio track at all is fine to play as-is.
+        return codec is None or codec in self.audio_codecs
+
+    def plays_container(self, container: str | None) -> bool:
+        return bool(container and container in self.containers)
+
+
+#: The default, and what every existing caller gets. Same three sets as before.
+BROWSER = Capabilities(
+    video_codecs=frozenset(BROWSER_VIDEO_CODECS),
+    audio_codecs=frozenset(BROWSER_AUDIO_CODECS),
+    containers=frozenset(BROWSER_CONTAINERS),
+)
+
+
 class MediaProbe(BaseModel):
     """What ffprobe could tell us about the file."""
 
@@ -218,11 +256,15 @@ def _mime_for(probe_result: MediaProbe) -> str | None:
     return f'{container}; codecs="{codecs}"'
 
 
-def decide(probe_result: MediaProbe) -> tuple[str, str]:
+def decide(
+    probe_result: MediaProbe, caps: Capabilities = BROWSER
+) -> tuple[str, str]:
     """
-    Choose a playback mode from what the file actually contains.
+    Choose a playback mode from what the file contains and what `caps` accepts.
 
-    Returns (mode, human-readable reason).
+    Returns (mode, human-readable reason). `caps` defaults to a mainstream
+    browser, which is what every caller wanted before clients other than the
+    web player existed.
     """
 
     if not probe_result.video_codec:
@@ -230,20 +272,20 @@ def decide(probe_result: MediaProbe) -> tuple[str, str]:
         # media error rather than burning CPU on a transcode that may also fail.
         return "direct", "could not probe the file; attempting direct play"
 
-    if not probe_result.video_playable:
+    if not caps.plays_video(probe_result.video_codec):
         return (
             "transcode",
-            f"video codec {probe_result.video_codec} is not broadly supported by browsers",
+            f"video codec {probe_result.video_codec} is not supported by this client",
         )
 
-    if not probe_result.audio_playable:
+    if not caps.plays_audio(probe_result.audio_codec):
         return (
             "remux",
             f"video is {probe_result.video_codec} but audio codec "
             f"{probe_result.audio_codec} needs converting",
         )
 
-    if not probe_result.container_playable:
+    if not caps.plays_container(probe_result.container):
         return (
             "remux",
             f"streams are playable but the {probe_result.container} container is not",
