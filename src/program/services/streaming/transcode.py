@@ -66,6 +66,18 @@ BROWSER_AUDIO_CODECS = {"aac", "mp3", "opus", "vorbis", "flac"}
 # Containers a browser will accept for progressive playback.
 BROWSER_CONTAINERS = {"mp4", "mov", "m4v", "webm"}
 
+# ffprobe's format_name for an MP4-family file is always the comma list
+# "mov,mp4,m4a,3gp,3g2,mj2" -- QuickTime is the umbrella format MP4 was built
+# on, and ffprobe lists it first regardless of the file's actual extension.
+# Picking whichever entry comes first would report every such file as "mov".
+# A browser doesn't care what string this is, but real Jellyfin clients match
+# the reported Container against their own DirectPlayProfile container lists
+# before ever requesting the stream -- and those lists say "mp4", never
+# "mov". Reporting "mov" made every native client refuse the source as
+# incompatible while the web player (which never looks at this field) played
+# the same file fine. Highest priority first.
+CONTAINER_PRIORITY = ("mp4", "webm", "m4v", "mov")
+
 
 @dataclass(frozen=True)
 class Capabilities:
@@ -197,7 +209,11 @@ def _ffprobe(url: str) -> MediaProbe:
 
     # format_name is a comma-separated list, e.g. "mov,mp4,m4a,3gp,3g2,mj2".
     names = (fmt.get("format_name") or "").split(",")
-    probe.container = next((n for n in names if n in BROWSER_CONTAINERS), names[0] if names else None)
+    present = set(names)
+    probe.container = next(
+        (n for n in CONTAINER_PRIORITY if n in present),
+        names[0] if names else None,
+    )
 
     for stream in data.get("streams") or []:
         if stream.get("codec_type") == "video" and not probe.video_codec:

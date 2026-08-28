@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from program.services.jellyfin_server import ids
+from program.services.streaming.transcode import CONTAINER_PRIORITY
 
 #: Jellyfin measures time in 100-nanosecond ticks, everywhere.
 TICKS_PER_SECOND = 10_000_000
@@ -237,8 +238,18 @@ def media_source(item, entry, metadata) -> dict[str, Any]:
 
     container = None
 
-    if metadata and getattr(metadata, "container_formats", None):
-        container = metadata.container_formats[0]
+    if metadata and (formats := getattr(metadata, "container_formats", None)):
+        # ffprobe's format_name for an MP4-family file is the comma list
+        # "mov,mp4,m4a,3gp,3g2,mj2", stored here in that order -- taking [0]
+        # reported "mov" for nearly every file in the library. Real clients
+        # match Container against their own DirectPlayProfile list, which
+        # says "mp4" and never "mov", so they silently refused the source.
+        # See CONTAINER_PRIORITY in transcode.py, the same fix applied there.
+        present = set(formats)
+        container = next(
+            (name for name in CONTAINER_PRIORITY if name in present),
+            formats[0],
+        )
 
     streams = media_streams(metadata)
 
