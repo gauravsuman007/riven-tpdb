@@ -30,6 +30,7 @@ from program.settings import settings_manager
 from program.utils.cli import handle_args
 from routers import app_router
 from routers.jellyfin import router as jellyfin_router
+from routers.webui import router as webui_router
 
 
 class LoguruMiddleware(BaseHTTPMiddleware):
@@ -115,6 +116,10 @@ app.include_router(app_router)
 # given a prefix; every route inside checks `jellyfin_server.enabled` and 404s
 # when the feature is off, so an unused masquerade adds no reachable surface.
 app.include_router(jellyfin_router)
+# LAST on purpose: a catch-all that reverse proxies the Riven web UI for
+# Jellyfin's WebView clients, so it only ever sees paths nothing above
+# claimed. Inert unless jellyfin_server.web_ui_url is set.
+app.include_router(webui_router)
 
 
 class Server(uvicorn.Server):

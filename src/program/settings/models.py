@@ -1442,6 +1442,21 @@ class JellyfinServerModel(Observable):
         default="Library",
         description="Name of the single library clients see",
     )
+    web_ui_url: str = Field(
+        default="",
+        description=(
+            "Serve the normal Riven web UI to Jellyfin apps, by reverse "
+            "proxying it from this address (e.g. http://riven-tpdb-frontend:3000). "
+            "The Android and webOS Jellyfin apps have no interface of their own "
+            "and load one from the server, so this is what they display. Leave "
+            "blank to serve the small built-in browse-and-play page instead. "
+            "NOTE: proxying makes every request reach the frontend from this "
+            "server's address, so its 'local network access' bypass will stop "
+            "recognising real client addresses and fall back to the login "
+            "screen unless the frontend is configured to trust a forwarded-for "
+            "header."
+        ),
+    )
     advertised_url: str = Field(
         default="",
         description=(

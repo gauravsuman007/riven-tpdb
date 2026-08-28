@@ -127,8 +127,16 @@ def system_info_public() -> dict[str, Any]:
 
 
 @router.get("/")
-def web_index() -> Response:
+async def web_index(request: Request) -> Response:
     require_enabled()
+
+    # When a web UI address is configured, the real Riven frontend is what
+    # clients should see; the built-in page is only the fallback for a
+    # deployment that has not pointed at one.
+    from routers import webui
+
+    if webui.is_configured():
+        return await webui.proxy(request, "")
 
     return Response(
         content=webapp.index_html(),
@@ -151,8 +159,14 @@ def web_bundle() -> Response:
 
     require_enabled()
 
+    from routers import webui
+
+    # Proxying the real frontend means it owns the page, so the bundle drops
+    # to an integration shim rather than drawing a second UI over the top.
+    body = webapp.integration_js() if webui.is_configured() else webapp.bundle_js()
+
     return Response(
-        content=webapp.bundle_js(),
+        content=body,
         media_type="application/javascript; charset=utf-8",
         headers={"Cache-Control": "no-store"},
     )

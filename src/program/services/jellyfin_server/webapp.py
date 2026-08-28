@@ -288,10 +288,105 @@ h1 { font-size: 1.5rem; margin: 0; }
 """
 
 
+
+# Served at the same bundle path when the real Riven frontend is proxied in
+# front of us. It must NOT draw any UI -- the frontend owns the page. Its only
+# jobs are to exist (so the path match marks the client connected) and to hand
+# the frontend a way into the native player.
+INTEGRATION_JS = r"""
+(function () {
+  "use strict";
+
+  var CRED_KEY = "jellyfin_credentials";
+
+  function creds() {
+    try {
+      var c = JSON.parse(window.localStorage.getItem(CRED_KEY));
+      if (c && c.Servers && c.Servers[0] && c.Servers[0].AccessToken) return c.Servers[0];
+    } catch (e) {}
+    return null;
+  }
+
+  function nativeAvailable() {
+    try { return !!(window.NativePlayer && window.NativePlayer.isEnabled()); }
+    catch (e) { return false; }
+  }
+
+  // The native layer reads its API token out of localStorage; without it
+  // ExoPlayer cannot fetch PlaybackInfo. Ask once, only when there actually
+  // is a native player to feed.
+  function ensureCredentials(done) {
+    if (creds()) { done(true); return; }
+    if (!nativeAvailable()) { done(false); return; }
+
+    var key = window.prompt(
+      "Riven: enter your API key once to enable playback in this app's video player."
+    );
+
+    if (!key) { done(false); return; }
+
+    fetch("/Users/AuthenticateByName", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": 'MediaBrowser Client="Riven Web", Device="Riven", DeviceId="riven-webapp", Version="1.0"'
+      },
+      body: JSON.stringify({ Username: "__USERNAME__", Pw: key })
+    }).then(function (r) {
+      if (!r.ok) throw new Error("Rejected");
+      return r.json();
+    }).then(function (d) {
+      window.localStorage.setItem(CRED_KEY, JSON.stringify({
+        Servers: [{ Id: d.ServerId, UserId: d.User.Id, AccessToken: d.AccessToken }]
+      }));
+      done(true);
+    }).catch(function () {
+      window.alert("Riven: that key was not accepted.");
+      done(false);
+    });
+  }
+
+  // What the frontend calls. `itemId` is the Jellyfin item id (32 hex), which
+  // /Users/{id}/Items reports for every title.
+  window.RivenNative = {
+    available: nativeAvailable,
+    play: function (itemId, startPositionTicks) {
+      if (!nativeAvailable()) return false;
+
+      ensureCredentials(function (ok) {
+        if (!ok) return;
+        window.NativePlayer.loadPlayer(JSON.stringify({
+          ids: [itemId],
+          startIndex: 0,
+          startPositionTicks: startPositionTicks || 0
+        }));
+      });
+
+      return true;
+    }
+  };
+
+  if (nativeAvailable()) {
+    document.documentElement.setAttribute("data-riven-native-player", "1");
+  }
+})();
+"""
+
+
 def index_html() -> str:
     """The document the shell loads at `/`."""
 
     return INDEX_HTML.replace("__BUNDLE__", BUNDLE_PATH)
+
+
+def integration_js() -> str:
+    """The bundle served when the real frontend is proxied in front of us."""
+
+    username = settings_manager.settings.jellyfin_server.username
+
+    return INTEGRATION_JS.replace(
+        "__USERNAME__", username.replace("\\", "\\\\").replace('"', '\\"')
+    )
 
 
 def bundle_js() -> str:
