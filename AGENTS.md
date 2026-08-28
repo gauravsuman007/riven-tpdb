@@ -719,3 +719,46 @@ search-then-detail matcher. Both the brochure enricher and the collections
 service call it. Do not re-implement it: scoring the flat `/movies?q=` records
 directly leaves studio and cast unset, the score never clears `ACCEPT_SCORE`,
 and nothing ever matches -- silently.
+
+## Media-server masquerade (Jellyfin/Emby/Plex) -- analysis, not yet built
+Full writeup in `docs/media-server-masquerade.md` (gitignored; regenerate from
+this section if absent). Decisions so far, so they are not relitigated:
+- The goal is television playback without writing six native clients: speak a
+  protocol whose clients already exist, so riven-tpdb IS the server they
+  connect to.
+- TRAP, and it is the intuitive-but-wrong architecture: do NOT point a real
+  Jellyfin/Plex at the VFS mount (which is what upstream's
+  `services/updaters/` assumes). A library scan runs ffprobe over every file
+  and extracts chapter images by seeking; `vfs/rivenvfs.py` `read()` serves
+  those bytes by pulling 32MB chunks from the debrid provider. A scheduled
+  scan is therefore a self-inflicted DoS on your own debrid account. It also
+  discards the TPDB metadata (`performers`, `site_name`, `network`,
+  `tpdb_id`) in favour of a TMDB/TVDB scraper guess against scene filenames --
+  the same failure as the RTN title-check trap above.
+- Jellyfin is the only viable target: open-source clients (so the required
+  endpoint set can be MEASURED, not guessed), published OpenAPI, no cloud
+  dependency, and codec negotiation where the client POSTs its own
+  `DeviceProfile` to `/Items/{id}/PlaybackInfo`.
+- As the server, be permissive on auth headers -- accept the modern
+  `Authorization: MediaBrowser Token="...", Client=...` form AND the legacy
+  `X-Emby-Authorization` / `X-Emby-Token` / `X-MediaBrowser-Token` headers and
+  the `ApiKey` query param. We do not control which client build connects and
+  TV apps update slowly; the 10.11 deprecation is a client-side concern.
+- Plex is rejected on architecture, NOT content policy: server identity is
+  anchored to plex.tv via a short-lived claim token with per-machine
+  `*.plex.direct` certificates that cannot be minted, and Plex telemetry
+  reports library data including adult flags. Plex's ToS does NOT ban adult
+  content (it bans infringement and sharing/selling access) -- do not repeat
+  that claim, it is wrong and checkable.
+- Emby: unpromised side effect of the Jellyfin work (Jellyfin forked from Emby
+  3.5.2, hence the `X-Emby-*` names). Closed source since 3.6, plus Connect and
+  Premiere checks. Spend no effort.
+- The one real refactor this needs: `streaming/transcode.py` `decide()` hardcodes
+  the BROWSER's codec sets as module constants, so the playback decision cannot
+  express "this Roku". It must take capabilities as a parameter, with a
+  `from_device_profile()` adapter. This is the SAME bug as the "HLS probe is
+  backwards" trap -- the decision needs both halves, what the file contains and
+  what this client accepts, and neither may be hardcoded.
+- Start by measuring, not by implementing the documented API: stub
+  `/System/Info/Public` plus auth, log every inbound request, point a real
+  client at it and let it state its requirements.
