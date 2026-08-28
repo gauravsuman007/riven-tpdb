@@ -19,6 +19,7 @@ from program.managers.sse_manager import sse_manager
 from program.media.item import MediaItem
 from program.media.state import States
 from program.types import Event, Service
+from program.utils.time import utcnow
 
 if TYPE_CHECKING:
     from program.program import Program
@@ -124,7 +125,7 @@ class EventManager:
             if isinstance(result, tuple):
                 item_id, timestamp = result
             else:
-                item_id, timestamp = result, datetime.now()
+                item_id, timestamp = result, utcnow()
 
             if item_id:
                 if future_with_event.cancellation_event.is_set():
@@ -415,7 +416,7 @@ class EventManager:
         while True:
             if self._queued_events:
                 with self.mutex:
-                    now = datetime.now()
+                    now = utcnow()
 
                     # Filter events that are ready to run (run_at <= now)
                     ready_events = [

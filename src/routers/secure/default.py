@@ -18,6 +18,7 @@ from program.media.state import States
 from program.program import Program
 from program.settings import settings_manager
 from program.utils import generate_api_key
+from program.utils.time import utcnow
 
 from ..models.shared import MessageResponse
 
@@ -535,7 +536,7 @@ async def get_pipeline() -> PipelineResponse:
     from program.media.item import MediaItem
 
     program = di[Program]
-    now = datetime.now()
+    now = utcnow()
 
     blocked = [
         service.__class__.__name__

@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
@@ -12,6 +12,7 @@ from program.services.filesystem import FilesystemService
 from program.media.state import States
 from program.services.indexers import IndexerService
 from program.services.post_processing import PostProcessing
+from program.utils.time import utcnow
 
 
 # Type aliases for various service types
@@ -40,7 +41,7 @@ class Event:
     emitted_by: Service | Literal["StateTransition", "RetryLibrary"] | str
     item_id: int | None = None
     content_item: "MediaItem | None" = None
-    run_at: datetime = datetime.now()
+    run_at: datetime = field(default_factory=utcnow)
     item_state: States | None = None  # Cached state for priority sorting
     overrides: dict[str, Any] | None = None
 
