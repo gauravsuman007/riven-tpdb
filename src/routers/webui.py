@@ -164,6 +164,17 @@ async def proxy(request: Request, path: str) -> Response:
     content_type = upstream.headers.get("content-type", "")
     headers = _response_headers(upstream)
 
+    # TEMPORARY diagnostics for the WebView login investigation. Deliberately
+    # omits the request/response bodies (credentials) and only logs shape:
+    # method, path, status, and whether a session cookie came back. Remove
+    # once the login flow is confirmed working end-to-end.
+    logger.info(
+        f"webui proxy: {request.method} /{path} -> {upstream.status_code} "
+        f"ct={content_type!r} origin_sent={_forward_headers(request).get('origin')!r} "
+        f"set-cookie={'yes' if 'set-cookie' in upstream.headers else 'no'} "
+        f"location={upstream.headers.get('location')!r}"
+    )
+
     # Only HTML documents get the injection; assets stream through untouched.
     if "text/html" in content_type.lower():
         text = upstream.text
