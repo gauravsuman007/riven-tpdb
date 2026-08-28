@@ -823,13 +823,27 @@ default; every route 404s while `jellyfin_server.enabled` is false.
     silently with "Connection cannot be established".
   - **Native clients** (Jellyfin for **Android TV**, Swiftfin, Findroid) build
     their own UI from the API and are the only shape this masquerade can serve.
-  - Serving our OWN html at `/` does NOT rescue the shells -- tested directly:
-    the app fetched our page 200 OK, requested nothing further, and still
-    errored. `jellyfin-android` injects a `NativeShell` JS bridge and waits for
-    the loaded page to bootstrap and call back; only jellyfin-web does that.
-    So "just send our frontend to the TV" is a dead end, and satisfying the
-    shells means hosting genuine jellyfin-web -- which then demands the full
-    web-client API surface, far beyond what is implemented here.
+  - The shells ARE satisfiable without jellyfin-web, and we now do it:
+    `services/jellyfin_server/webapp.py` serves a small purpose-built UI at `/`
+    (routes in `routers/jellyfin.py`). Read that module's docstring before
+    touching any of it. The three load-bearing facts, taken from the
+    `jellyfin-android` source rather than inferred:
+      1. `onConnectedToWebapp()` fires from `shouldInterceptRequest()` on a URL
+         PATH match against `.*/main\.[^/\s]+\.bundle\.js`; the response is
+         never inspected. The app is therefore served AS that bundle, so one
+         request both trips the flag and ships the code. RENAMING THAT PATH
+         BREAKS BOTH CLIENTS SILENTLY -- a spinner, then a 10s timeout
+         (`INITIAL_CONNECTION_TIMEOUT`), and no log line saying why.
+      2. The native layer takes its token from OUR localStorage:
+         `jellyfin_credentials` -> `Servers[0].{UserId,AccessToken}`. Logging
+         in on that page is what authenticates ExoPlayer.
+      3. `window.NativePlayer.loadPlayer()` takes ITEM IDS, not URLs. Playback
+         resolves via `/Items/{id}/PlaybackInfo` + `/Videos/{id}/stream`, so
+         native playback needed NO new backend code.
+    An earlier attempt served plain HTML with no such script tag, got a clean
+    200, and still failed -- which looked like proof that only genuine
+    jellyfin-web could work. It was not; the page simply never requested a
+    matching bundle path. Do not re-derive that wrong conclusion.
 - DEBUGGING TRAP that cost real time here: a WebView's User-Agent is
   indistinguishable from Chrome (`...; wv) ... Mobile Safari`), so the app's
   own `GET /` + `GET /favicon.ico` look exactly like someone poking the server
