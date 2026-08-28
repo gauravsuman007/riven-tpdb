@@ -172,7 +172,14 @@ def _ffprobe(url: str) -> MediaProbe:
         return MediaProbe()
 
     if result.returncode != 0:
-        logger.warning(f"ffprobe failed for {redact(url)}: {result.stderr.strip()[:200]}")
+        # ffprobe echoes the URL it was given back into stderr, so the
+        # message needs redacting too -- redacting only the `url` argument
+        # leaves the provider token in the log via the error text. Same trap
+        # as the debrid link leak already fixed in the streaming router.
+        logger.warning(
+            f"ffprobe failed for {redact(url)}: "
+            f"{redact(result.stderr.strip())[:200]}"
+        )
         return MediaProbe()
 
     try:

@@ -15,10 +15,12 @@ asked for it is the intended way for this file to grow; adding one because the
 OpenAPI spec lists it is not.
 """
 
+import re
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
+from fastapi.routing import APIRoute
 from loguru import logger
 import sqlalchemy
 from sqlalchemy import func, or_, select
@@ -29,7 +31,34 @@ from program.services.jellyfin_server import auth, capabilities, ids, mapping
 from program.services.streaming import transcode
 from program.settings import settings_manager
 
-router = APIRouter(tags=["jellyfin"], include_in_schema=False)
+class _CaseInsensitiveRoute(APIRoute):
+    """Match paths without regard to case, the way a real Jellyfin does.
+
+    Jellyfin's server is ASP.NET, whose routing is case-insensitive by
+    default, so clients were written against that and send whatever casing
+    they please: `jellyfin-apiclient-python` probes `/system/info/public`
+    while the documented spelling is `/System/Info/Public`. FastAPI matches
+    case-sensitively, so without this a real client 404s on its very first
+    request and reports the server as unreachable.
+
+    Found by pointing an actual client library at this router -- exactly the
+    class of thing reading the OpenAPI spec cannot tell you, which is why
+    AGENTS.md says to measure real clients rather than implement the
+    documented API.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+        # Starlette compiles the path into `path_regex` and matches with it.
+        # Recompiling with IGNORECASE changes only how literal segments are
+        # compared; the parameter captures are unaffected.
+        self.path_regex = re.compile(self.path_regex.pattern, re.IGNORECASE)
+
+
+router = APIRouter(
+    tags=["jellyfin"], include_in_schema=False, route_class=_CaseInsensitiveRoute
+)
 
 #: Reported to clients as the server version. Clients gate features on this,
 #: so it names a real Jellyfin release whose behaviour this surface actually
