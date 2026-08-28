@@ -141,6 +141,56 @@ services:
         # neither, and granting them invites someone to "fix" it into kernel
         # mode later, which would silently route everything.
 
+    # The other VPN option, for a commercial provider rather than your own
+    # tailnet. Pick ONE of these two in Settings -> VPN -> provider; running
+    # both containers is harmless, but only the selected one is used.
+    #
+    # Commented out because it needs real credentials to start at all, and a
+    # service that crash-loops on every `docker compose up` is worse than one
+    # that is not there. Uncomment, fill in the provider block, and set
+    # provider to "gluetun".
+    #
+    # NOTE the same constraint as tailscale above, for the same reason: this
+    # must NOT become riven-tpdb's `network_mode`. That is gluetun's usual
+    # wiring and it would route the container's ENTIRE routing table --
+    # TPDB, the debrid provider, the indexers, the library scan -- with no way
+    # to send only the scrapers. HTTPPROXY is what makes it selective: gluetun
+    # routes nothing by itself and offers a proxy the backend points chosen
+    # traffic at, exactly like tailscale's SOCKS5 above.
+    #
+    # gluetun:
+    #     image: qmcgaw/gluetun:latest
+    #     container_name: riven-gluetun
+    #     restart: unless-stopped
+    #     cap_add:
+    #         # Unavoidable here, unlike tailscale: gluetun brings up a real
+    #         # tun interface inside its OWN network namespace. It still
+    #         # cannot affect riven-tpdb's routing as long as this stays a
+    #         # separate service rather than a network_mode.
+    #         - NET_ADMIN
+    #     devices:
+    #         - /dev/net/tun:/dev/net/tun
+    #     environment:
+    #         # The proxy the backend actually sends routed traffic through.
+    #         # Without this there is nothing to point at and the VPN tab
+    #         # reports routing unavailable no matter how healthy the tunnel is.
+    #         - HTTPPROXY=on
+    #         - HTTPPROXY_LISTENING_ADDRESS=:8888
+    #         # Status, start and stop for the VPN tab. Bound on all
+    #         # interfaces because the backend reaches it over the compose
+    #         # network, not from inside this container.
+    #         - HTTP_CONTROL_SERVER_ADDRESS=:8000
+    #         # Your provider's details. See gluetun's wiki for the exact
+    #         # variables each provider wants -- they differ per provider.
+    #         - VPN_SERVICE_PROVIDER=mullvad
+    #         - VPN_TYPE=wireguard
+    #         - WIREGUARD_PRIVATE_KEY=${GLUETUN_WG_KEY:-}
+    #         - WIREGUARD_ADDRESSES=${GLUETUN_WG_ADDRESSES:-}
+    #         # Where traffic comes out. Changed here and restarted, NOT from
+    #         # the VPN tab -- gluetun reads this once at startup, which is why
+    #         # the exit-node picker is not shown for this provider.
+    #         - SERVER_COUNTRIES=${GLUETUN_COUNTRIES:-Sweden}
+
     riven_postgres:
         image: postgres:17-alpine
         container_name: riven-db

@@ -42,6 +42,12 @@ HIDDEN_SECTIONS: dict[str, frozenset[str]] = {
     # was looking for never had a reason to appear. `socket_path` and
     # `proxy_url` are container wiring meant to match docker-compose, the same
     # reasoning that keeps RIVEN_* infra out of the settings UI elsewhere.
+    # NOTE the asymmetry: `gluetun` is deliberately NOT hidden. The reason
+    # `tailscale` is hidden is the competing write path, and gluetun has none
+    # -- there is no "connect with key" button saving its api_key as a side
+    # effect, because Gluetun has no interactive login to attach one to. Its
+    # control_url/proxy_url/api_key are only ever written through the generic
+    # form, so hiding them would leave no way to set them at all.
     "vpn": frozenset({"tailscale"}),
     # `disabled` has a dedicated write path: the Plugins tab's per-row toggle.
     # Rendering it in the generic form too would repeat the exact

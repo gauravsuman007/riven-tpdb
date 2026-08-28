@@ -1333,6 +1333,41 @@ class TailscaleModel(Observable):
     )
 
 
+class GluetunModel(Observable):
+    """Gluetun-specific wiring. Everything here is about reaching the sidecar.
+
+    Gluetun is usually wired up by putting other containers on its network
+    stack, which routes everything they do through the tunnel. That is exactly
+    what this integration must not do -- TPDB, the debrid providers and the
+    library scan are supposed to go out directly. So it is used as a proxy that
+    traffic is pointed at, which means the gluetun service needs
+    ``HTTPPROXY=on`` and must NOT be this container's ``network_mode``.
+    """
+
+    control_url: str = Field(
+        default="http://gluetun:8000",
+        description=(
+            "Gluetun's control server (HTTP_CONTROL_SERVER_ADDRESS). Used to "
+            "read tunnel status and to start or stop it."
+        ),
+    )
+    proxy_url: str = Field(
+        default="http://gluetun:8888",
+        description=(
+            "Gluetun's built-in HTTP proxy (HTTPPROXY=on). This is what routed "
+            "traffic is actually sent through; without it there is nothing to "
+            "point at and routing stays unavailable."
+        ),
+    )
+    api_key: str = Field(
+        default="",
+        description=(
+            "Only needed if this Gluetun requires one (v3.40+ with a role "
+            "configured). Sent as X-API-Key to the control server."
+        ),
+    )
+
+
 class VpnModel(Observable):
     """Route selected traffic through a VPN.
 
@@ -1346,8 +1381,14 @@ class VpnModel(Observable):
     """
 
     enabled: bool = Field(default=False, description="Route traffic through a VPN")
-    provider: Literal["tailscale"] = Field(
-        default="tailscale", description="Which VPN provider to use"
+    provider: Literal["tailscale", "gluetun"] = Field(
+        default="tailscale",
+        description=(
+            "Which VPN provider to use. Tailscale routes through a machine on "
+            "your own tailnet; Gluetun routes through a commercial VPN "
+            "account. Both are used as a proxy so only the traffic selected "
+            "below goes through them."
+        ),
     )
     route_scraping: bool = Field(
         default=False,
@@ -1368,6 +1409,10 @@ class VpnModel(Observable):
     tailscale: TailscaleModel = Field(
         default_factory=lambda: TailscaleModel(),
         description="Tailscale settings",
+    )
+    gluetun: GluetunModel = Field(
+        default_factory=lambda: GluetunModel(),
+        description="Gluetun settings",
     )
 
 

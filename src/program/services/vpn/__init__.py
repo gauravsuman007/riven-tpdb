@@ -22,6 +22,7 @@ import time
 from loguru import logger
 
 from program.services.vpn.base import ExitNode, VpnProvider, VpnStatus
+from program.services.vpn.gluetun import GluetunProvider
 from program.services.vpn.tailscale import TailscaleProvider
 from program.settings import settings_manager
 
@@ -69,6 +70,13 @@ class VpnService:
             return TailscaleProvider(
                 socket_path=self.settings.tailscale.socket_path,
                 proxy=self.settings.tailscale.proxy_url,
+            )
+
+        if self.settings.provider == "gluetun":
+            return GluetunProvider(
+                control_url=self.settings.gluetun.control_url,
+                proxy=self.settings.gluetun.proxy_url,
+                api_key=self.settings.gluetun.api_key,
             )
 
         logger.warning(f"Unknown VPN provider {self.settings.provider!r}")

@@ -435,6 +435,102 @@ def test_routing_is_still_gated_on_enabled():
     assert service.proxy_for(vpn_mod.STREAMING) is None
 
 
+# ---------------------------------------------------------------- gluetun
+
+
+def _gluetun(status_payload, ip_payload=None):
+    """A GluetunProvider whose control server answers with fixed payloads.
+
+    Loaded directly rather than through the package, matching how the rest of
+    this file avoids importing the world to test one rule.
+    """
+
+    module = _load("program.services.vpn.gluetun", VPN / "gluetun.py")
+    provider = module.GluetunProvider(
+        control_url="http://gluetun:8000",
+        proxy="http://gluetun:8888",
+    )
+
+    def fake_call(method, path, **kwargs):
+        if path == "/v1/publicip/ip":
+            return ip_payload
+        if method == "PUT":
+            return {}
+        return status_payload
+
+    provider._call = fake_call
+    return provider
+
+
+def test_gluetun_offers_no_proxy_while_the_tunnel_is_down():
+    """The failure this whole service exists to prevent.
+
+    Gluetun's HTTP proxy is a separate listener that keeps accepting
+    connections when the tunnel is down, so handing it out unconditionally
+    would silently forward scraper traffic outside the tunnel -- the exact
+    leak, with no symptom.
+    """
+
+    assert _gluetun({"status": "stopped"}).proxy_url() is None
+
+
+def test_gluetun_offers_the_proxy_once_connected():
+    provider = _gluetun({"status": "running"}, ip_payload={"public_ip": "1.2.3.4"})
+
+    assert provider.proxy_url() == "http://gluetun:8888"
+
+
+def test_gluetun_reports_unreachable_rather_than_raising():
+    """status() must never raise: it runs before every routed request."""
+
+    module = _load("program.services.vpn.gluetun", VPN / "gluetun.py")
+    provider = module.GluetunProvider(control_url="http://nowhere:8000", proxy="")
+    provider._call = lambda *a, **k: None
+
+    status = provider.status()
+
+    assert status.connected is False
+    assert status.state == "unreachable"
+    assert "not reachable" in (status.detail or "")
+
+
+def test_gluetun_falls_back_to_the_legacy_status_route():
+    """The route was renamed when WireGuard was added; both versions exist."""
+
+    module = _load("program.services.vpn.gluetun", VPN / "gluetun.py")
+    provider = module.GluetunProvider(control_url="http://gluetun:8000", proxy="http://p:8888")
+
+    seen = []
+
+    def fake_call(method, path, **kwargs):
+        seen.append(path)
+        if path == "/v1/vpn/status":
+            return None  # older build: route does not exist
+        if path == "/v1/openvpn/status":
+            return {"status": "running"}
+        return {}
+
+    provider._call = fake_call
+
+    assert provider.status().connected is True
+    assert "/v1/openvpn/status" in seen
+    # And it is remembered, rather than re-probed on every call.
+    assert provider._status_path == "/v1/openvpn/status"
+
+
+def test_gluetun_does_not_pretend_the_exit_node_is_selectable():
+    """Gluetun's server comes from container env, not from a runtime call.
+
+    Accepting the id and doing nothing would leave the UI showing a choice
+    that never took effect.
+    """
+
+    provider = _gluetun({"status": "running"}, ip_payload={"country": "Sweden"})
+    status = provider.set_exit_node("somewhere-else")
+
+    assert "cannot be changed from here" in (status.detail or "")
+
+
 for _name, _fn in sorted(list(globals().items())):
     if _name.startswith("test_") and callable(_fn):
         check(_name, _fn)
