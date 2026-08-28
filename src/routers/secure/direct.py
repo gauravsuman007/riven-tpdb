@@ -93,13 +93,17 @@ def direct_search(
         Query(description="Use this library item's title as the query"),
     ] = None,
     limit: Annotated[
-        int,
+        int | None,
         Query(
             ge=1,
             le=20,
-            description="Maximum results kept per site, after ranking",
+            description=(
+                "Maximum results kept per site, after ranking. Defaults to "
+                "the Plugins tab's 'Results per site' setting when omitted; "
+                "pass this to override it for a single call."
+            ),
         ),
-    ] = 3,
+    ] = None,
     sites: Annotated[
         str | None, Query(description="Comma-separated site keys")
     ] = None,
@@ -147,7 +151,8 @@ def direct_search(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     selected = [s.strip() for s in sites.split(",")] if sites else None
-    results, errors = direct_service().search(target, limit_per_site=limit, sites=selected)
+    per_site = limit if limit is not None else settings_manager.settings.direct_scraping.results_per_site
+    results, errors = direct_service().search(target, limit_per_site=per_site, sites=selected)
 
     return DirectSearchResponse(
         query=target.title,

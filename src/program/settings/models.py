@@ -1442,6 +1442,18 @@ class DirectScrapingModel(Observable):
             "edited here directly."
         ),
     )
+    results_per_site: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        description=(
+            "How many results to keep per site, after ranking, when no "
+            "explicit limit is given in the search request. The Riven UI's "
+            "own direct-search box always uses this value; the raw API "
+            "still accepts a one-off `limit` query param that overrides it "
+            "for a single call."
+        ),
+    )
 
 
 class AppModel(Observable):
