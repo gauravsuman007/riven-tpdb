@@ -76,3 +76,9 @@ venv.bak/
 
 # MacOs
 **/.DS_Store
+
+# User-supplied direct-scrape plugin files (docker-compose.yml maps this to
+# /riven/plugins). Not ours to track -- keep the folder itself so a fresh
+# clone has somewhere to drop a file into.
+/plugins/*
+!/plugins/.gitkeep

@@ -27,8 +27,11 @@ from pydantic import BaseModel
 
 from program.db.db import db_session
 from program.media.item import MediaItem
-from program.services.directscrapers import DirectScraperService, MatchTarget
+from program.services.directscrapers import MatchTarget, describe_scrapers
+from program.services.directscrapers import reset as reset_direct_service
+from program.services.directscrapers import service as direct_service
 from program.services.vpn import SCRAPING, STREAMING, VpnUnavailable, vpn
+from program.settings import settings_manager
 
 
 router = APIRouter(
@@ -37,9 +40,10 @@ router = APIRouter(
     tags=["direct"],
 )
 
-# One instance for the process: the scrapers hold a requests.Session each and
-# rebuilding them per request would throw away connection pooling and cookies.
-_service = DirectScraperService()
+# `direct_service()` is the process-wide singleton (program/services/directscrapers,
+# module-level `service()`/`reset()`) -- looked up per request rather than
+# cached at import time here, so a plugin toggle or a rescan takes effect
+# on the next search without needing this module reloaded.
 
 
 class DirectVideoModel(BaseModel):
@@ -143,14 +147,14 @@ def direct_search(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     selected = [s.strip() for s in sites.split(",")] if sites else None
-    results, errors = _service.search(target, limit_per_site=limit, sites=selected)
+    results, errors = direct_service().search(target, limit_per_site=limit, sites=selected)
 
     return DirectSearchResponse(
         query=target.title,
         results=[
             DirectVideoModel(
                 site=video.site,
-                site_name=_service.services[video.site].name,
+                site_name=direct_service().services[video.site].name,
                 video_id=video.video_id,
                 title=video.title,
                 page_url=video.page_url,
@@ -176,7 +180,7 @@ def direct_sources(
     """List the renditions a video has, without handing out the URLs."""
 
     try:
-        sources = _service.resolve(site, video_id)
+        sources = direct_service().resolve(site, video_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -214,7 +218,7 @@ async def direct_stream(
     """Resolve and proxy one rendition, passing Range through both ways."""
 
     try:
-        sources = _service.resolve(site, video_id)
+        sources = direct_service().resolve(site, video_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -290,3 +294,95 @@ async def direct_stream(
         headers=response_headers,
         media_type=response_headers.get("content-type", source.mime_type),
     )
+
+
+class ScraperInfoModel(BaseModel):
+    key: str
+    name: str
+    base_url: str
+    kind: str
+    enabled: bool
+    source_file: str | None = None
+    error: str | None = None
+
+
+class PluginsResponse(BaseModel):
+    plugin_dir: str
+    scrapers: list[ScraperInfoModel]
+
+
+def _plugins_response() -> PluginsResponse:
+    return PluginsResponse(
+        plugin_dir=settings_manager.settings.direct_scraping.plugin_dir,
+        scrapers=[
+            ScraperInfoModel(
+                key=info.key,
+                name=info.name,
+                base_url=info.base_url,
+                kind=info.kind,
+                enabled=info.enabled,
+                source_file=info.source_file,
+                error=info.error,
+            )
+            for info in describe_scrapers()
+        ],
+    )
+
+
+@router.get("/plugins", operation_id="direct_plugins")
+def direct_plugins() -> PluginsResponse:
+    """Every known scraper -- built-in and plugin, enabled or not.
+
+    Re-scans the plugin folder on every call. These are a handful of files
+    parsed from local disk, not a network request, so there is nothing to
+    cache and no reason to make "did my new file show up" depend on a
+    separate refresh action.
+    """
+
+    return _plugins_response()
+
+
+@router.post("/plugins/rescan", operation_id="direct_plugins_rescan")
+def direct_plugins_rescan() -> PluginsResponse:
+    """Drop the cached scraper registry and rebuild it.
+
+    `/plugins` above already re-scans the folder for its own listing, so this
+    exists for the other half: making a file drop or an edit to an existing
+    plugin take effect in the scrapers actually used by /direct/search,
+    without waiting for some other settings change to invalidate them first.
+    """
+
+    reset_direct_service()
+    return _plugins_response()
+
+
+class ScraperToggleBody(BaseModel):
+    enabled: bool
+
+
+@router.post("/plugins/{key}/enabled", operation_id="direct_plugin_set_enabled")
+def direct_plugin_set_enabled(
+    key: str, body: ScraperToggleBody
+) -> PluginsResponse:
+    """Switch one scraper on or off, built-in or plugin alike.
+
+    Written to `direct_scraping.disabled` directly rather than through the
+    generic settings form -- that field is hidden from the schema for the
+    same reason `tailscale.auth_key` is (see `settings/visibility.py`): a
+    second write path to the same value with no way to tell which one is
+    current is exactly the "two auth key fields" bug repeating itself.
+    """
+
+    settings = settings_manager.settings.direct_scraping
+    disabled = set(settings.disabled)
+
+    if body.enabled:
+        disabled.discard(key)
+    else:
+        disabled.add(key)
+
+    settings.disabled = sorted(disabled)
+    settings_manager.save()
+    reset_direct_service()
+
+    return _plugins_response()

@@ -49,6 +49,11 @@ services:
             # Harmless when the tailscale service is not running -- the socket
             # is simply absent and the VPN reports itself unreachable.
             - tailscale-sock:/var/run/tailscale
+            # Drop a scraper plugin .py file here and click "Rescan folder"
+            # on Settings -> Plugins to pick it up -- see README.md for the
+            # interface it needs to implement. Read-only: this container only
+            # ever reads plugin files, never writes to the folder.
+            - ./plugins:/riven/plugins:ro
         depends_on:
             riven_postgres:
                 condition: service_healthy

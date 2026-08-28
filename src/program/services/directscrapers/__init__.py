@@ -8,6 +8,7 @@ two into the other's shape.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 
 from loguru import logger
 
@@ -17,6 +18,7 @@ from program.services.directscrapers.hqporner import HQPornerScraper
 from program.services.directscrapers.iporntv import IPornTVScraper
 from program.services.directscrapers.models import DirectSource, DirectVideo
 from program.services.directscrapers.paradisehill import ParadiseHillScraper
+from program.services.directscrapers.plugins import discover_plugins
 from program.services.directscrapers.ranking import (
     MatchTarget,
     best_matches,
@@ -27,6 +29,84 @@ from program.services.directscrapers.tnaflix import TnaflixScraper
 from program.services.directscrapers.tubepornclassic import TubePornClassicScraper
 from program.services.directscrapers.upornia import UporniaScraper
 from program.services.directscrapers.xfreehd import XFreeHDScraper
+
+
+@dataclass(slots=True)
+class ScraperInfo:
+    """One scraper as the Plugins tab needs to show it, whether or not it is
+    currently switched on."""
+
+    key: str
+    name: str
+    base_url: str
+    kind: str  # "builtin" | "plugin"
+    enabled: bool
+    source_file: str | None = None
+    error: str | None = None
+
+
+def describe_scrapers() -> list[ScraperInfo]:
+    """Every known scraper, enabled or not -- built-in first, then plugins.
+
+    Separate from `DirectScraperService.services`, which holds only what is
+    actually enabled: the Plugins tab needs to show and re-enable something
+    that is currently switched off, and a load error has to surface even
+    though nothing was actually registered for it.
+    """
+
+    # Imported here, not at module scope: settings pulls in a large part
+    # of the application (RTN, the DB models, ...), and this module is
+    # imported by test suites that stub those out deliberately.
+    from program.settings import settings_manager
+
+    settings = settings_manager.settings.direct_scraping
+    disabled = set(settings.disabled)
+    infos: list[ScraperInfo] = []
+
+    for cls in DirectScraperService.BUILTIN:
+        scraper = cls()
+        infos.append(
+            ScraperInfo(
+                key=scraper.key,
+                name=scraper.name,
+                base_url=scraper.base_url,
+                kind="builtin",
+                enabled=scraper.key not in disabled,
+            )
+        )
+
+    builtin_keys = {info.key for info in infos}
+    discovery = discover_plugins(settings.plugin_dir)
+
+    for key, loaded in discovery.plugins.items():
+        if key in builtin_keys:
+            continue  # reported via the collision error below instead
+        scraper = loaded.scraper
+        infos.append(
+            ScraperInfo(
+                key=key,
+                name=scraper.name,
+                base_url=scraper.base_url,
+                kind="plugin",
+                enabled=key not in disabled,
+                source_file=loaded.source_file,
+            )
+        )
+
+    for filename, error in discovery.errors.items():
+        infos.append(
+            ScraperInfo(
+                key=f"error:{filename}",
+                name=filename,
+                base_url="",
+                kind="plugin",
+                enabled=False,
+                source_file=filename,
+                error=error,
+            )
+        )
+
+    return infos
 
 
 class DirectScraperService:
@@ -49,21 +129,67 @@ class DirectScraperService:
         "tubepornclassic": 1,
     }
 
+    #: Bundled with the image. A plugin file cannot shadow one of these --
+    #: see `_load_all` -- because these are the tested, maintained scrapers
+    #: and a same-named drop-in silently taking over would be a very
+    #: confusing way to break search for one site.
+    BUILTIN: tuple[type[DirectScraper], ...] = (
+        TnaflixScraper,
+        EPornerScraper,
+        HQPornerScraper,
+        ParadiseHillScraper,
+        TubePornClassicScraper,
+        XFreeHDScraper,
+        UporniaScraper,
+        IPornTVScraper,
+    )
+
     def __init__(self) -> None:
-        self.services: dict[str, DirectScraper] = {
-            scraper.key: scraper
-            for scraper in (
-                TnaflixScraper(),
-                EPornerScraper(),
-                HQPornerScraper(),
-                ParadiseHillScraper(),
-                TubePornClassicScraper(),
-                XFreeHDScraper(),
-                UporniaScraper(),
-                IPornTVScraper(),
-            )
-        }
+        self.plugin_sources: dict[str, str] = {}
+        self.plugin_errors: dict[str, str] = {}
+        self.services: dict[str, DirectScraper] = self._load_all()
         self.initialized = True
+
+    def _load_all(self) -> dict[str, DirectScraper]:
+        """Built-ins plus whatever is dropped into the plugin folder.
+
+        One registry, not two: a plugin is a `DirectScraper` subclass exactly
+        like a built-in, and `search`/`resolve` below never ask which kind a
+        scraper is.
+        """
+
+        from program.settings import settings_manager
+
+        settings = settings_manager.settings.direct_scraping
+        disabled = set(settings.disabled)
+
+        services: dict[str, DirectScraper] = {}
+        for cls in self.BUILTIN:
+            scraper = cls()
+            if scraper.key not in disabled:
+                services[scraper.key] = scraper
+
+        discovery = discover_plugins(settings.plugin_dir)
+        self.plugin_sources = {
+            key: loaded.source_file for key, loaded in discovery.plugins.items()
+        }
+        self.plugin_errors = dict(discovery.errors)
+
+        for key, loaded in discovery.plugins.items():
+            if key in services:
+                # A built-in already claimed this key -- see BUILTIN's
+                # docstring. Recorded as an error rather than silently
+                # dropped, so it shows up in the Plugins tab instead of
+                # looking like the file was never picked up at all.
+                self.plugin_errors[loaded.source_file] = (
+                    f"key {key!r} is a built-in scraper and cannot be "
+                    f"overridden by a plugin"
+                )
+                continue
+            if key not in disabled:
+                services[key] = loaded.scraper
+
+        return services
 
     #: How many results to pull from each site before ranking. Sites order by
     #: their own idea of relevance, which for a multi-word title is "contains
@@ -242,4 +368,40 @@ def _merge_ranked(
     return [video for _, _, _, video in ranked]
 
 
-__all__ = ["DirectScraperService", "DirectSource", "DirectVideo", "MatchTarget"]
+_service: "DirectScraperService | None" = None
+
+
+def service() -> "DirectScraperService":
+    """The process-wide scraper registry.
+
+    A singleton for the same reason as VPN: rebuilding one per request would
+    reset connection pooling for every site, and would re-scan the plugin
+    folder on every search.
+    """
+
+    global _service
+
+    if _service is None:
+        _service = DirectScraperService()
+
+    return _service
+
+
+def reset() -> None:
+    """Drop the cached service so a settings change or a new plugin file
+    takes effect without a restart."""
+
+    global _service
+    _service = None
+
+
+__all__ = [
+    "DirectScraperService",
+    "DirectSource",
+    "DirectVideo",
+    "MatchTarget",
+    "ScraperInfo",
+    "describe_scrapers",
+    "reset",
+    "service",
+]

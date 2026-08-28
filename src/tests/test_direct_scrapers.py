@@ -810,5 +810,123 @@ other = DirectSource(url="https://x/z.mp4", label="SD")
 other.headers["Referer"] = "https://x/"
 check("each source gets its own headers dict", source.headers == {})
 
+print("\nplugin discovery")
+
+import tempfile
+from pathlib import Path
+
+from program.services.directscrapers.plugins import discover_plugins
+
+GOOD_PLUGIN = '''
+from program.services.directscrapers.base import DirectScraper
+from program.services.directscrapers.models import DirectVideo, DirectSource
+
+class ExampleScraper(DirectScraper):
+    key = "example"
+    name = "Example"
+    base_url = "https://example.test"
+
+    def search(self, query, limit=20):
+        return [DirectVideo(site="example", video_id="1", title=query, page_url="https://example.test/1")]
+
+    def resolve(self, video_id):
+        return [DirectSource(url="https://example.test/file.mp4", label="HD")]
+'''
+
+BROKEN_SYNTAX = "def not valid python(:\n"
+
+NO_SCRAPER_CLASS = "x = 1\n"
+
+DUPLICATE_KEY = GOOD_PLUGIN.replace("ExampleScraper", "AnotherScraper")
+
+with tempfile.TemporaryDirectory() as tmp:
+    plugin_dir = Path(tmp)
+    (plugin_dir / "good.py").write_text(GOOD_PLUGIN)
+    result = discover_plugins(str(plugin_dir))
+    check("a well-formed plugin is discovered", "example" in result.plugins)
+    check("no errors for a well-formed plugin", result.errors == {})
+    scraper = result.plugins["example"].scraper
+    check(
+        "the plugin's search actually runs",
+        scraper.search("test")[0].title == "test",
+    )
+    check(
+        "the plugin's resolve actually runs",
+        scraper.resolve("1")[0].url == "https://example.test/file.mp4",
+    )
+    check("source file is recorded", result.plugins["example"].source_file == "good.py")
+
+with tempfile.TemporaryDirectory() as tmp:
+    plugin_dir = Path(tmp)
+    (plugin_dir / "broken.py").write_text(BROKEN_SYNTAX)
+    result = discover_plugins(str(plugin_dir))
+    check("a broken plugin is not registered", result.plugins == {})
+    check("a broken plugin's error is reported", "broken.py" in result.errors)
+
+with tempfile.TemporaryDirectory() as tmp:
+    plugin_dir = Path(tmp)
+    (plugin_dir / "empty.py").write_text(NO_SCRAPER_CLASS)
+    result = discover_plugins(str(plugin_dir))
+    check(
+        "a file with no scraper class is reported, not silently skipped",
+        "empty.py" in result.errors,
+    )
+
+with tempfile.TemporaryDirectory() as tmp:
+    plugin_dir = Path(tmp)
+    (plugin_dir / "a.py").write_text(GOOD_PLUGIN)
+    (plugin_dir / "b.py").write_text(DUPLICATE_KEY)
+    result = discover_plugins(str(plugin_dir))
+    check(
+        "the first plugin to claim a key wins, the second is an error",
+        len(result.plugins) == 1 and "b.py" in result.errors,
+    )
+
+check(
+    "a missing plugin directory is not an error",
+    discover_plugins("/no/such/directory/exists").errors == {},
+)
+
+print("\nbuilt-in scrapers cannot be shadowed by a plugin")
+# `DirectScraperService` reads settings lazily (program/services/directscrapers,
+# so this file can stay self-contained without a real settings module), which
+# means exercising it needs `program.settings` -- and that pulls in RTN and
+# the DB models, unlike everything else in this file. Skipped rather than
+# failing the whole suite where that dependency is not installed.
+try:
+    import program.settings  # noqa: F401
+except ModuleNotFoundError as exc:
+    print(f"SKIP: {exc} (only affects this section)")
+else:
+    with tempfile.TemporaryDirectory() as tmp:
+        plugin_dir = Path(tmp)
+        shadow = GOOD_PLUGIN.replace('"example"', '"tnaflix"').replace(
+            "ExampleScraper", "ShadowScraper"
+        )
+        (plugin_dir / "shadow.py").write_text(shadow)
+
+        from unittest.mock import patch
+
+        class _StubDirectScraping:
+            plugin_dir = str(plugin_dir)
+            disabled: list[str] = []
+
+        class _StubSettings:
+            direct_scraping = _StubDirectScraping()
+
+        class _StubManager:
+            settings = _StubSettings()
+
+        with patch("program.settings.settings_manager", _StubManager()):
+            service = DirectScraperService()
+            check(
+                "the built-in tnaflix scraper is the one registered",
+                type(service.services["tnaflix"]).__name__ == "TnaflixScraper",
+            )
+            check(
+                "the shadowing attempt is reported as an error, not silently dropped",
+                any("built-in" in msg for msg in service.plugin_errors.values()),
+            )
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

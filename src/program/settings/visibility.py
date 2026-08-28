@@ -43,6 +43,13 @@ HIDDEN_SECTIONS: dict[str, frozenset[str]] = {
     # `proxy_url` are container wiring meant to match docker-compose, the same
     # reasoning that keeps RIVEN_* infra out of the settings UI elsewhere.
     "vpn": frozenset({"tailscale"}),
+    # `disabled` has a dedicated write path: the Plugins tab's per-row toggle.
+    # Rendering it in the generic form too would repeat the exact
+    # two-write-paths trap `tailscale.auth_key` caused above -- a raw list-of-
+    # strings editor saved through the generic form and the toggle's
+    # `/settings/set/direct_scraping.disabled` both writing the same key with
+    # no way to tell which one is current.
+    "direct_scraping": frozenset({"disabled"}),
 }
 
 

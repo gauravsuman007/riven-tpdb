@@ -664,6 +664,45 @@ that is not rendered is dropped from the submitted payload.
   that looks confident is the worst failure mode in this codebase. Rules fail
   with a traceable reason; a model fails silently at high confidence.
 
+## Direct-scrape scraper plugins
+- `services/directscrapers/plugins.py` discovers `DirectScraper` subclasses
+  dropped into `settings.direct_scraping.plugin_dir` (default
+  `/riven/plugins`, mapped from a `./plugins` host folder in
+  `docker-compose.yml`, `:ro` -- the container only ever reads plugin files).
+  There is ONE registry, not a built-in path and a separate plugin path: the
+  eight bundled scrapers (`BUILTIN` on `DirectScraperService`) and anything
+  discovered from disk both end up as ordinary `DirectScraper` instances in
+  `service.services`, and `search`/`resolve` never ask which kind a scraper
+  is. README.md documents the plugin interface for anyone adding a site.
+- TRAP averted, not hit: a plugin key CANNOT shadow a built-in
+  (`tnaflix`/`eporner`/etc are reserved). Without that check, a plugin file
+  claiming an existing key would silently replace a tested, maintained
+  scraper with an unreviewed one on the next rescan -- reported as a load
+  error instead, visible in Settings -> Plugins.
+- A broken plugin (syntax error, missing class, a constructor that raises)
+  degrades to a per-file error the same way a VPN provider degrades to
+  "unavailable" -- never raises into the service, never takes the other
+  scrapers down with it. `discover_plugins` is the one place that boundary
+  lives; do not let a plugin's exception propagate past it.
+- Settings: `direct_scraping.disabled` (list of scraper keys, builtin or
+  plugin) is the single source of truth for on/off, written ONLY via
+  `POST /direct/plugins/{key}/enabled`, never through the generic settings
+  form -- `disabled` is in `HIDDEN_SECTIONS` for exactly the reason
+  `tailscale.auth_key` was: two write paths to the same value is how the
+  "two auth key fields" bug happened the first time.
+- `DirectScraperService` (and thus `describe_scrapers()`, which the Plugins
+  tab polls) reads settings AND re-scans the plugin folder on every call --
+  deliberately no caching of the file list itself, since "did my dropped-in
+  file show up" needs to be true within one click, not after some unrelated
+  settings change invalidates a cache. The registry actually used by
+  `/direct/search` IS cached (`services/directscrapers` module-level
+  `service()`/`reset()`, same singleton-plus-observer pattern as VPN) and is
+  invalidated by the enable/disable endpoint and by `/direct/plugins/rescan`.
+- `program/services/directscrapers/__init__.py` imports `settings_manager`
+  lazily, inside the methods that need it, not at module scope. Importing it
+  at the top would pull RTN and the DB models into `test_direct_scrapers.py`,
+  which is otherwise self-contained and runs without a real settings module.
+
 ## TPDB search ordering
 TPDB's `q` search returns matches in no useful order, ignores every ordering
 parameter it accepts, and its page size is fixed at 20 whatever `per_page` says.

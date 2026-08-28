@@ -94,6 +94,15 @@ def _reset_vpn_service() -> None:
     reset()
 
 
+def _reset_direct_scraper_service() -> None:
+    """Drop the cached scraper registry so a plugin toggle -- or a new file
+    dropped into the plugin folder -- takes effect without a restart."""
+
+    from program.services.directscrapers import reset
+
+    reset()
+
+
 class Program(threading.Thread):
     """Program class"""
 
@@ -213,6 +222,7 @@ class Program(threading.Thread):
         # already-built service keeps answering as if it were still disabled
         # until something else happens to rebuild it.
         settings_manager.register_observer(_reset_vpn_service)
+        settings_manager.register_observer(_reset_direct_scraper_service)
 
         os.makedirs(data_dir_path, exist_ok=True)
 

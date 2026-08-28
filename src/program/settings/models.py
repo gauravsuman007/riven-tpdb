@@ -1355,6 +1355,34 @@ class VpnModel(Observable):
     )
 
 
+class DirectScrapingModel(Observable):
+    """Which direct-site scrapers run, built-in and user-supplied alike.
+
+    A scraper is just a Python file defining a `DirectScraper` subclass --
+    see the Plugins tab and README for the interface. The built-in sites ship
+    with the image; anything dropped into `plugin_dir` is discovered the same
+    way and toggled the same way, so there is one mechanism, not two.
+    """
+
+    plugin_dir: str = Field(
+        default="/riven/plugins",
+        description=(
+            "Where to look for user-supplied scraper plugins, mapped from a "
+            "host folder in docker-compose.yml. Changing this without "
+            "changing the compose mount points at a path nothing is shared "
+            "into."
+        ),
+    )
+    disabled: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Scraper keys switched off, whether built-in or from a plugin "
+            "file. Written by the Plugins tab's toggle, not meant to be "
+            "edited here directly."
+        ),
+    )
+
+
 class AppModel(Observable):
     version: str = Field(default_factory=get_version, description="Application version")
     api_key: str = Field(default="", description="API key for Riven API access")
@@ -1384,6 +1412,10 @@ class AppModel(Observable):
     vpn: VpnModel = Field(
         default_factory=lambda: VpnModel(),
         description="Route scraper and streaming traffic through a VPN",
+    )
+    direct_scraping: DirectScrapingModel = Field(
+        default_factory=lambda: DirectScrapingModel(),
+        description="Direct streaming-site scrapers, built-in and plugin",
     )
     filesystem: FilesystemModel = Field(
         default_factory=lambda: FilesystemModel(),

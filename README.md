@@ -223,6 +223,104 @@ them from the environment. TPDB-specific variables:
 | `RIVEN_SCRAPING_JACKETT_URL`      | Jackett URL (default `http://localhost:9117`)      |
 | `RIVEN_SCRAPING_JACKETT_API_KEY`  | Jackett API key                                    |
 
+## Direct-scrape scraper plugins
+
+Besides scraping torrent indexers, Riven can search streaming sites directly
+("Watch from a site" on a title's detail page) and play a scene straight from
+the site's own CDN -- no torrent, no debrid step. The eight built-in sites
+(tnaflix, eporner, hqporner, paradisehill, tubepornclassic, xfreehd, upornia,
+iporntv) live in `src/program/services/directscrapers/`, and Settings ->
+Plugins lets you switch any of them off, or add your own for a site none of
+them cover.
+
+### Adding a scraper
+
+Drop a Python file into the `plugins/` folder (mapped to `/riven/plugins`
+inside the container by `docker-compose.yml`), then click "Rescan folder" on
+Settings -> Plugins. No rebuild, no restart. Your file needs one class:
+
+```python
+from program.services.directscrapers.base import DirectScraper
+from program.services.directscrapers.models import DirectVideo, DirectSource
+
+
+class MySiteScraper(DirectScraper):
+    key = "mysite"          # unique; also what /resolve is keyed on
+    name = "My Site"        # shown in the UI
+    base_url = "https://mysite.example"
+
+    def search(self, query: str, limit: int = 20) -> list[DirectVideo]:
+        ...  # hit the site's search page/API, return up to `limit` results
+
+    def resolve(self, video_id: str) -> list[DirectSource]:
+        ...  # given one of your own video_ids, return its playable renditions
+```
+
+That is the entire contract -- one class, two methods. `DirectScraper.__init__`
+already gives you `self.session`, a `requests.Session` with a real browser
+User-Agent and (if the user has turned it on) automatic routing through their
+configured VPN; use it instead of `requests` directly so your traffic honours
+that setting.
+
+**`search(query, limit)` -> `list[DirectVideo]`**, best match first, at most
+`limit` items. Fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `site` | `str` | Your scraper's `key` |
+| `video_id` | `str` | Whatever identifies this video on your site -- passed back to `resolve()` unchanged |
+| `title` | `str` | As the site wrote it. Matching against the library happens later; do not pre-filter here |
+| `page_url` | `str` | Link to the video's page on the site |
+| `thumbnail` | `str \| None` | |
+| `duration` | `int \| None` | Seconds. `None`, never `0`, when the site does not say |
+| `resolution` | `str \| None` | One of `"2160p"`, `"1440p"`, `"1080p"`, `"720p"`, `"576p"`, `"480p"`, `"360p"`, or `None` if genuinely unknown -- do not guess from an "HD" badge, that is what `hd` is for |
+| `size` | `int \| None` | Bytes, if the site states it up front |
+| `views` | `int \| None` | |
+| `hd` | `bool` | The site showed an HD badge -- a claim, not a measurement |
+
+Do not filter or rank results yourself. `DirectScraperService` runs your
+`search()` for several phrasings of the same query and scores everything
+centrally against the library's title, cast and studio
+(`services/directscrapers/ranking.py`) -- see
+[`AGENTS.md`](./AGENTS.md#direct-scrape-matching-tube-sites) for why a naive
+title-only filter lets a lot of false positives through, and what this
+project settled on instead.
+
+**`resolve(video_id)` -> `list[DirectSource]`**, best quality first. Called
+fresh on every playback request -- these URLs are frequently short-lived or
+IP-bound, so nothing here is cached. Fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `url` | `str` | The actual media URL |
+| `label` | `str` | Shown in a quality picker, e.g. `"1080p"` or `"HD"` |
+| `resolution` | `str \| None` | Same scale as above |
+| `size` | `int \| None` | Bytes |
+| `mime_type` | `str` | Defaults to `"video/mp4"` -- set it explicitly if your site serves HLS (`"application/vnd.apple.mpegurl"`) or anything else |
+| `headers` | `dict[str, str]` | Extra headers the URL needs to actually load -- most commonly `Referer`. Travels with the URL rather than being reconstructed by whoever plays it |
+
+### Rules a plugin must follow
+
+- **One `DirectScraper` subclass per file.** A file can define helper
+  functions and classes freely; only the first `DirectScraper` subclass is
+  registered as a scraper (a second is reported as an error, not silently
+  ignored).
+- **`key` cannot collide with a built-in.** `tnaflix`, `eporner`, and the
+  other seven are reserved; a plugin using one of those keys is rejected with
+  a visible error in Settings -> Plugins rather than silently overriding it.
+- **Never raise out of `search()` or `resolve()` for an ordinary "no
+  results."** Return an empty list. Raise only for something the caller
+  should actually surface as an error (the site being unreachable, for
+  instance) -- `DirectScraperService` already treats one scraper failing as
+  normal and keeps the others' results.
+- **A broken plugin cannot take the app down.** A syntax error, a missing
+  import, a constructor that raises -- all of it is caught at load time,
+  recorded as a per-file error visible in Settings -> Plugins, and the rest
+  of the scrapers keep working. Fix the file and click "Rescan folder" again.
+
+Look at `src/program/services/directscrapers/hqporner.py` or `xfreehd.py` for
+a complete, working example of the shape above.
+
 ## Docker images
 
 A GitHub Actions workflow (`.github/workflows/docker-build-multiarch.yml`)
