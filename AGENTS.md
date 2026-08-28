@@ -811,3 +811,36 @@ default; every route 404s while `jellyfin_server.enabled` is false.
   never reaches it and clients must add the server by address. Making it work
   needs `network_mode: host`, which on this deployment would collide with the
   separate real Jellyfin already running host-networked on 7359/8096.
+- THE CLIENT SPLIT THAT MATTERS, measured live 2026-08-28 against a real phone
+  and TV. It is NOT "official vs third-party" -- it is **WebView shell vs
+  native UI**:
+  - **WebView shells** validate the server with `GET /System/Info/Public`
+    (which we answer correctly), then open a WebView on `/` and expect to load
+    the real **jellyfin-web** bundle from the server. We do not host one, so
+    they fail. Confirmed for **Jellyfin for Android (mobile, official, 2.7.1)**
+    and the **LG webOS** app. The webOS app asks for `/web/manifest.json` and
+    reports "server returned 404"; the Android app loads `/` and then dies
+    silently with "Connection cannot be established".
+  - **Native clients** (Jellyfin for **Android TV**, Swiftfin, Findroid) build
+    their own UI from the API and are the only shape this masquerade can serve.
+  - Serving our OWN html at `/` does NOT rescue the shells -- tested directly:
+    the app fetched our page 200 OK, requested nothing further, and still
+    errored. `jellyfin-android` injects a `NativeShell` JS bridge and waits for
+    the loaded page to bootstrap and call back; only jellyfin-web does that.
+    So "just send our frontend to the TV" is a dead end, and satisfying the
+    shells means hosting genuine jellyfin-web -- which then demands the full
+    web-client API surface, far beyond what is implemented here.
+- DEBUGGING TRAP that cost real time here: a WebView's User-Agent is
+  indistinguishable from Chrome (`...; wv) ... Mobile Safari`), so the app's
+  own `GET /` + `GET /favicon.ico` look exactly like someone poking the server
+  from a browser. Do not attribute requests by shape. `LoguruMiddleware` logs
+  neither client IP nor User-Agent, and uvicorn runs with `log_config=None` so
+  its "Invalid HTTP request" warnings (a TLS handshake against the plain HTTP
+  port, say) are swallowed too -- meaning the logs alone CANNOT tell you who
+  sent what. The way to get ground truth without tcpdump (not installed, and
+  no passwordless sudo on the server) is a throwaway `socket` listener on a
+  spare port that logs the raw request line and User-Agent.
+- Request logging exists but is level `API` == DEBUG (`utils/logging.py`), so
+  it is invisible at the default INFO. Raising `log_level` needs a container
+  restart to take effect: `setup_logger()` runs once at import, so changing the
+  setting alone does nothing to the running process.
