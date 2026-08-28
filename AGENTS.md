@@ -422,6 +422,12 @@ stack is a full checkout at `/home/hellonfire/Server/riven-tpdb`.
 - Verifying without the api_key: `local_access` is on for loopback and the
   frontend proxies with the key injected, so from the server
   `curl -s http://127.0.0.1:3001/api/v1/items?limit=30` returns real data.
+- TRAP: if the previous `riven-tpdb` container was killed uncleanly (crash,
+  `docker compose up -d` on a hung process) while RivenVFS had it mounted,
+  `docker compose up -d riven-tpdb` fails with `invalid mount config for type
+  "bind": stat .../library: transport endpoint is not connected` -- a stale
+  FUSE mount survives the dead container. Fix: `umount -l
+  /home/hellonfire/Server/riven-tpdb/library` on the host, then retry `up -d`.
 - `RIVEN_FORCE_ENV=true` is set on the server. Any `RIVEN_*` env var silently
   overwrites the UI-saved setting on every start.
 
