@@ -165,13 +165,23 @@ async def proxy(request: Request, path: str) -> Response:
     headers = _response_headers(upstream)
 
     # TEMPORARY diagnostics for the WebView login investigation. Deliberately
-    # omits the request/response bodies (credentials) and only logs shape:
-    # method, path, status, and whether a session cookie came back. Remove
-    # once the login flow is confirmed working end-to-end.
+    # redacts cookie VALUES (session tokens) but logs their name + attributes,
+    # since Secure/SameSite/Domain is exactly what decides whether a WebView's
+    # cookie jar keeps or silently drops one. Remove once the login flow is
+    # confirmed working end-to-end.
+    cookie_shapes = []
+    for key, raw in upstream.headers.multi_items():
+        if key.lower() != "set-cookie":
+            continue
+        name = raw.split("=", 1)[0]
+        attrs = raw.split(";", 1)[1].strip() if ";" in raw else ""
+        cookie_shapes.append(f"{name}[{attrs}]")
+
     logger.info(
         f"webui proxy: {request.method} /{path} -> {upstream.status_code} "
         f"ct={content_type!r} origin_sent={_forward_headers(request).get('origin')!r} "
-        f"set-cookie={'yes' if 'set-cookie' in upstream.headers else 'no'} "
+        f"cookie_in={request.headers.get('cookie', '(none)')[:60]!r} "
+        f"set-cookie={cookie_shapes if cookie_shapes else 'no'} "
         f"location={upstream.headers.get('location')!r}"
     )
 
