@@ -78,6 +78,27 @@ BROWSER_CONTAINERS = {"mp4", "mov", "m4v", "webm"}
 # the same file fine. Highest priority first.
 CONTAINER_PRIORITY = ("mp4", "webm", "m4v", "mov")
 
+# ffprobe's format_name for a Matroska file is "matroska,webm" -- WebM is a
+# constrained profile of Matroska, so ffprobe always lists it as a second,
+# valid reading of the same bytes. CONTAINER_PRIORITY alone would pick "webm"
+# here too, for the same reason it picked "mov": it is the one name in the
+# list that BROWSER_CONTAINERS (and a naive priority order) recognises.
+# But a real MKV is not a WebM -- reporting it as one to a client is the same
+# mistake as reporting "mov" for an MP4, just for a container browsers were
+# never going to direct-play anyway (mkv is not in BROWSER_CONTAINERS), so it
+# only surfaced once ffprobe was actually asked, on "Pirates" -- a Bluray
+# remux MKV. Checked ahead of CONTAINER_PRIORITY, and only for an ffprobe
+# format_name that pairs "matroska" with "webm"; a real WebM file's
+# format_name is just "webm" alone, with no "matroska" alongside it.
+def _pick_container(names: list[str], present: set[str]) -> str | None:
+    if "matroska" in present:
+        return "mkv"
+
+    return next(
+        (n for n in CONTAINER_PRIORITY if n in present),
+        names[0] if names else None,
+    )
+
 
 @dataclass(frozen=True)
 class Capabilities:
@@ -210,10 +231,7 @@ def _ffprobe(url: str) -> MediaProbe:
     # format_name is a comma-separated list, e.g. "mov,mp4,m4a,3gp,3g2,mj2".
     names = (fmt.get("format_name") or "").split(",")
     present = set(names)
-    probe.container = next(
-        (n for n in CONTAINER_PRIORITY if n in present),
-        names[0] if names else None,
-    )
+    probe.container = _pick_container(names, present)
 
     for stream in data.get("streams") or []:
         if stream.get("codec_type") == "video" and not probe.video_codec:
