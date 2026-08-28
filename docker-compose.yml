@@ -82,6 +82,12 @@ services:
             - DATABASE_URL=/riven/data/riven.db
             # Allow creating the first account; disable once registered.
             - ENABLE_EMAIL_PASSWORD_SIGNUP=true
+            # Answer the Jellyfin client protocol at this same address, for
+            # the official Android/webOS apps and TV clients. Off by default;
+            # password is always BACKEND_API_KEY. See the frontend AGENTS.md.
+            - JELLYFIN_ENABLED=false
+            # - JELLYFIN_SERVER_NAME=Riven
+            # - JELLYFIN_USERNAME=riven
         ports:
             - "3000:3000"
         volumes:
