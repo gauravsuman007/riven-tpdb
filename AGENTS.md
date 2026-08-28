@@ -769,92 +769,31 @@ this section if absent). Decisions so far, so they are not relitigated:
   `/System/Info/Public` plus auth, log every inbound request, point a real
   client at it and let it state its requirements.
 
-## Jellyfin masquerade -- built
-`program/services/jellyfin_server/` plus `routers/jellyfin.py`, mounted at the
-app ROOT (clients build absolute paths and cannot be given a prefix). Off by
-default; every route 404s while `jellyfin_server.enabled` is false.
-- TRAP, and it cost a debugging cycle: Jellyfin's server is ASP.NET, whose
-  routing is CASE-INSENSITIVE. Real clients rely on it -- the Python client
-  library probes `/system/info/public`, not `/System/Info/Public`. FastAPI
-  matches case-sensitively, so a real client 404s on its first request and
-  reports the server unreachable. `_CaseInsensitiveRoute` recompiles
-  Starlette's `path_regex` with IGNORECASE. A hand-written curl script CANNOT
-  find this, because the same person writes both ends and uses the documented
-  casing on both; it took `jellyfin-apiclient-python`. This is the concrete
-  case for measuring real clients.
-- Route order matters: `/Users/AuthenticateByName`, `/Users/Me` and
-  `/Users/Public` must stay declared BEFORE `/Users/{user_id}` or the
-  catch-all swallows them.
-- One secret, not two. The Jellyfin password IS `settings.api_key` and the
-  issued token is that same key, so there is no session store, nothing expires
-  on restart, and this path cannot grant what the existing API would refuse.
-  Do not add a user table here without a reason that survives that argument.
-- Be permissive on auth headers: we are the SERVER and do not choose what the
-  client sends. `Authorization: MediaBrowser`, `X-Emby-Authorization`,
-  `X-Emby-Token`, `X-MediaBrowser-Token` and the `api_key` query parameter are
-  all accepted, permanently. The 10.11 deprecation aims at client authors, and
-  TV apps update slowly. Stream URLs especially need the query form -- clients
-  hand a bare URL to a platform player that sends no custom headers.
-- Browse endpoints answer from Postgres and MUST NOT probe. `PlaybackInfo` is
-  the ONE route allowed to probe, because the user just pressed play and is
-  about to pull the file anyway. Doing it per grid tile is the library-scan
-  behaviour that makes a media server unusable against a debrid VFS.
-- Measured, and the reason the probe fallback exists at all: of 64 filesystem
-  entries in the live library, 64 had a MediaMetadata row and ZERO were
-  probed -- the metadata is filename-parsed, so only 4 carried a video codec.
-  Trusting stored metadata alone told every client "direct" and would have
-  shown a black screen on any TV that could not decode the file.
-- `SupportsDirectPlay` is false by design: direct play means the CLIENT opens
-  the path itself, and ours is inside a FUSE mount no client can reach.
-  Direct STREAM is the equivalent.
-- Discovery (UDP 7359) works but is bridge-networked here, so LAN broadcast
-  never reaches it and clients must add the server by address. Making it work
-  needs `network_mode: host`, which on this deployment would collide with the
-  separate real Jellyfin already running host-networked on 7359/8096.
-- THE CLIENT SPLIT THAT MATTERS, measured live 2026-08-28 against a real phone
-  and TV. It is NOT "official vs third-party" -- it is **WebView shell vs
-  native UI**:
-  - **WebView shells** validate the server with `GET /System/Info/Public`
-    (which we answer correctly), then open a WebView on `/` and expect to load
-    the real **jellyfin-web** bundle from the server. We do not host one, so
-    they fail. Confirmed for **Jellyfin for Android (mobile, official, 2.7.1)**
-    and the **LG webOS** app. The webOS app asks for `/web/manifest.json` and
-    reports "server returned 404"; the Android app loads `/` and then dies
-    silently with "Connection cannot be established".
-  - **Native clients** (Jellyfin for **Android TV**, Swiftfin, Findroid) build
-    their own UI from the API and are the only shape this masquerade can serve.
-  - The shells ARE satisfiable without jellyfin-web, and we now do it:
-    `services/jellyfin_server/webapp.py` serves a small purpose-built UI at `/`
-    (routes in `routers/jellyfin.py`). Read that module's docstring before
-    touching any of it. The three load-bearing facts, taken from the
-    `jellyfin-android` source rather than inferred:
-      1. `onConnectedToWebapp()` fires from `shouldInterceptRequest()` on a URL
-         PATH match against `.*/main\.[^/\s]+\.bundle\.js`; the response is
-         never inspected. The app is therefore served AS that bundle, so one
-         request both trips the flag and ships the code. RENAMING THAT PATH
-         BREAKS BOTH CLIENTS SILENTLY -- a spinner, then a 10s timeout
-         (`INITIAL_CONNECTION_TIMEOUT`), and no log line saying why.
-      2. The native layer takes its token from OUR localStorage:
-         `jellyfin_credentials` -> `Servers[0].{UserId,AccessToken}`. Logging
-         in on that page is what authenticates ExoPlayer.
-      3. `window.NativePlayer.loadPlayer()` takes ITEM IDS, not URLs. Playback
-         resolves via `/Items/{id}/PlaybackInfo` + `/Videos/{id}/stream`, so
-         native playback needed NO new backend code.
-    An earlier attempt served plain HTML with no such script tag, got a clean
-    200, and still failed -- which looked like proof that only genuine
-    jellyfin-web could work. It was not; the page simply never requested a
-    matching bundle path. Do not re-derive that wrong conclusion.
-- DEBUGGING TRAP that cost real time here: a WebView's User-Agent is
-  indistinguishable from Chrome (`...; wv) ... Mobile Safari`), so the app's
-  own `GET /` + `GET /favicon.ico` look exactly like someone poking the server
-  from a browser. Do not attribute requests by shape. `LoguruMiddleware` logs
-  neither client IP nor User-Agent, and uvicorn runs with `log_config=None` so
-  its "Invalid HTTP request" warnings (a TLS handshake against the plain HTTP
-  port, say) are swallowed too -- meaning the logs alone CANNOT tell you who
-  sent what. The way to get ground truth without tcpdump (not installed, and
-  no passwordless sudo on the server) is a throwaway `socket` listener on a
-  spare port that logs the raw request line and User-Agent.
-- Request logging exists but is level `API` == DEBUG (`utils/logging.py`), so
-  it is invisible at the default INFO. Raising `log_level` needs a container
-  restart to take effect: `setup_logger()` runs once at import, so changing the
-  setting alone does nothing to the running process.
+## Jellyfin masquerade -- moved to the frontend repo
+Built here first (this session, 2026-08-28), then relocated whole: implementing
+it as a reverse proxy in front of a SEPARATE frontend app meant two different
+processes each thought they owned "the origin" (SvelteKit's CSRF check pins a
+fixed `ORIGIN` env var; the login response's THREE `Set-Cookie` headers
+collapsed into one malformed value going through a hand-rolled proxy's
+`dict`-based header handling) -- a new integration bug for every layer bridged.
+Moving the whole client protocol into `riven-tpdb-frontend` (which already
+calls this backend's plain API as a BFF) removes the bridge entirely: one
+process, one origin, nothing to keep in sync.
+
+This backend now speaks NO Jellyfin protocol. `routers/secure/stream.py`
+(`/api/v1/stream/file/{id}`, `/playback_info/{id}`, `/hls/{id}/...`) is the
+ONLY piece Jellyfin playback still depends on here, and it needed zero changes
+-- it already existed for the browser player, and the frontend's Jellyfin
+routes call it exactly the way the browser player does.
+
+All the hard-won client-protocol facts (case-insensitive routing, the
+WebView-shell-vs-native client split, the `main.*.bundle.js` connection
+trigger, auth header permissiveness, `PlaybackInfo` probing rules) now live in
+`riven-tpdb-frontend`'s `AGENTS.md` alongside the implementation. Read there
+before touching Jellyfin behavior; this repo has nothing left to find on it.
+
+Discovery (UDP 7359) was NOT ported. It never worked on this deployment
+regardless of which process ran it: the container is bridge-networked, so LAN
+broadcast cannot reach it either way, and `network_mode: host` would collide
+with the real Jellyfin already on 7359/8096. Revisit only if that networking
+constraint changes.

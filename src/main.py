@@ -29,8 +29,6 @@ from program.settings.models import get_version
 from program.settings import settings_manager
 from program.utils.cli import handle_args
 from routers import app_router
-from routers.jellyfin import router as jellyfin_router
-from routers.webui import router as webui_router
 
 
 class LoguruMiddleware(BaseHTTPMiddleware):
@@ -111,15 +109,12 @@ app.add_middleware(
 )
 
 app.include_router(app_router)
-# Mounted at the root, after the /api/v1 router. Jellyfin clients build
-# absolute paths (/System/Info/Public, /Users/AuthenticateByName) and cannot be
-# given a prefix; every route inside checks `jellyfin_server.enabled` and 404s
-# when the feature is off, so an unused masquerade adds no reachable surface.
-app.include_router(jellyfin_router)
-# LAST on purpose: a catch-all that reverse proxies the Riven web UI for
-# Jellyfin's WebView clients, so it only ever sees paths nothing above
-# claimed. Inert unless jellyfin_server.web_ui_url is set.
-app.include_router(webui_router)
+# The Jellyfin-compatible surface (routers/jellyfin.py, routers/webui.py,
+# program/services/jellyfin_server/) has moved to the frontend repo, which now
+# implements the client protocol and serves the real web UI from one origin --
+# see riven-tpdb-frontend's src/routes/[...jellyfin]. This backend no longer
+# speaks Jellyfin at all; it only serves the plain API the frontend calls,
+# same as any other consumer.
 
 
 class Server(uvicorn.Server):
