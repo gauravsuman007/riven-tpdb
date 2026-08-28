@@ -1457,6 +1457,20 @@ class JellyfinServerModel(Observable):
             "header."
         ),
     )
+    web_ui_origin: str = Field(
+        default="",
+        description=(
+            "The frontend's own ORIGIN environment variable, e.g. "
+            "http://192.168.1.10:3001. SvelteKit's adapter-node rejects a login "
+            "POST as cross-site unless the browser's Origin header matches this "
+            "exactly, and a Jellyfin app connecting through THIS server sends "
+            "this server's address instead -- so leaving this blank means "
+            "signing in through a Jellyfin app fails with no visible error. Set "
+            "it to the frontend container's ORIGIN value and every such request "
+            "is rewritten to match before being proxied. Only takes effect "
+            "alongside web_ui_url."
+        ),
+    )
     advertised_url: str = Field(
         default="",
         description=(

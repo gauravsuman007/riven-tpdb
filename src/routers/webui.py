@@ -92,6 +92,27 @@ def _forward_headers(request: Request) -> dict[str, str]:
     if request.headers.get("host"):
         headers["x-forwarded-host"] = request.headers["host"]
 
+    # SvelteKit's CSRF check compares the browser's Origin header against the
+    # frontend's OWN `ORIGIN` env var -- a fixed string, not something
+    # X-Forwarded-Host can influence. A Jellyfin app connecting through THIS
+    # server sends Origin: <this server>, which never matches, so every form
+    # POST (login included) is silently rejected as cross-site. Rewriting it
+    # to the value the frontend actually trusts is the only fix that does not
+    # touch the frontend container or weaken its CSRF check for direct
+    # (non-proxied) visitors.
+    trusted_origin = settings_manager.settings.jellyfin_server.web_ui_origin
+
+    if trusted_origin:
+        if "origin" in headers:
+            headers["origin"] = trusted_origin
+
+        referer = headers.get("referer")
+
+        if referer:
+            headers["referer"] = referer.replace(
+                f"{request.url.scheme}://{request.url.netloc}", trusted_origin, 1
+            )
+
     return headers
 
 
