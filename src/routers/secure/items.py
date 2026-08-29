@@ -2347,14 +2347,32 @@ async def set_item_tpdb(
         previous = item.tpdb_id
         item.tpdb_id = (body.tpdb_id or "").strip() or None
 
-        # Anything derived from the OLD record has to go with it, or the item
-        # keeps a poster and a cast list belonging to a film it is no longer
-        # associated with -- which is the same bug in a quieter form.
+        cleared_poster = False
+
         if item.tpdb_id != previous:
+            # The poster has to go with the association that supplied it.
+            # Detaching a wrong record while keeping its artwork leaves the
+            # item showing another film's cover, which is the same bug in a
+            # quieter form -- and harder to notice, because the title beside
+            # it is now correct.
+            #
+            # Matched on the TPDB CDN host rather than cleared outright: these
+            # items can equally carry a poster from the storefront they were
+            # requested from, and that one is still right.
+            if item.poster_path and "theporndb.net" in item.poster_path:
+                item.poster_path = None
+                cleared_poster = True
+
             session.commit()
             logger.info(
                 f"TPDB association for {item.log_string} changed: "
                 f"{previous or 'none'} -> {item.tpdb_id or 'none'}"
+                + (" (dropped its TPDB poster)" if cleared_poster else "")
             )
 
-        return {"item_id": item_id, "tpdb_id": item.tpdb_id, "previous": previous}
+        return {
+            "item_id": item_id,
+            "tpdb_id": item.tpdb_id,
+            "previous": previous,
+            "cleared_poster": cleared_poster,
+        }
