@@ -177,6 +177,11 @@ class PlaybackInfo(BaseModel):
     # An RFC 6381 codec string for canPlayType, when we can build one.
     mime_type: str | None = None
     reason: str
+    #: Bytes on disk, from the download record rather than ffprobe -- the
+    #: probe reads stream metadata over the network and never the whole file,
+    #: so it cannot report a length. `None` when it was never recorded, which
+    #: is different from a file that is genuinely zero bytes.
+    file_size: int | None = None
 
 
 def _ffprobe(url: str) -> MediaProbe:

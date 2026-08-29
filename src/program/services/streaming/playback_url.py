@@ -58,6 +58,10 @@ class PlayableMedia:
     url: str
     provider: str
     filename: str
+    #: Bytes, as recorded when the file was downloaded. 0 when unknown --
+    #: never guessed from the URL, which would be a claim the data cannot
+    #: support.
+    file_size: int = 0
 
 
 def is_playable(url: str | None) -> bool:
@@ -196,14 +200,15 @@ def resolve(
         stored = item.media_entry.url
         provider = item.media_entry.provider or ""
         filename = item.media_entry.original_filename
+        file_size = item.media_entry.file_size or 0
 
     # A stored URL is only worth trying when it is a real HTTP URL. An internal
     # reference has to be minted regardless of `force`.
     if not force and is_playable(stored) and (not check or verify(stored)):
-        return PlayableMedia(url=stored, provider=provider, filename=filename)
+        return PlayableMedia(url=stored, provider=provider, filename=filename, file_size=file_size)
 
     if minted := mint_url(filename):
-        return PlayableMedia(url=minted, provider=provider, filename=filename)
+        return PlayableMedia(url=minted, provider=provider, filename=filename, file_size=file_size)
 
     # Minting produced nothing usable. A stored URL that just failed `check` is
     # no better, so only fall back to one that was never tested.
@@ -211,7 +216,7 @@ def resolve(
     if is_playable(stored):
         # Minting failed but the stored URL is at least well-formed; let the
         # caller try it and surface the provider's own error.
-        return PlayableMedia(url=stored, provider=provider, filename=filename)
+        return PlayableMedia(url=stored, provider=provider, filename=filename, file_size=file_size)
 
     scheme_note = (
         f" (stored value {stored.split('://')[0]}:// is not fetchable)"

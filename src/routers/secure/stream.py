@@ -218,6 +218,7 @@ async def get_playback_info(item_id: int) -> PlaybackInfo:
         mode=mode,
         mime_type=transcode._mime_for(result),
         reason=reason,
+        file_size=media.file_size or None,
     )
 
 
