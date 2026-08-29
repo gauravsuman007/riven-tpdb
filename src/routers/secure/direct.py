@@ -340,7 +340,7 @@ def _plugins_response() -> PluginsResponse:
 
 @router.get("/plugins", operation_id="direct_plugins")
 def direct_plugins() -> PluginsResponse:
-    """Every known scraper -- built-in and plugin, enabled or not.
+    """Every known scraper, enabled or not.
 
     Re-scans the plugin folder on every call. These are a handful of files
     parsed from local disk, not a network request, so there is nothing to
@@ -373,7 +373,7 @@ class ScraperToggleBody(BaseModel):
 def direct_plugin_set_enabled(
     key: str, body: ScraperToggleBody
 ) -> PluginsResponse:
-    """Switch one scraper on or off, built-in or plugin alike.
+    """Switch one scraper on or off.
 
     Written to `direct_scraping.disabled` directly rather than through the
     generic settings form -- that field is hidden from the schema for the

@@ -13,11 +13,7 @@ from dataclasses import dataclass
 from loguru import logger
 
 from program.services.directscrapers.base import DirectScraper
-from program.services.directscrapers.eporner import EPornerScraper
-from program.services.directscrapers.hqporner import HQPornerScraper
-from program.services.directscrapers.iporntv import IPornTVScraper
 from program.services.directscrapers.models import DirectSource, DirectVideo
-from program.services.directscrapers.paradisehill import ParadiseHillScraper
 from program.services.directscrapers.plugins import discover_plugins
 from program.services.directscrapers.ranking import (
     MatchTarget,
@@ -25,10 +21,6 @@ from program.services.directscrapers.ranking import (
     sort_key,
     strip_punctuation,
 )
-from program.services.directscrapers.tnaflix import TnaflixScraper
-from program.services.directscrapers.tubepornclassic import TubePornClassicScraper
-from program.services.directscrapers.upornia import UporniaScraper
-from program.services.directscrapers.xfreehd import XFreeHDScraper
 
 
 @dataclass(slots=True)
@@ -63,24 +55,9 @@ def describe_scrapers() -> list[ScraperInfo]:
     disabled = set(settings.disabled)
     infos: list[ScraperInfo] = []
 
-    for cls in DirectScraperService.BUILTIN:
-        scraper = cls()
-        infos.append(
-            ScraperInfo(
-                key=scraper.key,
-                name=scraper.name,
-                base_url=scraper.base_url,
-                kind="builtin",
-                enabled=scraper.key not in disabled,
-            )
-        )
-
-    builtin_keys = {info.key for info in infos}
     discovery = discover_plugins(settings.plugin_dir)
 
     for key, loaded in discovery.plugins.items():
-        if key in builtin_keys:
-            continue  # reported via the collision error below instead
         scraper = loaded.scraper
         infos.append(
             ScraperInfo(
@@ -134,21 +111,6 @@ class DirectScraperService:
         "tubepornclassic": 1,
     }
 
-    #: Bundled with the image. A plugin file cannot shadow one of these --
-    #: see `_load_all` -- because these are the tested, maintained scrapers
-    #: and a same-named drop-in silently taking over would be a very
-    #: confusing way to break search for one site.
-    BUILTIN: tuple[type[DirectScraper], ...] = (
-        TnaflixScraper,
-        EPornerScraper,
-        HQPornerScraper,
-        ParadiseHillScraper,
-        TubePornClassicScraper,
-        XFreeHDScraper,
-        UporniaScraper,
-        IPornTVScraper,
-    )
-
     def __init__(self) -> None:
         self.plugin_sources: dict[str, str] = {}
         self.plugin_errors: dict[str, str] = {}
@@ -156,11 +118,14 @@ class DirectScraperService:
         self.initialized = True
 
     def _load_all(self) -> dict[str, DirectScraper]:
-        """Built-ins plus whatever is dropped into the plugin folder.
+        """Every scraper dropped into the plugin folder, minus disabled ones.
 
-        One registry, not two: a plugin is a `DirectScraper` subclass exactly
-        like a built-in, and `search`/`resolve` below never ask which kind a
-        scraper is.
+        Every site scraper is a plugin -- see the `riven-tpdb-scrapers` repo,
+        mounted into `plugin_dir` at deploy time. None are bundled with this
+        image: a scraper is a bet on one site's markup staying stable, which
+        is a maintenance burden this codebase should not carry, and the two
+        were never actually different in shape -- both were `DirectScraper`
+        subclasses discovered the same way.
         """
 
         from program.settings import settings_manager
@@ -168,33 +133,17 @@ class DirectScraperService:
         settings = settings_manager.settings.direct_scraping
         disabled = set(settings.disabled)
 
-        services: dict[str, DirectScraper] = {}
-        for cls in self.BUILTIN:
-            scraper = cls()
-            if scraper.key not in disabled:
-                services[scraper.key] = scraper
-
         discovery = discover_plugins(settings.plugin_dir)
         self.plugin_sources = {
             key: loaded.source_file for key, loaded in discovery.plugins.items()
         }
         self.plugin_errors = dict(discovery.errors)
 
-        for key, loaded in discovery.plugins.items():
-            if key in services:
-                # A built-in already claimed this key -- see BUILTIN's
-                # docstring. Recorded as an error rather than silently
-                # dropped, so it shows up in the Plugins tab instead of
-                # looking like the file was never picked up at all.
-                self.plugin_errors[loaded.source_file] = (
-                    f"key {key!r} is a built-in scraper and cannot be "
-                    f"overridden by a plugin"
-                )
-                continue
-            if key not in disabled:
-                services[key] = loaded.scraper
-
-        return services
+        return {
+            key: loaded.scraper
+            for key, loaded in discovery.plugins.items()
+            if key not in disabled
+        }
 
     #: How many results to pull from each site before ranking. Sites order by
     #: their own idea of relevance, which for a multi-word title is "contains

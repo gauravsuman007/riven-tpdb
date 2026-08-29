@@ -1417,12 +1417,13 @@ class VpnModel(Observable):
 
 
 class DirectScrapingModel(Observable):
-    """Which direct-site scrapers run, built-in and user-supplied alike.
+    """Which direct-site scrapers run.
 
     A scraper is just a Python file defining a `DirectScraper` subclass --
-    see the Plugins tab and README for the interface. The built-in sites ship
-    with the image; anything dropped into `plugin_dir` is discovered the same
-    way and toggled the same way, so there is one mechanism, not two.
+    see the Plugins tab and README for the interface. None ship with the
+    image; every site scraper is a plugin, discovered from `plugin_dir` at
+    startup and rescan. See the `riven-tpdb-scrapers` repo for the maintained
+    set -- drop any of its files in to enable that site.
     """
 
     plugin_dir: str = Field(
@@ -1437,8 +1438,8 @@ class DirectScrapingModel(Observable):
     disabled: list[str] = Field(
         default_factory=list,
         description=(
-            "Scraper keys switched off, whether built-in or from a plugin "
-            "file. Written by the Plugins tab's toggle, not meant to be "
+            "Scraper keys switched off. Written by the Plugins tab's toggle, "
+            "not meant to be "
             "edited here directly."
         ),
     )
@@ -1499,7 +1500,7 @@ class AppModel(Observable):
     )
     direct_scraping: DirectScrapingModel = Field(
         default_factory=lambda: DirectScrapingModel(),
-        description="Direct streaming-site scrapers, built-in and plugin",
+        description="Direct streaming-site scrapers, all loaded as plugins",
     )
     filesystem: FilesystemModel = Field(
         default_factory=lambda: FilesystemModel(),
