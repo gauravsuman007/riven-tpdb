@@ -7,6 +7,7 @@ nothing added to the library. Sharing a base class would have forced one of the
 two into the other's shape.
 """
 
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
@@ -223,6 +224,88 @@ class DirectScraperService:
                 errors.pop(key, None)
 
         return _merge_ranked(selected, results), errors
+
+    def search_streaming(
+        self,
+        target: MatchTarget | str,
+        limit_per_site: int = 3,
+        sites: list[str] | None = None,
+    ) -> Iterator[tuple[str, str, list[DirectVideo], str | None]]:
+        """Same search as `search`, yielding each site the moment it finishes.
+
+        The blocking version cannot return until the slowest site does, and
+        these are eight independent third-party sites with no uptime
+        guarantee -- one of them timing out at 20s makes every other site's
+        results wait 20s to be seen. This yields
+        ``(site_key, site_name, results, error)`` per site instead, so a
+        caller can show each one as it lands.
+
+        Ranking still happens per site over that site's whole pooled result
+        set across every phrasing, exactly as before -- what changes is when
+        a site's slice is handed over, not how it is chosen. The cross-site
+        ordering that `_merge_ranked` applies is deliberately NOT done here:
+        it is a total order over results that do not all exist yet, and
+        re-sorting the list under the user each time another site lands would
+        be worse than letting the caller place each site's block as it
+        arrives.
+        """
+
+        if isinstance(target, str):
+            target = MatchTarget.build(target)
+
+        selected = {
+            key: scraper
+            for key, scraper in self.services.items()
+            if not sites or key in sites
+        }
+        queries = self.query_ladder(target)
+
+        # Per site: how many of its phrasings are still outstanding, what they
+        # have returned so far, and the last failure seen.
+        outstanding = {key: len(queries) for key in selected}
+        gathered: dict[str, list[DirectVideo]] = {key: [] for key in selected}
+        failures: dict[str, str] = {}
+
+        jobs = [(key, query) for key in selected for query in queries]
+
+        if not jobs:
+            return
+
+        with ThreadPoolExecutor(max_workers=min(len(jobs), 8) or 1) as executor:
+            futures = {
+                executor.submit(
+                    selected[key].search, query, self.CANDIDATE_POOL
+                ): (key, query)
+                for key, query in jobs
+            }
+
+            for future in as_completed(futures):
+                key, query = futures[future]
+
+                try:
+                    gathered[key].extend(future.result())
+                except Exception as exc:
+                    logger.warning(
+                        f"Direct scraper {key} failed for {query!r}: {exc}"
+                    )
+                    failures[key] = str(exc)
+
+                outstanding[key] -= 1
+
+                # A site is only done when every phrasing it was given has come
+                # back -- emitting on the first would report a site as finished
+                # while its best-matching phrasing was still running.
+                if outstanding[key] > 0:
+                    continue
+
+                pooled = _unique_by_id(gathered[key])
+                kept = best_matches(target, pooled, limit_per_site)
+
+                # Same rule as the blocking path: a site that answered any
+                # phrasing is not in trouble, whatever another one did.
+                error = None if kept else failures.get(key)
+
+                yield key, selected[key].name, kept, error
 
     @staticmethod
     def query_ladder(target: MatchTarget) -> list[str]:

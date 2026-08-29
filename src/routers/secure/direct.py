@@ -85,29 +85,13 @@ class DirectSourcesResponse(BaseModel):
     sources: list[DirectSourceModel]
 
 
-@router.get("/search", operation_id="direct_search")
-def direct_search(
-    query: Annotated[str | None, Query(description="Free-text search")] = None,
-    item_id: Annotated[
-        int | None,
-        Query(description="Use this library item's title as the query"),
-    ] = None,
-    limit: Annotated[
-        int | None,
-        Query(
-            ge=1,
-            le=20,
-            description=(
-                "Maximum results kept per site, after ranking. Defaults to "
-                "the Plugins tab's 'Results per site' setting when omitted; "
-                "pass this to override it for a single call."
-            ),
-        ),
-    ] = None,
-    sites: Annotated[
-        str | None, Query(description="Comma-separated site keys")
-    ] = None,
-) -> DirectSearchResponse:
+def _build_target(query: str | None, item_id: int | None) -> MatchTarget:
+    """The search target, from either free text or a library item.
+
+    Shared by the blocking and streaming search routes so the two cannot
+    drift into matching on different things for the same request.
+    """
+
     search_term = (query or "").strip()
     target: MatchTarget | None = None
 
@@ -139,16 +123,51 @@ def direct_search(
     if not target.title:
         raise HTTPException(status_code=400, detail="Nothing to search for")
 
-    # Checked once, up front. The routing itself is enforced inside the
-    # scrapers' session, but letting it fail there would surface as eight
-    # separate "could not reach this site" errors -- which is true, and
-    # useless, because the reason is the same for all of them and is not the
-    # sites' fault.
+    return target
+
+
+def _require_vpn() -> None:
+    """Refuse the whole search when routed traffic has no tunnel.
+
+    Checked once, up front. The routing itself is enforced inside the
+    scrapers' session, but letting it fail there would surface as eight
+    separate "could not reach this site" errors -- which is true, and
+    useless, because the reason is the same for all of them and is not the
+    sites' fault.
+    """
+
     try:
         vpn().proxy_for(SCRAPING)
     except VpnUnavailable as exc:
         logger.warning(f"Direct search blocked, VPN unavailable: {exc}")
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/search", operation_id="direct_search")
+def direct_search(
+    query: Annotated[str | None, Query(description="Free-text search")] = None,
+    item_id: Annotated[
+        int | None,
+        Query(description="Use this library item's title as the query"),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            le=20,
+            description=(
+                "Maximum results kept per site, after ranking. Defaults to "
+                "the Plugins tab's 'Results per site' setting when omitted; "
+                "pass this to override it for a single call."
+            ),
+        ),
+    ] = None,
+    sites: Annotated[
+        str | None, Query(description="Comma-separated site keys")
+    ] = None,
+) -> DirectSearchResponse:
+    target = _build_target(query, item_id)
+    _require_vpn()
 
     selected = [s.strip() for s in sites.split(",")] if sites else None
     per_site = limit if limit is not None else settings_manager.settings.direct_scraping.results_per_site
@@ -174,6 +193,125 @@ def direct_search(
             for video in results
         ],
         errors=errors,
+    )
+
+
+class DirectSearchStreamEvent(BaseModel):
+    """One site's outcome, or the end of the run.
+
+    Mirrors the torrent scraper's SSE shape (`ScrapeStreamEvent`) rather than
+    inventing a second one: `event` is "site" for a site that finished,
+    "complete" when every site has.
+    """
+
+    event: str
+    site: str | None = None
+    site_name: str | None = None
+    results: list[DirectVideoModel] = []
+    error: str | None = None
+    sites_completed: int = 0
+    total_sites: int = 0
+
+
+@router.get("/search_stream", operation_id="direct_search_stream")
+def direct_search_stream(
+    query: Annotated[str | None, Query(description="Free-text search")] = None,
+    item_id: Annotated[
+        int | None,
+        Query(description="Use this library item's title as the query"),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        Query(ge=1, le=20, description="Maximum results kept per site, after ranking."),
+    ] = None,
+    sites: Annotated[
+        str | None, Query(description="Comma-separated site keys")
+    ] = None,
+) -> StreamingResponse:
+    """`/search`, but delivering each site as it finishes rather than all at once.
+
+    Same target, same ranking, same per-site limit. The only difference is
+    when a site's slice is sent: the blocking route cannot answer until the
+    slowest of eight independent third-party sites does, so a single site
+    timing out at 20s delays every other site's results by 20s.
+    """
+
+    target = _build_target(query, item_id)
+    _require_vpn()
+
+    selected = [s.strip() for s in sites.split(",")] if sites else None
+    per_site = (
+        limit
+        if limit is not None
+        else settings_manager.settings.direct_scraping.results_per_site
+    )
+
+    service = direct_service()
+    total = len(
+        [k for k in service.services if not selected or k in selected]
+    )
+
+    def generate():
+        completed = 0
+
+        try:
+            for key, name, videos, error in service.search_streaming(
+                target, limit_per_site=per_site, sites=selected
+            ):
+                completed += 1
+                event = DirectSearchStreamEvent(
+                    event="site",
+                    site=key,
+                    site_name=name,
+                    results=[
+                        DirectVideoModel(
+                            site=video.site,
+                            site_name=name,
+                            video_id=video.video_id,
+                            title=video.title,
+                            page_url=video.page_url,
+                            thumbnail=video.thumbnail,
+                            duration=video.duration,
+                            resolution=video.resolution,
+                            size=video.size,
+                            views=video.views,
+                            hd=video.hd,
+                            relevance=video.relevance,
+                        )
+                        for video in videos
+                    ],
+                    error=error,
+                    sites_completed=completed,
+                    total_sites=total,
+                )
+                yield f"data: {event.model_dump_json()}\n\n"
+        except Exception as exc:
+            # The generator has already started streaming by the time most
+            # failures can happen, so the response status is long since sent.
+            # Reporting it as a final event is the only way the client hears
+            # about it at all.
+            logger.error(f"Direct search stream failed: {exc}")
+            yield (
+                "data: "
+                + DirectSearchStreamEvent(
+                    event="error", error=str(exc), total_sites=total
+                ).model_dump_json()
+                + "\n\n"
+            )
+            return
+
+        yield (
+            "data: "
+            + DirectSearchStreamEvent(
+                event="complete", sites_completed=completed, total_sites=total
+            ).model_dump_json()
+            + "\n\n"
+        )
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
 
 
