@@ -2305,3 +2305,56 @@ async def get_item_metadata(
             )
 
         return media_entry.media_metadata
+
+
+class TpdbAssociationBody(BaseModel):
+    #: `None` clears the association, which is a deliberate action rather than
+    #: a failure: a title TPDB has no confident record for is better off
+    #: showing the metadata it already has than another film's.
+    tpdb_id: str | None = None
+
+
+@router.post(
+    "/{item_id}/tpdb",
+    summary="Set or clear an item's TPDB association",
+    operation_id="set_item_tpdb",
+)
+async def set_item_tpdb(
+    item_id: Annotated[int, Path(description="The ID of the media item", ge=1)],
+    body: TpdbAssociationBody,
+) -> dict[str, Any]:
+    """Point an item at a different TPDB record, or detach it entirely.
+
+    The automatic matcher refuses to guess when the evidence is weak, which is
+    correct, but leaves no way to supply an answer a human is sure of -- and
+    no way to withdraw one it got wrong. Both directions are needed: a wrong
+    association renders a different film's cast, poster and description over
+    a title that is otherwise perfectly correct.
+
+    Clearing is safe here specifically because the UI has a riven-id detail
+    route to fall back on; before that existed, an item with no external id
+    was dropped from the library grid entirely.
+    """
+
+    with db_session() as session:
+        item = session.execute(
+            select(MediaItem).where(MediaItem.id == item_id)
+        ).unique().scalar_one_or_none()
+
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        previous = item.tpdb_id
+        item.tpdb_id = (body.tpdb_id or "").strip() or None
+
+        # Anything derived from the OLD record has to go with it, or the item
+        # keeps a poster and a cast list belonging to a film it is no longer
+        # associated with -- which is the same bug in a quieter form.
+        if item.tpdb_id != previous:
+            session.commit()
+            logger.info(
+                f"TPDB association for {item.log_string} changed: "
+                f"{previous or 'none'} -> {item.tpdb_id or 'none'}"
+            )
+
+        return {"item_id": item_id, "tpdb_id": item.tpdb_id, "previous": previous}
