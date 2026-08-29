@@ -55,7 +55,18 @@ class TailscaleProvider(VpnProvider):
                 response = client.request(method, path, **kwargs)
 
                 if response.status_code >= 400:
-                    logger.debug(
+                    # WARNING, not debug: a write here failing is invisible
+                    # anywhere else. `set_exit_node` (below) does not treat
+                    # this as a hard error -- it re-reads status regardless,
+                    # by design, since a stale read on a flaky connection is
+                    # not worth turning into a user-facing failure -- so this
+                    # line is the only place a rejected write is ever
+                    # recorded. Confirmed live: tailscaled answers prefs
+                    # WRITES with 403 for any caller that is not root or its
+                    # configured operator, with no other symptom -- the
+                    # request "succeeds" from Riven's side, the exit node
+                    # picker just silently reverts on reload.
+                    logger.warning(
                         f"tailscale {method} {path} -> {response.status_code}: "
                         f"{response.text[:200]}"
                     )
@@ -197,7 +208,25 @@ class TailscaleProvider(VpnProvider):
                 "/localapi/v0/prefs",
                 json={"ExitNodeID": "", "ExitNodeIDSet": True},
             )
-            return self.status()
+            after = self.status()
+
+            # `_call` already logged a 403/etc at warning level, but that is
+            # invisible to whoever is looking at the settings page rather
+            # than the container logs -- and a rejected write and a genuinely
+            # applied one look identical from here otherwise: both return 200
+            # from THIS endpoint, because `status()` always succeeds even
+            # when the PATCH just before it did not. Confirmed live: the
+            # daemon rejects prefs writes from any caller that is not root or
+            # its configured operator, and every symptom of that is silent
+            # right up to this check.
+            if after.exit_node is not None:
+                after.detail = (
+                    "Tailscale rejected clearing the exit node. This is "
+                    "usually a permissions problem between containers, not "
+                    "a setting to retry -- check the tailscale sidecar's "
+                    "logs."
+                )
+            return after
 
         known = {node.id for node in current.exit_nodes}
 
@@ -213,4 +242,12 @@ class TailscaleProvider(VpnProvider):
             "/localapi/v0/prefs",
             json={"ExitNodeID": node_id, "ExitNodeIDSet": True},
         )
-        return self.status()
+        after = self.status()
+
+        if after.exit_node != node_id:
+            after.detail = (
+                "Tailscale rejected the exit node change. This is usually a "
+                "permissions problem between containers, not a setting to "
+                "retry -- check the tailscale sidecar's logs."
+            )
+        return after
