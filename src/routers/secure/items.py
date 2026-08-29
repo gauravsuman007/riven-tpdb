@@ -963,6 +963,16 @@ async def get_library_states(
             ),
         ),
     ] = None,
+    item_ids: Annotated[
+        list[int] | None,
+        Query(
+            description=(
+                "Riven item ids to look up. Needed for a title with no "
+                "external id at all -- one TPDB has no confident match for -- "
+                "which is addressable only by its own id."
+            ),
+        ),
+    ] = None,
     detailed: Annotated[
         bool,
         Query(
@@ -985,8 +995,9 @@ async def get_library_states(
     wanted_ae = [
         ae_id for ae_id in dict.fromkeys(adultempire_ids or ()) if ae_id
     ][:200]
+    wanted_ids = [i for i in dict.fromkeys(item_ids or ()) if i][:200]
 
-    if not wanted and not wanted_ae:
+    if not wanted and not wanted_ae and not wanted_ids:
         return LibraryStatesResponse(states={})
 
     with db_session() as session:
@@ -997,6 +1008,9 @@ async def get_library_states(
 
         if wanted_ae:
             conditions.append(MediaItem.adultempire_id.in_(wanted_ae))
+
+        if wanted_ids:
+            conditions.append(MediaItem.id.in_(wanted_ids))
 
         items = (
             session.execute(select(MediaItem).where(or_(*conditions)))
@@ -1018,6 +1032,11 @@ async def get_library_states(
                 for key in (item.tpdb_id, item.adultempire_id)
                 if key and (key in wanted or key in wanted_ae)
             ]
+
+            # Also answer to its own id when asked for that way, which for an
+            # item with no external id is the only way it can be asked for.
+            if item.id in wanted_ids:
+                keys.append(str(item.id))
 
             if not keys:
                 continue
