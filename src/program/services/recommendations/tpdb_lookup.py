@@ -56,7 +56,33 @@ def resolve_movie(
     release year already. Getting this wrong costs a match on every title.
     """
 
-    results = api.search_movies_text(title, per_page=20) or []
+    # Searched by title, and again with the studio when one is known.
+    #
+    # The studio was previously only ever used for SCORING, which is too late
+    # to help: TPDB's text search ranks its own way, and for a title with many
+    # same-named or containing releases the right record can sit outside the
+    # first 20 hits entirely -- at which point no amount of scoring can
+    # recover it, because it was never fetched.
+    #
+    # Measured on this library: searching "Pirates" returns a 2018
+    # Knightbreeders film and eight Butthole Pirates variants, and the actual
+    # Digital Playground "Pirates" (2005) is nowhere in the results.
+    # Searching "Pirates Digital Playground" returns it first. Same for
+    # "Babysitters", whose 2007 record only appears once the studio is in the
+    # query. Both had been mismatched in the library for exactly this reason.
+    seen_ids: set[str] = set()
+    results = []
+
+    queries = [title]
+
+    if studio:
+        queries.append(f"{title} {studio}")
+
+    for text in queries:
+        for result in api.search_movies_text(text, per_page=20) or []:
+            if result.id and result.id not in seen_ids:
+                seen_ids.add(result.id)
+                results.append(result)
 
     # Ranked on symmetry as well as ratio, and the second term is what makes
     # this work at all.

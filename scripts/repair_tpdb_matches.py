@@ -15,6 +15,7 @@ sys.path.insert(0, "src")
 from kink import di
 from program.apis.tpdb_api import TpdbApi
 from program.db.db import db_session
+from program.media.collection import CollectionEntry
 from program.media.item import MediaItem
 from program.program import Program
 from program.services.awards.matching import MIN_TITLE_SYMMETRY, title_symmetry
@@ -46,17 +47,28 @@ with db_session() as session:
         print(f"\n{item.id} {item.title!r}")
         print(f"   currently -> {detail.title!r} ({item.tpdb_id})")
 
+        # The studio comes from the catalogue entry, not the MediaItem: these
+        # items arrive from a storefront that records it, but `network` is
+        # left unset on the item itself -- and studio is exactly the term
+        # that makes the search find the right record at all (see
+        # tpdb_lookup.resolve_movie).
+        entry = (
+            session.query(CollectionEntry)
+            .filter(CollectionEntry.title == item.title, CollectionEntry.studio.isnot(None))
+            .first()
+        )
+
         match = resolve_movie(
             api,
             title=item.title or "",
-            studio=item.network,
-            year=item.aired_at.year if item.aired_at else None,
+            studio=entry.studio if entry else item.network,
+            year=(entry.year if entry and entry.year else (item.aired_at.year if item.aired_at else None)),
             performers=list(item.performers or []),
             year_offset=0,
         )
 
         if match and match.tpdb_id != item.tpdb_id:
-            print(f"   re-resolved -> {match.tpdb_title!r} ({match.tpdb_id}) score={match.score:.1f}")
+            print(f"   re-resolved -> {match.title!r} ({match.tpdb_id}) score={match.score:.1f}")
             if APPLY:
                 item.tpdb_id = match.tpdb_id
         elif match:
@@ -65,9 +77,12 @@ with db_session() as session:
             # Better to carry no TPDB id than a confidently wrong one: the
             # detail page falls back to the metadata the item already has,
             # rather than rendering a different film's cast and poster.
-            print("   no acceptable match -- clearing the wrong id")
-            if APPLY:
-                item.tpdb_id = None
+            # Deliberately left alone rather than cleared. The library grid
+            # drops any item with no external id (see
+            # library/+page.server.ts's transformItems), so clearing would
+            # hide the title completely -- worse than showing stale
+            # metadata. Reported instead, for a human to decide.
+            print("   no acceptable match -- LEFT ALONE (clearing would hide it from the library)")
 
     if APPLY:
         session.commit()
