@@ -67,6 +67,15 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
     # in the brochure carry enough metadata to be downloaded without a TPDB
     # record, and TPDB details are filled in afterwards if a match turns up.
     adultempire_id: Mapped[str | None]
+    #: A person set or cleared this item's TPDB association by hand, so the
+    #: automatic matcher must leave it alone.
+    #:
+    #: Without this, clearing a wrong match does not stick: the enrichment
+    #: pass selects on `tpdb_id IS NULL`, so detaching only re-queues the item
+    #: and the next run re-attaches whatever it picked before. Confirmed
+    #: exactly that way -- a detached title was back on the same wrong record
+    #: within the hour.
+    tpdb_locked: Mapped[bool] = mapped_column(default=False, nullable=False)
     site_id: Mapped[str | None]
     site_name: Mapped[str | None]
     title: Mapped[str]

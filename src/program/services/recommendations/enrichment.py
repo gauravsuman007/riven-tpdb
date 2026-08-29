@@ -54,6 +54,11 @@ class TpdbEnricher:
                     .where(
                         MediaItem.adultempire_id.is_not(None),
                         MediaItem.tpdb_id.is_(None),
+                        # A person cleared this one. Re-matching it would
+                        # undo that decision on the next scheduled run --
+                        # which is exactly what made detaching a wrong match
+                        # useless before this existed.
+                        MediaItem.tpdb_locked.is_(False),
                     )
                     .order_by(MediaItem.id.desc())
                     .limit(limit)

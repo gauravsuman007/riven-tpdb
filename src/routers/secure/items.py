@@ -2348,6 +2348,11 @@ async def set_item_tpdb(
         previous = item.tpdb_id
         item.tpdb_id = (body.tpdb_id or "").strip() or None
 
+        # Set on BOTH paths, not just on clearing. Attaching by hand is just
+        # as much a decision, and leaving it unlocked would let the matcher
+        # overwrite a correct answer with whatever it prefers.
+        item.tpdb_locked = True
+
         cleared_poster = False
 
         if item.tpdb_id != previous:
@@ -2392,4 +2397,5 @@ async def set_item_tpdb(
             "tpdb_id": item.tpdb_id,
             "previous": previous,
             "cleared_poster": cleared_poster,
+            "locked": True,
         }
