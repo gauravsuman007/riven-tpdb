@@ -32,6 +32,7 @@ from program.services.awards.matching import (
     best_match,
     evaluate_candidate,
     title_ratio,
+    title_symmetry,
 )
 
 # Enough to cover a title TPDB lists under several editions, without spending a
@@ -57,19 +58,36 @@ def resolve_movie(
 
     results = api.search_movies_text(title, per_page=20) or []
 
+    # Ranked on symmetry as well as ratio, and the second term is what makes
+    # this work at all.
+    #
+    # `title_ratio` normalises by the SHORTER side, so every candidate whose
+    # title merely CONTAINS the entry's scores exactly 1.0 -- "Threesome
+    # Fantasies Fulfilled" ties with its 6-Pack, its 4-Pack, its 11 and a
+    # dozen others. Sorting on ratio alone therefore leaves the order of
+    # those ties entirely to whatever the search happened to return, and the
+    # `[:DETAIL_CANDIDATES]` cut then spends the three detail lookups on an
+    # arbitrary three of them.
+    #
+    # Measured on this library: "Threesome Fantasies Fulfilled 11" scores 6.5
+    # and clears the acceptance bar, but sat fifth in the API's order and was
+    # cut before it was ever looked up -- so a title with a perfectly good
+    # match resolved to nothing. `title_symmetry` is the signal that
+    # separates a film from its spin-off, so it is what should decide which
+    # of a tie is worth the lookup.
     shortlist = sorted(
         (
-            (title_ratio(title, result.title or ""), result)
+            (title_ratio(title, result.title or ""), title_symmetry(title, result.title or ""), result)
             for result in results
             if result.id and title_ratio(title, result.title or "") >= MIN_TITLE_RATIO
         ),
-        key=lambda pair: pair[0],
+        key=lambda triple: (triple[0], triple[1]),
         reverse=True,
     )[:DETAIL_CANDIDATES]
 
     candidates = []
 
-    for _ratio, result in shortlist:
+    for _ratio, _symmetry, result in shortlist:
         detail = api.get_movie(result.id)
 
         if detail is None:
