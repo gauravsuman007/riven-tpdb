@@ -138,15 +138,25 @@ services:
             # caller that is not uid 0 or the configured "operator" -- and
             # confirmed live, `tailscale set --operator=<uid>` with a bare
             # numeric string is silently insufficient: tailscaled's own
-            # checkprefs resolves the stored OperatorUser via this
-            # CONTAINER'S OWN user database, so a plain digit string that
-            # is not an actual username fails that lookup and the 403
-            # persists, with no error visible anywhere in Riven's logs. The
-            # user below exists so `--operator=riven` resolves to something
-            # real, on both ends -- exit-node changes made from the VPN tab
-            # silently doing nothing (no error toast, state reverts on
-            # reload) is exactly this failing quietly.
-            - TS_USER_UID=1000
+            # checkprefs resolves the stored OperatorUser via THIS
+            # container's own user database, so a plain digit string that is
+            # not an actual username fails that lookup and the 403 persists,
+            # with no error visible anywhere in Riven's logs. The entrypoint
+            # below creates a matching user so `--operator=riven` resolves to
+            # something real, on both ends -- exit-node changes made from the
+            # VPN tab silently doing nothing (no error toast, state reverts
+            # on reload) is exactly this failing quietly.
+            #
+            # containerboot runs its own `tailscale up` on every start, and
+            # confirmed live, once ANY non-default flag (like operator) has
+            # ever been set and persisted (./tailscale-state), every
+            # subsequent start fails outright unless that flag is mentioned
+            # again -- "changing settings via 'tailscale up' requires
+            # mentioning all non-default flags". TS_EXTRA_ARGS is what
+            # containerboot itself reads to build that call, so this is what
+            # keeps every start self-consistent rather than fighting it with
+            # a separate `tailscale set` afterwards.
+            - TS_EXTRA_ARGS=--operator=riven
         volumes:
             - ./tailscale-state:/var/lib/tailscale
             # Shared so the backend can drive login and exit-node selection
@@ -157,30 +167,18 @@ services:
         # neither, and granting them invites someone to "fix" it into kernel
         # mode later, which would silently route everything.
         #
-        # Wraps the image's own entrypoint rather than replacing it: the user
-        # must exist before tailscaled will resolve "--operator=riven" (an
-        # `adduser` here, harmless and idempotent -- the container's own
-        # filesystem is not persisted, so this must run on every start, not
-        # once), and the operator itself can only be SET after tailscaled is
-        # actually listening, which containerboot itself does not offer a
-        # hook for. Backgrounding containerboot rather than exec'ing it is
-        # what makes room for that second step; `wait` at the end keeps this
-        # shell as PID 1 tracking the daemon's actual exit and signals.
+        # Wraps the image's own entrypoint rather than replacing it, only to
+        # add the one line the image has no hook for: a real "riven" user (uid
+        # 1000, matching riven-tpdb's own image) so `--operator=riven` above
+        # resolves to something real. The container's own filesystem is not
+        # persisted, so this has to run on every start, not once -- harmless
+        # and idempotent when the user already exists.
         entrypoint:
             - sh
             - -c
             - |
-                adduser -D -u "${TS_USER_UID}" -H riven 2>/dev/null || true
-                /usr/local/bin/containerboot &
-                CONTAINERBOOT_PID=$!
-                (
-                    for _ in $(seq 1 30); do
-                        [ -S "$TS_SOCKET" ] && break
-                        sleep 1
-                    done
-                    tailscale set --operator=riven 2>/dev/null || true
-                ) &
-                wait "$CONTAINERBOOT_PID"
+                adduser -D -u 1000 -H riven 2>/dev/null || true
+                exec /usr/local/bin/containerboot
 
     # The other VPN option, for a commercial provider rather than your own
     # tailnet. Pick ONE of these two in Settings -> VPN -> provider; running
