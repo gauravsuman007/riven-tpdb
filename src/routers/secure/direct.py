@@ -79,6 +79,17 @@ class DirectSourceModel(BaseModel):
     handed to the browser because it expires and would 403 on use."""
 
 
+class DirectHandoffModel(BaseModel):
+    """Whether one rendition can be fetched by something that is not us."""
+
+    url: str | None = None
+    """The upstream URL, when a foreign player may use it directly."""
+    mime_type: str | None = None
+    reason: str | None = None
+    """Why it may not, when ``url`` is None. For logs and for the UI to say
+    something truthful rather than silently proxying."""
+
+
 class DirectSourcesResponse(BaseModel):
     site: str
     video_id: str
@@ -349,6 +360,65 @@ def direct_sources(
             for index, source in enumerate(sources)
         ],
     )
+
+
+@router.get("/handoff", operation_id="direct_handoff")
+def direct_handoff(
+    site: Annotated[str, Query()],
+    video_id: Annotated[str, Query()],
+    index: Annotated[int, Query(ge=0)] = 0,
+) -> DirectHandoffModel:
+    """The upstream URL for one rendition, when handing it out is safe.
+
+    Proxying every byte of a tube-site video through this server costs two
+    extra hops -- player to frontend, frontend to here, here to the CDN --
+    and every seek pays all of them again. When the source needs nothing
+    from us, the player is better off talking to the CDN itself.
+
+    "Safe" is narrow on purpose, and each refusal below is a case where the
+    direct URL would simply fail or would defeat a setting:
+
+    * The source declares required headers (Referer, mostly). A media player
+      fetching the URL sends none of them and the CDN answers 403. This is
+      the common case for these sites and the reason the proxy exists at all.
+    * Streaming is routed through the VPN. Handing the URL to a player would
+      quietly take playback off the tunnel -- the exact thing the setting is
+      there to prevent, and invisibly, which is worse than not offering it.
+
+    A URL that is bound to the requesting IP is NOT detectable here and is
+    not refused. It works in the normal case, where the player and this
+    server share one public address; it fails away from home, and the caller
+    is expected to fall back to the proxy path rather than treat this as a
+    promise.
+    """
+
+    try:
+        sources = direct_service().resolve(site, video_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning(f"Direct resolve failed for {site}:{video_id}: {exc}")
+        raise HTTPException(
+            status_code=502, detail="Could not resolve this video"
+        ) from exc
+
+    if index >= len(sources):
+        raise HTTPException(status_code=404, detail="No such source")
+
+    source = sources[index]
+
+    if source.headers:
+        return DirectHandoffModel(
+            reason="the source requires headers a media player will not send"
+        )
+
+    try:
+        if vpn().proxy_for(STREAMING) is not None:
+            return DirectHandoffModel(reason="playback is routed through the VPN")
+    except VpnUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return DirectHandoffModel(url=source.url, mime_type=source.mime_type)
 
 
 @router.get("/stream", operation_id="direct_stream")
