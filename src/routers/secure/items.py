@@ -615,7 +615,29 @@ async def get_download_activity(
         else list(_ACTIVE_STATES)
     ) or list(_ACTIVE_STATES)
 
-    active_query = select(MediaItem).where(MediaItem.last_state.in_(active_states))
+    # A background candidate fetch is an active download too.
+    #
+    # An item that already has a playable file stays in `Completed` while a
+    # replacement release is fetched for it, so filtering on state alone hid
+    # exactly the download someone had just asked for -- reported as "I clicked
+    # it, it said queued, and it is nowhere in the dashboard".
+    # `downloading_stream_hash` is what the downloader keys its candidate mode
+    # off, so it is the honest test for "this item is fetching something right
+    # now", independent of the state it is resting in.
+    #
+    # Only applied when the caller did not ask for specific states: an explicit
+    # state filter is a question about states, and quietly adding rows that do
+    # not match it would be wrong.
+    explicit_states = bool(states and StatesFilter.All not in states)
+
+    active_query = select(MediaItem).where(
+        MediaItem.last_state.in_(active_states)
+        if explicit_states
+        else or_(
+            MediaItem.last_state.in_(active_states),
+            MediaItem.downloading_stream_hash.is_not(None),
+        )
+    )
 
     if search:
         active_query = active_query.where(
