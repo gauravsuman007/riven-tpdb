@@ -1028,6 +1028,34 @@ def queue_release(
         if not item:
             raise HTTPException(status_code=404, detail="Item not found")
 
+        # Whether this title was already in the library BEFORE this call, which
+        # decides how it gets handed to the pipeline further down.
+        already_in_library = item.id is not None
+
+        # Re-attached to the session, and this is load-bearing.
+        #
+        # `resolve_media_item` goes through `db_functions.get_item_by_id`,
+        # which calls `session.expunge(item)` and returns a DETACHED instance.
+        # Mutating a detached object and committing writes nothing at all: the
+        # session has never heard of it. So the stream append, the
+        # `preferred_stream_hash` pin and the unblacklist below were all
+        # silently discarded, and the endpoint still returned "Queued".
+        #
+        # Reproduced exactly that way against a real library item: the call
+        # answered 200 with a queued message while preferred_stream_hash stayed
+        # NULL, the stream was never attached, and no download ever started.
+        if already_in_library:
+            bound = (
+                session.execute(select(MediaItem).where(MediaItem.id == item.id))
+                .unique()
+                .scalar_one_or_none()
+            )
+
+            if bound is None:
+                raise HTTPException(status_code=404, detail="Item not found")
+
+            item = bound
+
         remembered = _manual_streams.get(infohash)
 
         if remembered is None:
@@ -1068,18 +1096,55 @@ def queue_release(
         if blacklisted is not None:
             item.unblacklist_stream(blacklisted)
 
+        # Already has a file? Fetch this release ALONGSIDE it and swap once it
+        # succeeds, rather than tearing the current one down first.
+        #
+        # This is what makes "pick a different release for something I already
+        # have" work: the downloader's candidate mode keys off
+        # `downloading_stream_hash`, and without it set, an item that already
+        # had an active_stream simply had nothing to do -- the pick was
+        # recorded and then ignored.
+        replacing_existing = item.active_stream is not None and item.media_entry is not None
+
+        if replacing_existing:
+            item.downloading_stream_hash = infohash
+
         session.commit()
 
         resolved_id = item.id
         title = item.log_string
 
-    if not di[Program].em.add_item(item, service="Manual"):
+    # An item already in the library must be handed to the Downloader
+    # DIRECTLY. `add_item` exists to admit NEW content -- it is a no-op when
+    # `item_exists_by_any_id` is true -- so for anything already in the
+    # library it returned False and queued nothing, while this endpoint
+    # cheerfully reported the release as queued. That is the other half of the
+    # bug above: even once the pin persisted, nothing acted on it.
+    if already_in_library:
+        queued = di[Program].em.add_event(Event("Downloader", resolved_id))
+    else:
+        queued = di[Program].em.add_item(item, service="Manual")
+
+    if not queued:
+        # Reported rather than swallowed. A debug line claiming "the pick still
+        # stands" behind a success message is how this stayed invisible.
         logger.debug(f"{title} is already queued or running; the pick still stands")
+
+        return QueueReleaseResponse(
+            message=(
+                f"Pinned {title}, but it is already queued or running, so it was "
+                "not queued again. It will use this release when it next runs."
+            ),
+            item_id=resolved_id,
+            infohash=infohash,
+            cached=False,
+        )
 
     return QueueReleaseResponse(
         message=(
             f"Queued {title}. The release is being fetched by your debrid "
-            "service and will download once it is ready."
+            "service and will "
+            + ("replace the current file once it is ready." if replacing_existing else "download once it is ready.")
         ),
         item_id=resolved_id,
         infohash=infohash,
