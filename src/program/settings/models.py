@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal, Annotated
+from typing import Any, ClassVar, Literal, Annotated
 
 from pydantic import (
     BaseModel,
@@ -1101,12 +1101,73 @@ class RTNSettingsModel(SettingsModel, Observable):
       accepts the genuine matches while still filtering unrelated titles.
     """
 
+    # Source formats that RTN rejects or buries, which are ordinary here.
+    #
+    # `fetch=False` is a HARD rejection -- RTN raises GarbageTorrent and the
+    # release never reaches the candidate list at all -- and the ranks come
+    # from DefaultRanking, where hdrip is -10000 and dvdrip -5000.
+    #
+    # Measured against this library: "[Nubiles-Porn] Bratty Sis Vol.10 (2021)
+    # HDRip" ranks -10000, and the DVDRip of the same title is denied outright
+    # by `rips_dvdrip`. Both are the normal shape of an adult release -- scene
+    # and tracker sources are overwhelmingly rips, and for older catalogue
+    # titles a DVD source is the ONLY source that exists. Judging them on
+    # resolution, which is already ranked separately, is the correct test;
+    # treating the source format as disqualifying is not.
+    #
+    # `extras.site` is the same mistake in the other direction: a release
+    # whose name leads with the site is penalised as a low-quality web rip,
+    # when for adult content the site IS the primary identifier and is exactly
+    # what this fork's own matcher scores on.
+    #
+    # Genuine garbage -- cam, screener, telesync, telecine, r5, pdtv -- stays
+    # rejected. Those are camcorder recordings, and they are as worthless here
+    # as anywhere.
+    _SOURCE_FORMAT_CORRECTIONS: ClassVar[dict[str, tuple[str, ...]]] = {
+        "rips": (
+            "bdrip", "brrip", "dvdrip", "hdrip", "ppvrip",
+            "satrip", "tvrip", "uhdrip", "vhsrip", "webdlrip", "webrip",
+        ),
+        "quality": ("dvd", "mpeg", "xvid"),
+        "extras": ("site",),
+        "audio": ("mp3",),
+    }
+
     def __init__(self, **data: Any):
         super().__init__(**data)
 
         if "options" not in data:
             self.options.remove_adult_content = False
             self.options.title_similarity = 0.60
+
+        self._correct_source_format_defaults()
+
+    def _correct_source_format_defaults(self) -> None:
+        """Neutralise source-format penalties that are wrong for adult media.
+
+        Applied ONLY where the entry is still at RTN's default
+        (``use_custom_rank`` false and ``fetch`` false), so a deliberate choice
+        is never overwritten. That condition is also what lets this fix an
+        existing settings.json: those files already carry a ``custom_ranks``
+        block, so a correction guarded on the key's absence -- the way the two
+        options above are -- would never run on any real deployment.
+        """
+
+        for group_name, entries in self._SOURCE_FORMAT_CORRECTIONS.items():
+            group = getattr(self.custom_ranks, group_name, None)
+
+            if group is None:
+                continue
+
+            for entry_name in entries:
+                entry = getattr(group, entry_name, None)
+
+                if entry is None or entry.use_custom_rank:
+                    continue
+
+                entry.fetch = True
+                entry.use_custom_rank = True
+                entry.rank = 0
 
 
 # Application Settings
