@@ -125,8 +125,25 @@ def process_event(
         items_to_submit = [existing_item]
 
     elif existing_item and existing_item.last_state == States.Completed:
+        # A replacement release being fetched for something already downloaded.
+        #
+        # This branch used to route EVERY Completed item to post-processing,
+        # ignoring the service the event actually named. That silently defeated
+        # the whole candidate-download feature: picking a different release for
+        # an item you already have emits Event("Downloader", id), and it was
+        # turned into a post-processing run every time. Observed exactly that
+        # way -- the pick was recorded, the log said "Post-processing complete",
+        # and nothing was ever downloaded.
+        #
+        # `downloading_stream_hash` is set only while such a fetch is pending,
+        # and the downloader clears it when the swap completes or is abandoned,
+        # so this cannot loop: once cleared, the next event falls through to
+        # post-processing as before.
+        if existing_item.downloading_stream_hash and emitted_by != services.downloader:
+            next_service = services.downloader
+            items_to_submit = [existing_item]
         # Avoid multiple post-processing runs
-        if emitted_by != services.post_processing:
+        elif emitted_by != services.post_processing:
             next_service = services.post_processing
             items_to_submit = [existing_item]
         else:
