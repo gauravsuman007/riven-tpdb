@@ -605,6 +605,48 @@ that is not rendered is dropped from the submitted payload.
   before attaching the stream, since a stream cannot point at a row that does
   not exist.
 
+### Replacing a release that is already downloaded -- THREE traps, all silent
+Picking a different release for something already in the library reported
+"Queued" and did nothing at all. Three independent faults, each sufficient on
+its own, and none of which produced an error anywhere:
+
+1. **`resolve_media_item` returns a DETACHED item.** It goes through
+   `db_functions.get_item_by_id`, which calls `session.expunge(item)` -- its
+   own docstring says so. Appending a stream, pinning `preferred_stream_hash`
+   and unblacklisting all mutated an object the session had never heard of, so
+   `session.commit()` wrote **nothing**. Re-query by id inside the session
+   before touching a resolved item. Verified live: the endpoint answered 200
+   while `preferred_stream_hash` stayed NULL and no stream was attached.
+2. **`em.add_item()` is a no-op for anything already in the library.** It only
+   emits when `item_exists_by_any_id` is false, because it exists to admit NEW
+   content. For a library item it returned `False` and queued nothing, while
+   the endpoint reported success regardless. An existing item must be handed to
+   the Downloader directly with `add_event(Event("Downloader", id))`.
+3. **`state_transition.py` overrode that event anyway.** The `States.Completed`
+   branch routed EVERY completed item to post-processing, ignoring the service
+   the event named -- so `Event("Downloader", id)` became a post-processing run
+   every time, and the log read "Post-processing complete" while nothing
+   downloaded. It now checks `downloading_stream_hash` first. Confirmed against
+   a healthy 11-seeder torrent, so this was **not** a dead-torrent case.
+
+Consequences worth remembering:
+- `downloading_stream_hash` is what puts the downloader in **candidate mode**:
+  it fetches the new release alongside the current one and swaps only on
+  success, so a failed fetch never costs a working file. `preferred_stream_hash`
+  alone does not trigger it.
+- The downloads view filters on state, and an item being replaced stays
+  `Completed`, so it was invisible there. `/items/downloads` now also matches
+  `downloading_stream_hash IS NOT NULL` when no explicit state filter is given.
+- A pending candidate fetch does **not** survive a backend restart: the event
+  queue is in memory, and nothing re-emits it from the persisted hash on
+  startup. The pin remains, so re-selecting the release resumes it.
+- `FilesystemEntry` has **no `stream_infohash` column**, so `select_stream`'s
+  "switch back to an already-downloaded release without re-downloading" branch
+  can never match and will always re-download. Still open.
+- Before blaming the code, check seeders. `_request_uncached` logs
+  `(0% done, N seeders)`; a 0-seeder release is dead and no fix will make it
+  download.
+
 ## Auto-requesting award winners
 - `content.awards.auto_request_winners` defaults to **off**. A synced corpus is
   ~1,800 winners, so leaving it on made "enable AVN" mean "download a library's
