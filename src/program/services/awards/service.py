@@ -90,6 +90,8 @@ class AwardsService:
             logger.error(f"Failed to build AVN corpus: {exc}")
             return 0
 
+        corpus = self._merge_site_winners(corpus)
+
         if not corpus:
             logger.warning("AVN corpus came back empty; leaving collections untouched")
             return 0
@@ -177,6 +179,69 @@ class AwardsService:
         )
 
         return added
+
+    @staticmethod
+    def _merge_site_winners(corpus: list) -> list:
+        """Top the Wikipedia corpus up from awards.avn.com for recent years.
+
+        Three ceremonies have no "Additional award winners" section on
+        Wikipedia, and that section -- not the tables -- is where the films
+        are. Measured against the live articles, 2020, 2021 and 2025 yield
+        3, 2 and 1 media winners respectively, against 41 for 2026. They
+        landed in the library as near-empty years and read as a broken
+        importer; the data is simply absent upstream.
+
+        awards.avn.com publishes 2019 onward and covers every thin year. It
+        is merged rather than preferred: Wikipedia remains the source of
+        record (it alone has nominees, and it reaches back to 1987), and this
+        only adds winners it does not already carry.
+
+        Deduplicated on (year, title, category) -- the same key the entry
+        upsert uses -- so a year present in both sources gains only what was
+        missing, and a failed fetch changes nothing.
+        """
+
+        from program.services.awards import avn_site
+
+        years = {
+            entry.year
+            for entry in corpus
+            if entry.year >= avn_site.FIRST_YEAR
+        }
+        # The current ceremony may be absent from the corpus entirely if its
+        # article does not exist yet, so ask the site for it regardless.
+        years.update(range(avn_site.FIRST_YEAR, avn.ceremony_year(avn._latest_ceremony()) + 1))
+
+        seen = {
+            (entry.year, (entry.title or "").casefold(), entry.category.casefold())
+            for entry in corpus
+        }
+        added = 0
+
+        for year in sorted(years):
+            try:
+                winners = avn_site.winners_for_year(year)
+            except Exception as exc:
+                logger.warning(f"AVN site fetch failed for {year}: {exc}")
+                continue
+
+            for entry in winners:
+                if not entry.is_media:
+                    continue
+
+                key = (entry.year, (entry.title or "").casefold(), entry.category.casefold())
+
+                if key in seen:
+                    continue
+
+                seen.add(key)
+                corpus.append(entry)
+                added += 1
+
+        if added:
+            logger.info(f"AVN corpus topped up with {added} winner(s) from awards.avn.com")
+
+        return corpus
 
     @staticmethod
     def _prune_nominees(session) -> int:
