@@ -260,19 +260,34 @@ def retry_library(session: Session | None = None) -> Sequence[int]:
     from program.media.item import MediaItem
 
     with _maybe_session(session) as (s, _owns):
+        incomplete = MediaItem.last_state.not_in(
+            [
+                States.Completed,
+                States.Unreleased,
+                States.Paused,
+                States.Failed,
+            ]
+        )
+
+        # A Completed item with a candidate fetch still pending.
+        #
+        # This is the one case an "incomplete states" filter cannot see, and
+        # it strands the item permanently. Picking a different release for
+        # something already downloaded sets `downloading_stream_hash` and
+        # leaves the item Completed -- correctly, because the existing file is
+        # still there and still playing. The fetch is then driven by an
+        # in-memory re-check schedule, so a restart drops it: the pin stays in
+        # the database, the pipeline is empty, and the release waits forever
+        # while the UI reports it as queued.
+        #
+        # Observed exactly that way. The column is durable, so asking for it
+        # here is what makes the wait survive a restart.
+        pending_candidate = MediaItem.downloading_stream_hash.is_not(None)
+
         ids = (
             s.execute(
                 select(MediaItem.id)
-                .where(
-                    MediaItem.last_state.not_in(
-                        [
-                            States.Completed,
-                            States.Unreleased,
-                            States.Paused,
-                            States.Failed,
-                        ]
-                    )
-                )
+                .where(or_(incomplete, pending_candidate))
                 .where(MediaItem.type.in_(["movie", "show"]))
                 .order_by(MediaItem.requested_at.desc())
             )
