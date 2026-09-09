@@ -734,7 +734,10 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         # order by and inventing one would be a claim the data cannot support.
         media_entries.sort(key=lambda entry: (entry.original_filename or "").lower())
 
-        infohash = (self.active_stream or {}).get("infohash")
+        # An ActiveStream model, not a dict: the column is JSON but it comes
+        # back through a TypeDecorator, so `.get` is not available on it
+        # however much the stored value looks like one.
+        infohash = self.active_stream.infohash if self.active_stream else None
 
         if infohash:
             current = [
