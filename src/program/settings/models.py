@@ -316,8 +316,14 @@ class FilesystemModel(Observable):
     #
     # Settable as RIVEN_FILESYSTEM_LOCAL_DOWNLOAD_PATH, like every other
     # setting; note RIVEN_FORCE_ENV=true then pins it against the UI.
-    local_download_path: Path | None = Field(
-        default=None,
+    # A str defaulting to "", NOT `Path | None` defaulting to None: the
+    # settings file is written with exclude_none=True, so a None default is
+    # never serialized, and check_environment only walks keys that are
+    # present in the file. A None default would therefore make
+    # RIVEN_FILESYSTEM_LOCAL_DOWNLOAD_PATH silently do nothing -- confirmed
+    # live on the upstream stack, where the env var was set and ignored.
+    local_download_path: str = Field(
+        default="",
         description=(
             "Directory on this server where kept titles are copied. Leave "
             "empty to disable keeping titles on disk. Must be writable by "
