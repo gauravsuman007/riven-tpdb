@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
+import requests
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
 
@@ -361,15 +362,61 @@ class TorBoxDownloader(DownloaderBase):
             logger.error(f"Failed to get instant availability for {infohash}: {e}")
             return None
 
-    def add_torrent(self, infohash: str) -> int | str:
-        """Add a torrent by infohash and return its TorBox id."""
+    def _torrent_file(self, download_url: str) -> bytes | None:
+        """Fetch the .torrent an indexer offered, or None if it cannot be had.
+
+        Never raises: a missing file is a reason to fall back to the magnet,
+        not to fail the whole download.
+        """
+
+        try:
+            response = requests.get(download_url, timeout=30, allow_redirects=True)
+        except Exception as e:
+            logger.debug(f"Could not fetch the torrent file: {e}")
+            return None
+
+        if not response.ok or not response.content:
+            return None
+
+        # An indexer that redirects to a magnet, or answers with an error
+        # page, gives back something that is not a torrent. Bencoded torrents
+        # always start with "d8:announce" or "d10:created by" -- in any case
+        # with "d", which HTML and magnets never do.
+        if not response.content.startswith(b"d"):
+            return None
+
+        return response.content
+
+    def add_torrent(self, infohash: str, download_url: str | None = None) -> int | str:
+        """Add a torrent and return its TorBox id.
+
+        Prefers the actual .torrent file when the indexer gave us a link to
+        one, because a bare magnet carries NO trackers. TorBox then has only
+        the DHT to find peers with, and a swarm that announces solely to its
+        own tracker has no DHT presence -- so the torrent sits at "stalled (no
+        seeds)" forever while the indexer cheerfully reports 19 seeders. That
+        is not hypothetical: it is what happened to a PornoLab release here,
+        and uploading the same torrent file instead had it downloading from
+        three seeders at 4.3 MB/s within minutes.
+        """
 
         assert self.api
 
-        response = self.api.session.post(
-            "torrents/createtorrent",
-            data={"magnet": f"magnet:?xt=urn:btih:{infohash}".lower()},
-        )
+        payload = None
+
+        if download_url:
+            payload = self._torrent_file(download_url)
+
+        if payload is not None:
+            response = self.api.session.post(
+                "torrents/createtorrent",
+                files={"file": ("release.torrent", payload, "application/x-bittorrent")},
+            )
+        else:
+            response = self.api.session.post(
+                "torrents/createtorrent",
+                data={"magnet": f"magnet:?xt=urn:btih:{infohash}".lower()},
+            )
 
         self._maybe_backoff(response)
 

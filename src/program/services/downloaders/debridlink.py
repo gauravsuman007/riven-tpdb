@@ -377,7 +377,11 @@ class DebridLinkDownloader(DownloaderBase):
 
         return None, f"Not instantly available (status={info.status})", None
 
-    def add_torrent(self, infohash: str) -> str:
+    def add_torrent(self, infohash: str, download_url: str | None = None) -> str:
+        # `download_url` is accepted and ignored: only TorBox has been
+        # verified to take a .torrent upload on this endpoint, and
+        # guessing at another provider's API would trade a working
+        # magnet for a broken file upload.
         """
         Add a torrent by infohash.
 

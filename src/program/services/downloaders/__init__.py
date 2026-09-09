@@ -172,7 +172,12 @@ class Downloader(Runner[None, DownloaderBase]):
                 torrent_id = None
 
                 try:
-                    torrent_id = service.add_torrent(stream.infohash)
+                    # The indexer's .torrent when we have one: a bare magnet
+                    # carries no trackers and leaves the provider unable to
+                    # find peers for anything not on the public DHT.
+                    torrent_id = service.add_torrent(
+                        stream.infohash, getattr(stream, "download_url", None)
+                    )
                 except TorBoxQueued:
                     # Accepted, just not started yet: it has a queue id rather
                     # than a torrent id. That is a normal first response for a
@@ -852,7 +857,9 @@ class Downloader(Runner[None, DownloaderBase]):
             # so add it here. Without this the bare assert below raised an
             # AssertionError with no message, which surfaced as an empty
             # failure reason and made a cached torrent look undownloadable.
-            torrent_id = service.add_torrent(stream.infohash)
+            torrent_id = service.add_torrent(
+                stream.infohash, getattr(stream, "download_url", None)
+            )
 
             logger.debug(
                 f"Added torrent {stream.infohash} to {service.key} as {torrent_id}"
@@ -1039,12 +1046,12 @@ class Downloader(Runner[None, DownloaderBase]):
 
         return self.service.get_instant_availability(infohash, item_type)
 
-    def add_torrent(self, infohash: str) -> int | str:
+    def add_torrent(self, infohash: str, download_url: str | None = None) -> int | str:
         """Add a torrent by infohash"""
 
         assert self.service
 
-        return self.service.add_torrent(infohash)
+        return self.service.add_torrent(infohash, download_url)
 
     def get_torrent_info(
         self,

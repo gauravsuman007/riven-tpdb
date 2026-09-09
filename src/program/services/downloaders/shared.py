@@ -53,7 +53,7 @@ class DownloaderBase(ABC):
         """
 
     @abstractmethod
-    def add_torrent(self, infohash: str) -> int | str:
+    def add_torrent(self, infohash: str, download_url: str | None = None) -> int | str:
         """
         Add a torrent and return its information
 

@@ -493,7 +493,11 @@ class AllDebridDownloader(DownloaderBase):
             except InvalidDebridFileException:
                 pass
 
-    def add_torrent(self, infohash: str) -> int:
+    def add_torrent(self, infohash: str, download_url: str | None = None) -> int:
+        # `download_url` is accepted and ignored: only TorBox has been
+        # verified to take a .torrent upload on this endpoint, and
+        # guessing at another provider's API would trade a working
+        # magnet for a broken file upload.
         """
         Add a magnet by infohash.
 
