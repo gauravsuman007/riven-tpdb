@@ -1,5 +1,38 @@
 # Riven (adult-only TPDB fork) — agent notes
 
+## A bare magnet cannot reach most swarms
+
+`add_torrent` used to send `magnet:?xt=urn:btih:<hash>` and nothing else. With
+no trackers the debrid provider has only the DHT, and a swarm that announces
+solely to its own tracker has no DHT presence -- so the torrent stalls at
+"no seeds" forever while the indexer reports a healthy count. Both numbers are
+true; they describe different networks.
+
+Pass `Stream.download_url` (the indexer's .torrent link, already fetched
+during scraping to extract the infohash) and TorBox gets the announce list.
+Measured on one release: 0 peers as a magnet, 4.3 MB/s and complete as a file.
+
+TorBox **dedupes by infohash**: re-adding one it already holds returns the
+existing torrent and ignores the file, so a torrent already stuck at 0 seeds
+must be deleted before re-adding it with the file. Only TorBox is known to
+accept the upload; the other providers take the argument and ignore it.
+
+`Stream.privacy` records public/semiPrivate/private from Prowlarr and orders
+reachable releases first. It is a safety net, not the fix -- with the torrent
+file, a semi-private release downloads fine.
+
+## Adult matching: what the score means
+
+`adult_matching.evaluate()` scores site/date/performers/title and the result
+is persisted as `Stream.rank` (score x 100). RTN's own rank is ~0 for
+everything adult, which is why it cannot be used.
+
+Changing acceptance rules WITHOUT measuring against the live library is the
+trap. An outright year-conflict veto looked obviously right and discarded 24
+of 67 in-use releases, nearly all correct: tracker dates and TPDB `aired_at`
+disagree constantly. Run the evidence over every stored stream and look at
+which currently-active downloads would be rejected before believing a rule.
+
 ## Goal
 Standalone, adult-only Riven fork backed directly by ThePornDB (TPDB). No
 Whisparr dependency. Regular movies/TV must never appear.
