@@ -17,6 +17,7 @@ from program.managers.sse_manager import sse_manager
 from program.services.streaming import playback_url, transcode
 from program.services.streaming.media_stream import PROXY_REQUIRED_PROVIDERS
 from program.services.streaming.transcode import PlaybackInfo, SessionManager
+from program.services.vpn import STREAMING, VpnUnavailable, vpn
 from program.settings import settings_manager
 from program.utils.async_client import AsyncClient
 from program.utils.proxy_client import ProxyClient
@@ -194,6 +195,71 @@ async def stream_file(
             await upstream_response.aclose()
         logger.exception(f"Unexpected error in stream_file: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+class DirectPlaybackModel(BaseModel):
+    """Whether a player may fetch this item straight from the debrid CDN."""
+
+    #: Present only when handing the URL out is both enabled and safe. Absent
+    #: means "keep using /stream/file"; it is never an error.
+    url: str | None = None
+    #: Why not, when there is no url. Shown in logs and the UI, never guessed.
+    reason: str | None = None
+
+
+@router.get("/direct/{item_id}")
+def direct_playback(item_id: int) -> DirectPlaybackModel:
+    """The provider URL for one item, when handing it out is safe.
+
+    Proxying video through this server makes its upstream connection the
+    ceiling for playback: every byte crosses it once inbound from the provider
+    and once outbound to the player, and every seek pays both again. When the
+    provider's CDN can serve the player directly, it should.
+
+    Measured against TorBox before this was written: the minted URL is not
+    bound to the requesting IP, the CDN reflects `Origin` (so fetch and MSE
+    work, not just a plain `<video src>`), and it honours range requests. So
+    the mechanism is sound. Each refusal below is a case where it is not.
+    """
+
+    settings = settings_manager.settings.stream
+
+    if not settings.direct_debrid_handoff:
+        # Off by default on purpose: the provider embeds the account API key
+        # in the URL. See the setting's own note.
+        return DirectPlaybackModel(
+            reason="direct playback is disabled in settings"
+        )
+
+    try:
+        if vpn().proxy_for(STREAMING) is not None:
+            # Handing the URL to a player would quietly take playback off the
+            # tunnel -- the exact thing the setting exists to prevent, and
+            # invisibly, which is worse than not offering it.
+            return DirectPlaybackModel(
+                reason="playback is routed through the VPN"
+            )
+    except VpnUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    # `check=True` verifies the link and re-mints a spent one. A player gets a
+    # single attempt at this URL and cannot recover from a stale one the way
+    # /stream/file does, so it must be known-good before it leaves here.
+    media = playback_url.resolve(item_id, check=True)
+
+    if media.provider in PROXY_REQUIRED_PROVIDERS:
+        # These providers bind the link to the fetching client in ways a
+        # player cannot satisfy; the proxy exists precisely for them.
+        return DirectPlaybackModel(
+            reason=f"{media.provider} links must be fetched through this server"
+        )
+
+    logger.debug(
+        f"Handing item {item_id} directly to the player: "
+        f"{playback_url.redact(media.url)}"
+    )
+
+    return DirectPlaybackModel(url=media.url)
 
 
 @router.get("/playback_info/{item_id}")

@@ -1304,6 +1304,31 @@ class StreamModel(Observable):
         description="Timeout in seconds before a stream is considered inactive during resource cleanup (60 seconds default)",
     )
 
+    # Hand the player the debrid CDN URL and get this server out of the way.
+    #
+    # Measured against TorBox: the minted URL is not bound to the requesting
+    # IP, the CDN reflects Origin so even fetch/MSE works, and it answers
+    # range requests -- so a browser can stream and seek it directly, and this
+    # server's upstream bandwidth stops being the ceiling for playback.
+    #
+    # OFF BY DEFAULT, and the reason is not caution for its own sake: TorBox
+    # puts the ACCOUNT API KEY in that URL as `?token=`, and there is no
+    # scoped or ephemeral alternative in their API (`user/refreshtoken`
+    # rotates the real key rather than issuing a second one). Turning this on
+    # hands the account key to every device that plays a file, where it lands
+    # in browser history, player logs and crash reports. That is a real
+    # trade, worth making on a throwaway account and not on a valuable one.
+    direct_debrid_handoff: bool = Field(
+        default=False,
+        description=(
+            "Let players fetch video straight from the debrid CDN instead of "
+            "through this server. Removes this server's connection as the "
+            "playback bottleneck. WARNING: the provider embeds your account "
+            "API key in that URL, so every device that plays a file receives "
+            "it. Leave off unless you accept that."
+        ),
+    )
+
 
 class TpdbModel(Observable):
     # TPDB is the only metadata source in this fork, so it is on by default.
