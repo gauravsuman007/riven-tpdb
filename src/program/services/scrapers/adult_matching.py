@@ -87,6 +87,9 @@ class MatchEvidence:
     adult_flag: bool = False
     episodic: bool = False
     volume_conflict: bool = False
+    year_conflict: bool = False
+    instalment_only_on_release: bool = False
+    distinctive_title: bool = False
     reasons: list[str] = field(default_factory=list)
 
     @property
@@ -112,7 +115,18 @@ class MatchEvidence:
         if self.year:
             total += 0.5
 
-        return total
+        # Not merely "no bonus". A release naming a DIFFERENT year is
+        # positive evidence against, and without a penalty it sorts level
+        # with a release that names no year at all.
+        if self.year_conflict:
+            total -= 2.0
+
+        # "Trans Babysitters 6" offered for "Babysitters" -- a numbered
+        # entry in a series when the wanted title is not numbered at all.
+        if self.instalment_only_on_release:
+            total -= 1.0
+
+        return max(total, 0.0)
 
     @property
     def accepted(self) -> bool:
@@ -132,6 +146,25 @@ class MatchEvidence:
         # Both sides name an instalment and they disagree: this is a different
         # film in the same series, however well everything else lines up.
         if self.volume_conflict:
+            return False
+
+        # Both sides name a year and they disagree, and nothing else
+        # identifies the release.
+        #
+        # This is what let a 2025 GenderX scene be downloaded for a 2007
+        # Digital Playground film: the dates were parsed on both sides, the
+        # 18-year gap was visible, and nothing looked at it.
+        #
+        # It is NOT an outright veto, and that limit was measured rather than
+        # guessed. Against the live library an absolute rule threw away 24 of
+        # the 67 releases actually in use, nearly all of them plainly right:
+        # "FamilySinners.22.02.18.Ana.Foxxx.Family.Cheaters" for a title TPDB
+        # dates to 2020, matching on site AND the whole title. Tracker dates
+        # and TPDB's `aired_at` disagree routinely -- re-releases, compilation
+        # dating, scenes published later than shot -- so a year is corroborating
+        # evidence, never an identity. It only decides when there is nothing
+        # else: no studio, no performer.
+        if self.year_conflict and not self.site and not self.performers:
             return False
 
         # The scene identity: site plus when it was published.
@@ -155,7 +188,23 @@ class MatchEvidence:
         # with no other metadata in the name. Gated on the release actually
         # parsing as adult, because a bare title match is otherwise how
         # mainstream films with the same name get in.
-        if self.adult_flag and self.title_ratio >= 0.9:
+        #
+        # ALSO gated on the title being distinctive enough to mean something.
+        # A one-word title like "Babysitters" scores a perfect 1/1 against
+        # any release containing that word, so this branch was accepting
+        # unrelated films on no evidence whatever -- 205 of 597 stored
+        # candidates in the live library, a third of everything kept, came in
+        # through here. `distinctive_title` is what makes the ratio a claim
+        # rather than a coincidence.
+        # `distinctive_title` OR a matching year: either makes the ratio a
+        # claim rather than a coincidence. Without the year half,
+        # "Pirates.2005.XXX" was rejected for the 2005 film "Pirates" -- a
+        # one-word title whose year agreed exactly.
+        if (
+            self.adult_flag
+            and self.title_ratio >= 0.9
+            and (self.distinctive_title or self.year)
+        ):
             return True
 
         return False
@@ -178,13 +227,18 @@ def evaluate(
     flat = normalise(raw_title)
 
     wanted_volume = extract_volume(item_title or "")
+    release_volume = extract_volume(raw_title)
 
     if wanted_volume is not None:
-        release_volume = extract_volume(raw_title)
-
         if release_volume is not None and release_volume != wanted_volume:
             evidence.volume_conflict = True
             evidence.reasons.append(f"volume:{release_volume}!={wanted_volume}")
+    elif release_volume is not None:
+        # The wanted title names no instalment and the release names one.
+        # Weaker than a conflict -- a series entry is sometimes listed under
+        # the bare series name -- but it is a reason for doubt, not none.
+        evidence.instalment_only_on_release = True
+        evidence.reasons.append(f"instalment:{release_volume}")
 
     # --- site -------------------------------------------------------------
     if site_name:
@@ -210,8 +264,21 @@ def evaluate(
                 evidence.reasons.append("date")
                 break
 
-        if _YEAR.search(raw_title) and str(aired_at.year) in raw_title:
+        if str(aired_at.year) in raw_title:
             evidence.year = True
+        else:
+            # A four-digit year, or a scene date, that names a DIFFERENT year.
+            # Scene dates are two-digit ("25 10 09") and would never be found
+            # by the plain year pattern, which is why extract_dates is
+            # consulted too: that is the form the GenderX releases use.
+            stated = {int(match.group(0)) for match in _YEAR.finditer(raw_title)}
+            stated.update(candidate[0] for candidate in extract_dates(raw_title))
+
+            if stated and aired_at.year not in stated:
+                evidence.year_conflict = True
+                evidence.reasons.append(
+                    f"year:{sorted(stated)[0]}!={aired_at.year}"
+                )
 
     # --- performers -------------------------------------------------------
     for performer in performers or []:
@@ -237,5 +304,14 @@ def evaluate(
 
         if evidence.title_ratio:
             evidence.reasons.append(f"title:{present}/{len(wanted)}")
+
+        # Is a full match of this title actually saying anything?
+        #
+        # Two or more tokens, or one long one. "Babysitters" is a single
+        # eleven-character word and still fails: length is not the test,
+        # because a common noun stays common however long it is. The check
+        # that matters is that the title is more than ONE word, so a release
+        # has to reproduce a phrase rather than mention a word.
+        evidence.distinctive_title = len(wanted) >= 2
 
     return evidence
