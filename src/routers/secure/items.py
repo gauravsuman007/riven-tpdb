@@ -16,6 +16,7 @@ from program.db.db import db_session
 from program.media.collection import CollectionEntry
 from program.media.filesystem_entry import FilesystemEntry
 from program.media.item import Episode, MediaItem, Movie, Season, Show
+from program.media.item_performer import ItemPerformer, normalise_name
 from program.media.models import ActiveStream
 from program.media.stream import Stream
 from program.media.state import States
@@ -182,6 +183,28 @@ class ItemsResponse(BaseModel):
     ]
 
 
+def _library_search_filter(term: str):
+    """Match a title, its studio, or anyone in its cast.
+
+    One predicate rather than three call sites: `/items` and the suggestion
+    endpoint have to agree about what "matches" means, or clicking a
+    suggestion returns a grid that does not contain it.
+    """
+
+    pattern = f"%{normalise_name(term)}%"
+
+    return or_(
+        func.lower(MediaItem.title).like(pattern),
+        func.lower(MediaItem.site_name).like(pattern),
+        select(ItemPerformer.id)
+        .where(
+            ItemPerformer.media_item_id == MediaItem.id,
+            ItemPerformer.name_normalized.like(pattern),
+        )
+        .exists(),
+    )
+
+
 class StatesFilter(str, Enum):
     All = "All"
 
@@ -225,7 +248,24 @@ async def get_items(
     search: Annotated[
         str | None,
         Query(
-            description="Search by title or IMDB/TVDB/TMDB ID",
+            description="Search by title, studio, cast member, or "
+            "IMDB/TVDB/TMDB ID",
+            min_length=1,
+        ),
+    ] = None,
+    performer: Annotated[
+        str | None,
+        Query(
+            description="Restrict to titles this performer appears in "
+            "(exact name, case-insensitive)",
+            min_length=1,
+        ),
+    ] = None,
+    site: Annotated[
+        str | None,
+        Query(
+            description="Restrict to titles from this studio/site "
+            "(exact name, case-insensitive)",
             min_length=1,
         ),
     ] = None,
@@ -248,7 +288,26 @@ async def get_items(
             tvdb_id = search_lower.replace("tvdb_", "")
             query = query.where(MediaItem.tvdb_id == tvdb_id)
         else:
-            query = query.where(func.lower(MediaItem.title).like(f"%{search_lower}%"))
+            query = query.where(_library_search_filter(search))
+
+    # Exact facet filters, which is what clicking a suggestion uses. Kept
+    # separate from `search` deliberately: picking "Riley Reid" from the
+    # dropdown should show her titles, not every title whose description
+    # happens to contain the substring.
+    if performer:
+        query = query.where(
+            select(ItemPerformer.id)
+            .where(
+                ItemPerformer.media_item_id == MediaItem.id,
+                ItemPerformer.name_normalized == normalise_name(performer),
+            )
+            .exists()
+        )
+
+    if site:
+        query = query.where(
+            func.lower(func.trim(MediaItem.site_name)) == normalise_name(site)
+        )
 
     if states and StatesFilter.All not in states:
         query = query.where(
@@ -330,6 +389,127 @@ async def get_items(
             total_pages=total_pages,
         )
 
+
+
+class Suggestion(BaseModel):
+    value: Annotated[
+        str,
+        Field(description="The matched title, studio or performer name"),
+    ]
+    count: Annotated[
+        int,
+        Field(description="How many library titles this suggestion matches"),
+    ]
+
+
+class SuggestionsResponse(BaseModel):
+    success: Annotated[
+        bool,
+        Field(description="Boolean signifying whether the request was successful"),
+    ]
+    titles: Annotated[
+        list[Suggestion],
+        Field(description="Matching titles in the library"),
+    ]
+    studios: Annotated[
+        list[Suggestion],
+        Field(description="Matching studios/sites"),
+    ]
+    performers: Annotated[
+        list[Suggestion],
+        Field(description="Matching cast members"),
+    ]
+
+
+@router.get(
+    "/suggest",
+    summary="Search Suggestions",
+    description=(
+        "Titles, studios and cast members from the library matching a "
+        "partial query. Library only -- this never reaches TPDB."
+    ),
+    operation_id="suggest_items",
+    response_model=SuggestionsResponse,
+)
+async def suggest_items(
+    q: Annotated[
+        str,
+        Query(
+            description="Partial query, two characters or more",
+            min_length=2,
+        ),
+    ],
+    limit: Annotated[
+        int,
+        Query(description="Maximum suggestions per group", ge=1, le=20),
+    ] = 5,
+) -> SuggestionsResponse:
+    """What the search box offers as you type.
+
+    Three small grouped queries rather than one union: each group is ranked
+    on its own terms (studios and performers by how much of the library they
+    account for, titles by recency), and a union would have to invent a
+    shared ordering none of them wants.
+    """
+
+    pattern = f"%{normalise_name(q)}%"
+
+    with db_session() as session:
+        titles = [
+            Suggestion(value=title, count=count)
+            for title, count in session.execute(
+                select(MediaItem.title, func.count(MediaItem.id))
+                .where(
+                    MediaItem.title.is_not(None),
+                    func.lower(MediaItem.title).like(pattern),
+                )
+                .group_by(MediaItem.title)
+                # Longest-waiting first would be arbitrary here; the most
+                # recently requested is the one most likely being looked for.
+                .order_by(func.max(MediaItem.requested_at).desc())
+                .limit(limit)
+            ).all()
+        ]
+
+        studios = [
+            Suggestion(value=name, count=count)
+            for name, count in session.execute(
+                select(MediaItem.site_name, func.count(MediaItem.id))
+                .where(
+                    MediaItem.site_name.is_not(None),
+                    func.lower(MediaItem.site_name).like(pattern),
+                )
+                .group_by(MediaItem.site_name)
+                .order_by(func.count(MediaItem.id).desc(), MediaItem.site_name.asc())
+                .limit(limit)
+            ).all()
+        ]
+
+        # Grouped on the normalised name, displayed with one of the spellings
+        # that produced it: two rows differing only in casing are one person.
+        performers = [
+            Suggestion(value=name, count=count)
+            for name, count in session.execute(
+                select(
+                    func.min(ItemPerformer.name),
+                    func.count(func.distinct(ItemPerformer.media_item_id)),
+                )
+                .where(ItemPerformer.name_normalized.like(pattern))
+                .group_by(ItemPerformer.name_normalized)
+                .order_by(
+                    func.count(func.distinct(ItemPerformer.media_item_id)).desc(),
+                    func.min(ItemPerformer.name).asc(),
+                )
+                .limit(limit)
+            ).all()
+        ]
+
+    return SuggestionsResponse(
+        success=True,
+        titles=titles,
+        studios=studios,
+        performers=performers,
+    )
 
 class AddMediaItemPayload(BaseModel):
     tmdb_ids: Annotated[

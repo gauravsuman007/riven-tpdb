@@ -431,6 +431,48 @@ stack is a full checkout at `/home/hellonfire/Server/riven-tpdb`.
 - `RIVEN_FORCE_ENV=true` is set on the server. Any `RIVEN_*` env var silently
   overwrites the UI-saved setting on every start.
 
+## Library search: studio and cast
+- The search box matches a **title, its studio, or anyone in its cast**, and
+  suggests all three as you type. `GET /api/v1/items/suggest?q=` answers from
+  the LIBRARY ONLY -- it never touches TPDB, so a keystroke can never become a
+  rate-limited upstream call.
+- `MediaItem.performers` is a JSON array and a JSON array cannot be searched by
+  substring: Postgres matches an exact element with a GIN index and nothing
+  else. `ItemPerformer` (`program/media/item_performer.py`) is that column
+  unnested, one row per (title, performer), which is what makes "type *ril*,
+  see *Riley Reid*" possible at all. Studios need no such table -- `site_name`
+  is already a column.
+- Size is not the concern people expect: this indexes the library, not TPDB's
+  catalogue. At ~3 performers per scene it is ~3 rows per OWNED title.
+- The table is DERIVED, never authored. `sync_item_performers` is driven by
+  `after_insert`/`after_update` mapper events on `MediaItem`, not by calls at
+  the write sites -- `performers` is set by the TPDB indexer, the Adult Empire
+  indexer and TPDB enrichment today, and a fourth site added later would
+  otherwise silently stop updating suggestions. `rebuild_all()` reconstructs it
+  from scratch at any time.
+- TRAP: the `after_update` listener MUST gate on
+  `inspect(target).attrs.performers.history.has_changes()`. Items are updated on
+  every pipeline state transition; without the gate one state change becomes a
+  delete plus three inserts for every title in flight.
+- Migration `c5a8f30d9b71` backfills in SQL and adds pg_trgm GIN indexes on
+  cast, `site_name` and `title`. TRAP: each optional index runs in its own
+  SAVEPOINT (`connection.begin_nested()`). A failed statement poisons the whole
+  transaction in Postgres, so catching the exception without one aborts the
+  migration anyway -- the rollback is what makes the "degrade to a seq scan"
+  fallback real.
+- `search` (substring, all three fields) and `performer=`/`site=` (exact,
+  case-insensitive) are deliberately different params. Clicking "Riley Reid" in
+  the dropdown sets the facet, not the text search: a substring search for a
+  name would also return every title whose text happens to contain it. Typing
+  clears the facet -- keeping both would silently show the intersection.
+- Frontend: the dropdown is in the library page's search field, fed by a
+  `suggest` remote command over `$lib/suggestions.ts` (hand-typed for the same
+  reason as `collections.ts`). Two debounce timers on purpose: 150ms for the
+  dropdown (a cheap local query, should feel live) and 300ms for the grid (a
+  full navigation). Out-of-order responses are dropped by a request token --
+  "ri" can answer after "riley" and would otherwise overwrite it.
+- Tests: `src/tests/test_item_search.py` (SQLite, stdlib harness).
+
 ## Keep on disk
 - `POST /api/v1/keep/{id}` copies a title's active file to
   `filesystem.local_download_path` (bound to `./downloads` on the server) and
