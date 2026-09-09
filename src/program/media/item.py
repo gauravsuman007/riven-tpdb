@@ -30,6 +30,7 @@ from .stream import Stream
 
 if TYPE_CHECKING:
     from program.media.filesystem_entry import FilesystemEntry
+    from program.media.local_copy import LocalCopy
 
 
 TMediaItem = TypeVar("TMediaItem", bound="MediaItem")
@@ -161,6 +162,15 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         lazy="selectin",
         cascade="all, delete-orphan",
         overlaps="filesystem_entries",
+    )
+    # The local-disk copy of this title, if one has been asked for. One per
+    # item: "keep" is a property of the title, not of a particular release.
+    local_copy: Mapped["LocalCopy | None"] = relationship(
+        "LocalCopy",
+        back_populates="media_item",
+        lazy="selectin",
+        uselist=False,
+        cascade="all, delete-orphan",
     )
     failed_attempts: Mapped[int] = mapped_column(sqlalchemy.Integer, default=0)
 

@@ -25,6 +25,7 @@ def get_base_metadata() -> MetaData:
     from program.media import (
         MediaItem,  # pyright: ignore[reportUnusedImport]
         FilesystemEntry,  # pyright: ignore[reportUnusedImport]
+        LocalCopy,  # pyright: ignore[reportUnusedImport]
         StreamRelation,  # pyright: ignore[reportUnusedImport]
         StreamBlacklistRelation,  # pyright: ignore[reportUnusedImport]
         Stream,  # pyright: ignore[reportUnusedImport]

@@ -3,6 +3,7 @@ from .collection import Collection, CollectionEntry
 from .studio import Studio, StudioRowEntry
 from .state import States
 from .filesystem_entry import FilesystemEntry
+from .local_copy import LocalCopy, LocalCopyState
 from .media_entry import MediaEntry
 from .subtitle_entry import SubtitleEntry
 from .stream import (
@@ -23,6 +24,8 @@ __all__ = [
     "Show",
     "States",
     "FilesystemEntry",
+    "LocalCopy",
+    "LocalCopyState",
     "MediaEntry",
     "SubtitleEntry",
     "StreamRelation",

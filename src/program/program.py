@@ -26,6 +26,7 @@ from program.core.runner import Runner
 
 from .state_transition import process_event
 from .services.filesystem import FilesystemService
+from .services.localsync import local_sync
 from .types import Event
 
 from sqlalchemy import func, select, text
@@ -281,6 +282,11 @@ class Program(threading.Thread):
 
         self.scheduler_manager.start()
 
+        # Copies of kept titles run outside the event pipeline: they are long,
+        # bandwidth-bound and must survive a restart mid-file, none of which
+        # the per-item event loop is shaped for.
+        local_sync().start()
+
         super().start()
         logger.success("Riven is running!")
         self.initialized = True
@@ -422,6 +428,8 @@ class Program(threading.Thread):
             return
 
         self.scheduler_manager.stop()
+
+        local_sync().stop()
 
         if self.services:
             self.services.filesystem.close()

@@ -306,6 +306,34 @@ class FilesystemModel(Observable):
         default=Path("/dev/shm/riven-cache"),
         description="Directory for caching downloaded chunks",
     )
+
+    # "Keep on disk". Everything RivenVFS presents is fetched on demand and
+    # stored nowhere; a kept title is copied here so it survives the debrid
+    # account expiring, the provider dropping the torrent, or the connection
+    # being down. Empty disables the feature outright -- the button does not
+    # appear -- because writing large files to an unconfigured path is a
+    # worse default than not offering it.
+    #
+    # Settable as RIVEN_FILESYSTEM_LOCAL_DOWNLOAD_PATH, like every other
+    # setting; note RIVEN_FORCE_ENV=true then pins it against the UI.
+    local_download_path: Path | None = Field(
+        default=None,
+        description=(
+            "Directory on this server where kept titles are copied. Leave "
+            "empty to disable keeping titles on disk. Must be writable by "
+            "the container and have room for the files you keep."
+        ),
+    )
+    local_download_concurrency: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+        description=(
+            "How many titles to copy to local disk at once. Each copy is a "
+            "sustained read from the debrid provider, so more is not faster "
+            "on a limited connection and risks the provider's rate limits."
+        ),
+    )
     cache_max_size_mb: int = Field(
         default=10240, ge=0, description="Maximum cache size in MB (10 GiB default)"
     )
