@@ -33,6 +33,10 @@ services:
             # that volume, and is pinned here rather than left to the UI so
             # the two can never drift apart.
             - RIVEN_FILESYSTEM_CACHE_DIR=/riven/cache
+            # Local copies of titles kept with the "Keep on disk" button.
+            # Leave unset to manage the path from the settings UI instead;
+            # empty disables the feature and hides the button.
+            - RIVEN_FILESYSTEM_LOCAL_DOWNLOAD_PATH=/riven/downloads
             # ThePornDB API token. Optional: leave unset and enter it in the UI
             # instead. An empty value is ignored rather than forced, so it does
             # not pin the field.
@@ -56,6 +60,13 @@ services:
             # Purely disposable: deleting it costs re-fetching chunks from the
             # debrid provider, nothing more.
             - ./cache:/riven/cache
+            # Where "Keep on disk" writes. Must match
+            # filesystem.local_download_path (settable as
+            # RIVEN_FILESYSTEM_LOCAL_DOWNLOAD_PATH); the feature stays off
+            # until that setting names a writable directory. Unlike the cache
+            # above this is NOT disposable -- it is the only copy of a kept
+            # title that does not depend on the debrid account.
+            - ./downloads:/riven/downloads
             # How the VPN tab reads tunnel status and drives login and
             # exit-node selection. Read-write, and it has to be: connecting to
             # a unix socket requires write access, so a :ro mount here would
