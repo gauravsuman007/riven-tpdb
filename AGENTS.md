@@ -533,11 +533,17 @@ The picker now searches BOTH collections: `IndexerService` resolves a tpdb_id
 by trying `get_scene` then `get_movie`, so either kind of record is a valid
 answer, and a library title that is really a scene was otherwise unmatchable.
 
-## The noodlemagazine plugin (lives on the SERVER, not in git)
-`plugins/` in this repo holds only `.gitkeep`; the ten direct-scraper plugins
-live at `/home/hellonfire/Server/riven-tpdb/plugins` on the server and are
-bind-mounted read-only. Editing one means `scp` to that path and a rescan
-(`POST /api/v1/direct/plugins/rescan`) or a restart -- there is no CI for them.
+## The noodlemagazine plugin
+The direct-scraper plugins are their own repo,
+`gauravsuman007/riven-tpdb-scrapers` (`../riven-tpdb-scrapers`, files under
+`scrapers/`). `plugins/` in THIS repo holds only `.gitkeep`; the deployment
+copies live at `/home/hellonfire/Server/riven-tpdb/plugins` on the server,
+bind-mounted read-only. There is deliberately no CI and no build: a plugin
+only imports successfully inside a running container. So a change is three
+steps -- commit to the scrapers repo, `scp` the file to that server path, then
+`POST /api/v1/direct/plugins/rescan` (Settings -> Plugins -> Rescan folder).
+No rebuild, no restart. Check all three copies agree before assuming a fix is
+live; the server copy is the one that runs.
 
 - The duration/sort/HD filters are NOT honoured on a GET. `?len=long` on the
   search URL renders the UNFILTERED page, the same silent-ignore failure as
