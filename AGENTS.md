@@ -484,6 +484,79 @@ stack is a full checkout at `/home/hellonfire/Server/riven-tpdb`.
   "ri" can answer after "riley" and would otherwise overwrite it.
 - Tests: `src/tests/test_item_search.py` (SQLite, stdlib harness).
 
+## Multi-file releases (playlists)
+- A scene compilation arrives as ONE torrent holding five or six separate
+  scenes, each a `MediaEntry` against the same title. Playback used to resolve
+  `media_entries[0]` and call that the title, so the rest were downloaded,
+  mounted and unreachable -- nothing in the UI ever said they existed.
+- `MediaItem.media_parts` is the centre of the fix: the files of the CURRENT
+  release, in filename order. `MediaItem.media_entry` is now just `parts[0]`.
+- The grouping key is `MediaEntry.stream_infohash` against
+  `active_stream.infohash`. This is not cosmetic: item 862 (Half His Age) held
+  five files from the active torrent PLUS one orphan left by a swapped-out
+  candidate, and `media_entry` was returning the orphan -- so the title played
+  a file from a release it no longer used.
+- TRAP: `active_stream` is an `ActiveStream` pydantic model, not a dict. The
+  column is JSON and comes back through a TypeDecorator, so `.get("infohash")`
+  raises AttributeError and every request 500s. Use `.infohash`.
+- Every stream endpoint takes `?part=N` indexed into `media_parts`, defaulting
+  to 0, so a single-file title produces byte-for-byte the URLs it always did.
+  `playback_url.resolve(..., part=)` is where it lands.
+- HLS sessions are keyed `"{item_id}:{part}"`, not by item. Sharing one would
+  serve segments of one file under another's playlist. `SessionManager.segment`
+  takes `session_key`, and DELETE with no `part` stops every part's session.
+- `GET /stream/parts/{id}` is what a client builds a playlist from (always at
+  least one entry). `GET /stream/playlist/{id}.m3u` is the same thing in the
+  format external players read.
+- Part titles come from the FILENAME ("Kristen Scott 2"), which is the only
+  description of a part that exists. There is no per-file metadata and no
+  index column; "Part 1" would throw away the one real label.
+- Durations are never probed to build the list -- a six-part release would mean
+  six ffprobe runs against remote URLs before the player could draw anything.
+  They appear only where `media_metadata` was already filled in.
+- External players get `/Videos/{guid}/playlist.m3u`, and every ENTRY carries
+  the same play-session token the playlist request authenticated with. The
+  player fetches entries itself with no cookie and no key, so an entry without
+  the token means a playlist that opens and whose every track 401s. `.m3u`
+  earns its place in the Android chooser exactly the way `.mp4` does.
+
+## Two silent failures in the TPDB manual match picker
+Both had the same symptom -- "no results for anything" -- and either alone
+was enough:
+- The endpoint's `type` is a Literal of PLURALS (`scenes`/`movies`/
+  `performers`/`sites`). The frontend sent `type=movie`, which FastAPI
+  rejected with a 422 before TPDB was ever called.
+- `/tpdb/search` answers with a BARE ARRAY. The component read
+  `payload.results ?? payload.data ?? []` off it, got undefined twice, and
+  rendered "Nothing found" over a good list of candidates.
+The picker now searches BOTH collections: `IndexerService` resolves a tpdb_id
+by trying `get_scene` then `get_movie`, so either kind of record is a valid
+answer, and a library title that is really a scene was otherwise unmatchable.
+
+## The noodlemagazine plugin (lives on the SERVER, not in git)
+`plugins/` in this repo holds only `.gitkeep`; the ten direct-scraper plugins
+live at `/home/hellonfire/Server/riven-tpdb/plugins` on the server and are
+bind-mounted read-only. Editing one means `scp` to that path and a rescan
+(`POST /api/v1/direct/plugins/rescan`) or a restart -- there is no CI for them.
+
+- The duration/sort/HD filters are NOT honoured on a GET. `?len=long` on the
+  search URL renders the UNFILTERED page, the same silent-ignore failure as
+  `/home?story=`. The site's own control writes the filters into
+  `location.search` and then POSTs them back to the URL it just wrote, so a
+  filtered search is: GET once for the CSRF token and cookies, then POST
+  `len`/`p` to `<search url>?len=long&p=N`, which answers with an HTML
+  fragment of the same `<div class="item">` markup. Measured: shortest result
+  went from 2:41 to 10:18 and nothing under ten minutes survived.
+- Pagination is that same POST with `p=0,1,2...`, 24 items a page, which is
+  the only way to satisfy a `limit` above 24.
+- Attribute values are HTML-ESCAPED. About one thumbnail in five is on
+  `img.pvvstream.pro` and carries a query string, so an un-unescaped `data-src`
+  requests `&amp;idx=14` and the CDN answers 403 -- the whole of the "some
+  thumbnails never load" bug. Nothing was missing from the markup and nothing
+  failed to parse; the URLs were simply wrong. `cdn2.pvvstream.pro` has no
+  query string, which is why most were fine and the breakage looked random.
+  Verified after the fix: 72 of 72 thumbnails across three queries return 200.
+
 ## Keep on disk
 - `POST /api/v1/keep/{id}` copies a title's active file to
   `filesystem.local_download_path` (bound to `./downloads` on the server) and
