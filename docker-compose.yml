@@ -23,6 +23,16 @@ services:
             # Must match the container-side path of the /mount volume below,
             # otherwise RivenVFS falls back to the placeholder default.
             - RIVEN_FILESYSTEM_MOUNT_PATH=/mount
+            # Where RivenVFS caches downloaded chunks. The default is
+            # /dev/shm/riven-cache -- a tmpfs, i.e. RAM, capped by shm_size
+            # (1 GiB) while cache_max_size_mb defaults to 10 GiB: the cache
+            # believes it has ten times the room it actually has, and every
+            # cached byte is a byte the host cannot use for anything else.
+            # Pointing it at the ./cache bind below puts it on disk, where the
+            # configured size is real. Must match the container-side path of
+            # that volume, and is pinned here rather than left to the UI so
+            # the two can never drift apart.
+            - RIVEN_FILESYSTEM_CACHE_DIR=/riven/cache
             # ThePornDB API token. Optional: leave unset and enter it in the UI
             # instead. An empty value is ignored rather than forced, so it does
             # not pin the field.
@@ -42,6 +52,10 @@ services:
         volumes:
             - /path/to/riven/data:/riven/data
             - /path/to/riven/mount:/mount:rshared,z
+            # RivenVFS chunk cache, matching RIVEN_FILESYSTEM_CACHE_DIR above.
+            # Purely disposable: deleting it costs re-fetching chunks from the
+            # debrid provider, nothing more.
+            - ./cache:/riven/cache
             # How the VPN tab reads tunnel status and drives login and
             # exit-node selection. Read-write, and it has to be: connecting to
             # a unix socket requires write access, so a :ro mount here would
