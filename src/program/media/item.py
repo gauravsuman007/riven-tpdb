@@ -692,16 +692,75 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
             The active `MediaEntry` instance if any exist, otherwise `None`.
         """
 
+        parts = self.media_parts
+
+        return parts[0] if parts else None
+
+    @property
+    def media_parts(self) -> list["MediaEntry"]:
+        """Every playable file of the CURRENT release, in playing order.
+
+        A scene compilation arrives as one torrent holding five or six files,
+        and each of them is a MediaEntry against this item. Playback used to
+        take `media_entries[0]` and call that the title, so five of the six
+        scenes were downloaded, mounted, and unreachable -- the player had no
+        way to name them and the UI never said they existed.
+
+        Two things are being separated here:
+
+        * Files of ONE release, which are parts of the same title and belong
+          in a playlist together.
+        * Files left over from a DIFFERENT release -- a candidate that was
+          swapped out -- which are not parts of anything and must not appear.
+          They are told apart by `stream_infohash`, which records the release
+          each file came from.
+
+        `active_stream` names the release in play, so it decides. When it says
+        nothing (an older item, or a file with no recorded infohash) the
+        `is_active` flag is the fallback, and failing that everything is
+        returned in order -- degrading to today's behaviour rather than to an
+        empty player.
+        """
+
         media_entries = [
             entry for entry in self.filesystem_entries if isinstance(entry, MediaEntry)
         ]
 
         if not media_entries:
-            return None
+            return []
+
+        # Ordered by filename, which is how these releases number their parts
+        # ("Kristen Scott 1", "Kristen Scott 2"). There is no index column to
+        # order by and inventing one would be a claim the data cannot support.
+        media_entries.sort(key=lambda entry: (entry.original_filename or "").lower())
+
+        infohash = (self.active_stream or {}).get("infohash")
+
+        if infohash:
+            current = [
+                entry for entry in media_entries if entry.stream_infohash == infohash
+            ]
+
+            if current:
+                return current
 
         active = [entry for entry in media_entries if entry.is_active]
 
-        return active[0] if active else media_entries[0]
+        if active:
+            # Everything sharing the active file's release travels with it;
+            # an active entry with no infohash is alone by definition.
+            active_hash = active[0].stream_infohash
+
+            if active_hash:
+                return [
+                    entry
+                    for entry in media_entries
+                    if entry.stream_infohash == active_hash
+                ]
+
+            return active
+
+        return media_entries
 
     @property
     def available_in_vfs(self) -> bool:

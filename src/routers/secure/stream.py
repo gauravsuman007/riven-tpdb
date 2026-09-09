@@ -14,6 +14,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from program.managers.sse_manager import sse_manager
+from program.media.media_entry import MediaEntry
 from program.services.streaming import playback_url, transcode
 from program.services.streaming.media_stream import PROXY_REQUIRED_PROVIDERS
 from program.services.streaming.transcode import PlaybackInfo, SessionManager
@@ -22,9 +23,40 @@ from program.settings import settings_manager
 from program.utils.async_client import AsyncClient
 from program.utils.proxy_client import ProxyClient
 
-# One manager for the process: HLS sessions are keyed on item id and must be
-# shared across requests, which is the whole point of making them persistent.
+# One manager for the process: HLS sessions are keyed on item id and part, and
+# must be shared across requests, which is the whole point of making them
+# persistent.
 _session_manager = SessionManager()
+
+
+def _parts_for(item_id: int) -> list["MediaEntry"]:
+    """The playable files of `item_id`'s current release, in playing order.
+
+    Raises 404 rather than returning an empty list: every caller here is about
+    to play something, and "no parts" is the same condition the single-file
+    path already reported as "item has no media file".
+    """
+
+    from program.db.db import db_session
+    from program.media.item import MediaItem
+
+    with db_session() as session:
+        item = session.get(MediaItem, item_id)
+
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        parts = item.media_parts
+
+        if not parts:
+            raise HTTPException(status_code=404, detail="Item has no media file")
+
+        # Read everything needed while the session is open. These entries are
+        # expunged the moment it closes, and touching a lazy attribute after
+        # that raises DetachedInstanceError.
+        session.expunge_all()
+
+        return parts
 
 router = APIRouter(
     responses={404: {"description": "Not found"}},
@@ -110,6 +142,7 @@ def _extract_response_headers(
 async def stream_file(
     item_id: int,
     request: Request,
+    part: int = 0,
 ) -> StreamingResponse:
     """
     Stream a file directly from the provider.
@@ -121,7 +154,7 @@ async def stream_file(
     cases surfaced as a flat 502 with no attempt to recover.
     """
 
-    media = playback_url.resolve(item_id)
+    media = playback_url.resolve(item_id, part=part)
     forward_headers = _build_forward_headers(request)
 
     upstream_response: httpx.Response | None = None
@@ -147,7 +180,7 @@ async def stream_file(
                         f"Upstream rejected the stored link for item {item_id} "
                         f"({status_code}); re-minting"
                     )
-                    media = playback_url.resolve(item_id, force=True)
+                    media = playback_url.resolve(item_id, force=True, part=part)
                     continue
 
                 raise HTTPException(
@@ -208,7 +241,7 @@ class DirectPlaybackModel(BaseModel):
 
 
 @router.get("/direct/{item_id}")
-def direct_playback(item_id: int) -> DirectPlaybackModel:
+def direct_playback(item_id: int, part: int = 0) -> DirectPlaybackModel:
     """The provider URL for one item, when handing it out is safe.
 
     Proxying video through this server makes its upstream connection the
@@ -245,7 +278,7 @@ def direct_playback(item_id: int) -> DirectPlaybackModel:
     # `check=True` verifies the link and re-mints a spent one. A player gets a
     # single attempt at this URL and cannot recover from a stale one the way
     # /stream/file does, so it must be known-good before it leaves here.
-    media = playback_url.resolve(item_id, check=True)
+    media = playback_url.resolve(item_id, check=True, part=part)
 
     if media.provider in PROXY_REQUIRED_PROVIDERS:
         # These providers bind the link to the fetching client in ways a
@@ -263,7 +296,7 @@ def direct_playback(item_id: int) -> DirectPlaybackModel:
 
 
 @router.get("/playback_info/{item_id}")
-async def get_playback_info(item_id: int) -> PlaybackInfo:
+async def get_playback_info(item_id: int, part: int = 0) -> PlaybackInfo:
     """
     Describe what the file actually contains, so the client can choose a mode.
 
@@ -274,7 +307,7 @@ async def get_playback_info(item_id: int) -> PlaybackInfo:
     canPlayType.
     """
 
-    media = playback_url.resolve(item_id, check=True)
+    media = playback_url.resolve(item_id, check=True, part=part)
     result = transcode.probe(media.url, cache_key=media.filename)
     mode, reason = transcode.decide(result)
 
@@ -289,7 +322,7 @@ async def get_playback_info(item_id: int) -> PlaybackInfo:
 
 
 @router.get("/remux/{item_id}")
-async def stream_remux(item_id: int, t: float = 0.0) -> StreamingResponse:
+async def stream_remux(item_id: int, t: float = 0.0, part: int = 0) -> StreamingResponse:
     """
     Progressive fragmented-MP4 remux for files whose video is already playable.
 
@@ -298,7 +331,7 @@ async def stream_remux(item_id: int, t: float = 0.0) -> StreamingResponse:
     range-requested.
     """
 
-    media = playback_url.resolve(item_id, check=True)
+    media = playback_url.resolve(item_id, check=True, part=part)
     cmd = transcode.build_remux_command(media.url, start_time=t)
 
     process = await asyncio.create_subprocess_exec(
@@ -328,7 +361,7 @@ async def stream_remux(item_id: int, t: float = 0.0) -> StreamingResponse:
 
 
 @router.get("/hls/{item_id}/index.m3u8")
-async def get_hls_playlist(item_id: int):
+async def get_hls_playlist(item_id: int, part: int = 0):
     """
     A static VOD playlist derived from the file's real duration.
 
@@ -337,7 +370,7 @@ async def get_hls_playlist(item_id: int):
     actually produces.
     """
 
-    media = playback_url.resolve(item_id, check=True)
+    media = playback_url.resolve(item_id, check=True, part=part)
     result = transcode.probe(media.url, cache_key=media.filename)
 
     return Response(
@@ -348,7 +381,7 @@ async def get_hls_playlist(item_id: int):
 
 
 @router.get("/hls/{item_id}/segment/{seq}.ts")
-async def get_hls_segment(item_id: int, seq: int) -> Response:
+async def get_hls_segment(item_id: int, seq: int, part: int = 0) -> Response:
     """
     Serve one segment from the item's running transcode session.
 
@@ -360,11 +393,14 @@ async def get_hls_segment(item_id: int, seq: int) -> Response:
     if seq < 0:
         raise HTTPException(status_code=400, detail="Invalid segment")
 
-    media = playback_url.resolve(item_id, check=True)
+    media = playback_url.resolve(item_id, check=True, part=part)
     result = transcode.probe(media.url, cache_key=media.filename)
 
     data = await _session_manager.segment(
-        item_id=item_id,
+        # Per PART, not per item: two parts of one release transcoding at
+        # once are two different files, and sharing a session would serve
+        # segments of one under the other's playlist.
+        session_key=f"{item_id}:{part}",
         seq=seq,
         url=media.url,
         # Video is always re-encoded in HLS mode -- see the note in
@@ -384,9 +420,142 @@ async def get_hls_segment(item_id: int, seq: int) -> Response:
 
 
 @router.delete("/hls/{item_id}")
-async def stop_hls_session(item_id: int) -> dict[str, bool]:
-    """Tear down an item's session when the player closes."""
+async def stop_hls_session(item_id: int, part: int | None = None) -> dict[str, bool]:
+    """Tear down an item's session when the player closes.
 
-    await _session_manager.stop(item_id)
+    With no `part`, every part's session goes: closing the player should not
+    leave a transcode running for a part the viewer moved off earlier.
+    """
+
+    if part is None:
+        for index in range(len(_parts_for(item_id))):
+            await _session_manager.stop(f"{item_id}:{index}")
+    else:
+        await _session_manager.stop(f"{item_id}:{part}")
 
     return {"success": True}
+
+
+class MediaPart(BaseModel):
+    """One playable file of a multi-file release."""
+
+    index: Annotated[int, "Position in the playlist; what `?part=` takes."]
+    title: str
+    """The filename with its extension and separators cleaned up. These
+    releases name their files after the scene or the performer, which is the
+    only description of a part that exists -- there is no per-file metadata to
+    read and inventing "Part 1" would throw away the one real label."""
+    filename: str
+    file_size: int
+    duration: float | None = None
+    """Seconds, only when the file has already been probed. Never probed here:
+    a six-part release would mean six ffprobe runs against remote URLs before
+    the player could draw a list."""
+
+
+class MediaPartsResponse(BaseModel):
+    item_id: int
+    title: str
+    parts: list[MediaPart]
+    """Always at least one entry. A single-file title is a one-part playlist,
+    so the client has one shape to handle rather than two."""
+
+
+def _part_title(filename: str) -> str:
+    """A human label for a part, from its filename.
+
+    Extension off, separators to spaces, collapsed. Deliberately not clever:
+    the file is called "Kristen Scott 2.mp4" and "Kristen Scott 2" is the best
+    possible name for that part.
+    """
+
+    stem = filename.rsplit("/", 1)[-1]
+    stem = stem.rsplit(".", 1)[0] if "." in stem else stem
+    cleaned = stem.replace("_", " ").replace(".", " ").strip()
+
+    return " ".join(cleaned.split()) or filename
+
+
+@router.get("/parts/{item_id}", operation_id="get_media_parts")
+def get_media_parts(item_id: int) -> MediaPartsResponse:
+    """Every playable file of one title, in playing order.
+
+    A scene compilation is one torrent holding five or six separate scenes.
+    Playback resolved a single file and called that the title, so the rest
+    were downloaded and unreachable. This is what makes them addressable: the
+    player builds a playlist from it and each entry plays through `?part=N`.
+    """
+
+    from program.db.db import db_session
+    from program.media.item import MediaItem
+
+    parts = _parts_for(item_id)
+
+    with db_session() as session:
+        item = session.get(MediaItem, item_id)
+        title = item.title if item else ""
+
+    return MediaPartsResponse(
+        item_id=item_id,
+        title=title or "",
+        parts=[
+            MediaPart(
+                index=index,
+                title=_part_title(entry.original_filename),
+                filename=entry.original_filename,
+                file_size=entry.file_size or 0,
+                duration=(
+                    entry.media_metadata.duration
+                    if entry.media_metadata is not None
+                    else None
+                ),
+            )
+            for index, entry in enumerate(parts)
+        ],
+    )
+
+
+@router.get("/playlist/{item_id}.m3u", operation_id="get_media_playlist")
+def get_media_playlist(item_id: int, request: Request) -> Response:
+    """The title as an M3U playlist, for players that are not this app.
+
+    An external player gets handed a URL and nothing else -- there is no way
+    to tell VLC or MX Player "and then five more files". A playlist is that
+    way, and M3U is the one format all of them read.
+
+    URLs are absolute and built from the request, so the file works in
+    whatever app opens it: a relative path would resolve against the player's
+    own idea of a base and fetch nothing.
+    """
+
+    parts = _parts_for(item_id)
+    base = str(request.base_url).rstrip("/")
+    api_key = request.query_params.get("api_key")
+
+    lines = ["#EXTM3U"]
+
+    for index, entry in enumerate(parts):
+        duration = -1
+
+        if entry.media_metadata is not None and entry.media_metadata.duration:
+            duration = int(entry.media_metadata.duration)
+
+        url = f"{base}/api/v1/stream/file/{item_id}?part={index}"
+
+        # Carried through when the caller authenticated that way. An external
+        # player has no session and no header to send, so a playlist whose
+        # entries drop the key is a playlist of 401s.
+        if api_key:
+            url += f"&api_key={api_key}"
+
+        lines.append(f"#EXTINF:{duration},{_part_title(entry.original_filename)}")
+        lines.append(url)
+
+    return Response(
+        content="\n".join(lines) + "\n",
+        media_type="audio/x-mpegurl",
+        headers={
+            "content-disposition": f'inline; filename="item-{item_id}.m3u"',
+            "cache-control": "no-store",
+        },
+    )

@@ -166,7 +166,7 @@ def verify(url: str) -> bool:
 
 
 def resolve(
-    item_id: int, *, force: bool = False, check: bool = False
+    item_id: int, *, force: bool = False, check: bool = False, part: int = 0
 ) -> PlayableMedia:
     """
     Resolve a media item to a URL that can be fetched right now.
@@ -178,10 +178,13 @@ def resolve(
         check: Verify the stored URL before returning it, minting a new one if
             it is dead. Callers that pass the URL to ffmpeg want this: ffmpeg
             gets one attempt and cannot retry through this module.
+        part: Which file of a multi-file release to play, indexed into
+            `MediaItem.media_parts`. 0 is the first part and the default, so
+            every existing caller keeps the single-file behaviour it had.
 
     Raises:
-        HTTPException: 404 when the item has no media, 502 when no playable URL
-            can be produced.
+        HTTPException: 404 when the item has no media or no such part, 502
+            when no playable URL can be produced.
     """
 
     from fastapi import HTTPException
@@ -194,13 +197,23 @@ def resolve(
         if not item:
             raise HTTPException(status_code=404, detail="Item not found")
 
-        if not item.media_entry:
+        parts = item.media_parts
+
+        if not parts:
             raise HTTPException(status_code=404, detail="Item has no media file")
 
-        stored = item.media_entry.url
-        provider = item.media_entry.provider or ""
-        filename = item.media_entry.original_filename
-        file_size = item.media_entry.file_size or 0
+        if part < 0 or part >= len(parts):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Item has {len(parts)} part(s); no part {part}",
+            )
+
+        entry = parts[part]
+
+        stored = entry.url
+        provider = entry.provider or ""
+        filename = entry.original_filename
+        file_size = entry.file_size or 0
 
     # A stored URL is only worth trying when it is a real HTTP URL. An internal
     # reference has to be minted regardless of `force`.

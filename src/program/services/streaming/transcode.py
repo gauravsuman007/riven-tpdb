@@ -352,7 +352,9 @@ class Session:
     precomputed VOD playlist stays truthful.
     """
 
-    item_id: int
+    #: Identifies the session, not the item: a multi-part release has one
+    #: session per part, so this is "<item id>:<part>" rather than an id.
+    session_key: str
     url: str
     start_seq: int
     copy_video: bool
@@ -452,7 +454,7 @@ class Session:
         cmd = self.build_command()
 
         logger.debug(
-            f"HLS session for item {self.item_id} from segment {self.start_seq} "
+            f"HLS session {self.session_key} from segment {self.start_seq} "
             f"(video={'copy' if self.copy_video else 'x264'}, "
             f"audio={'copy' if self.copy_audio else 'aac'})"
         )
@@ -511,14 +513,14 @@ class Session:
 
                 error = await self.read_error()
                 logger.error(
-                    f"HLS session for item {self.item_id} exited before segment {seq}"
+                    f"HLS session {self.session_key} exited before segment {seq}"
                     + (f": {error}" if error else "")
                 )
                 return None
 
             await asyncio.sleep(0.25)
 
-        logger.error(f"Timed out waiting for segment {seq} of item {self.item_id}")
+        logger.error(f"Timed out waiting for segment {seq} of session {self.session_key}")
         return None
 
     @staticmethod
@@ -541,7 +543,7 @@ class SessionManager:
     async def segment(
         self,
         *,
-        item_id: int,
+        session_key: str,
         seq: int,
         url: str,
         copy_video: bool,
@@ -557,7 +559,7 @@ class SessionManager:
         async with self._lock:
             await self._reap_idle()
 
-            session = self._sessions.get(item_id)
+            session = self._sessions.get(session_key)
             produced = self._highest_produced(session) if session else -1
 
             needs_restart = (
@@ -573,16 +575,20 @@ class SessionManager:
                     await session.stop()
 
                 session = Session(
-                    item_id=item_id,
+                    session_key=session_key,
                     url=url,
                     start_seq=seq,
                     copy_video=copy_video,
                     copy_audio=copy_audio,
-                    directory=Path(tempfile.mkdtemp(prefix=f"riven-hls-{item_id}-")),
+                    directory=Path(
+                        tempfile.mkdtemp(
+                            prefix=f"riven-hls-{session_key.replace(':', '-')}-"
+                        )
+                    ),
                 )
 
                 await session.start()
-                self._sessions[item_id] = session
+                self._sessions[session_key] = session
 
             session.last_access = time.monotonic()
 
@@ -608,14 +614,14 @@ class SessionManager:
     async def _reap_idle(self) -> None:
         now = time.monotonic()
 
-        for item_id, session in list(self._sessions.items()):
+        for session_key, session in list(self._sessions.items()):
             if now - session.last_access > SESSION_IDLE_TIMEOUT:
                 await session.stop()
-                self._sessions.pop(item_id, None)
+                self._sessions.pop(session_key, None)
 
-    async def stop(self, item_id: int) -> None:
+    async def stop(self, session_key: str) -> None:
         async with self._lock:
-            if session := self._sessions.pop(item_id, None):
+            if session := self._sessions.pop(session_key, None):
                 await session.stop()
 
     async def stop_all(self) -> None:
