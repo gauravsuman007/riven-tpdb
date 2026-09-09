@@ -431,6 +431,34 @@ stack is a full checkout at `/home/hellonfire/Server/riven-tpdb`.
 - `RIVEN_FORCE_ENV=true` is set on the server. Any `RIVEN_*` env var silently
   overwrites the UI-saved setting on every start.
 
+## Keep on disk
+- `POST /api/v1/keep/{id}` copies a title's active file to
+  `filesystem.local_download_path` (bound to `./downloads` on the server) and
+  tracks it in a `LocalCopy` row: Queued / Syncing / OnDisk / Failed, with
+  bytes so far. `DELETE` stops it and removes the file. An empty path disables
+  the feature and the frontend hides the button.
+- The copy reads through the **VFS mount**, not the provider: the VFS already
+  re-mints spent links, honours VPN routing and shares its chunk cache with
+  playback. A second download path would reimplement all three and drift.
+- Resumable via a `.part` file; a restart re-queues anything left Syncing.
+- TRAP: a new optional setting must NOT default to `None`. `save()` writes with
+  `exclude_none=True` and `check_environment` only walks keys already in the
+  file, so a None default is never serialized and its `RIVEN_*` variable is
+  read by nothing. Use `str` with `""`. Even then a brand-new setting needs
+  **two restarts** to take from the environment: the first writes the key.
+
+## Direct debrid playback
+- `GET /api/v1/stream/direct/{id}` hands the player the provider's CDN URL so
+  video does not cross this server twice. Verified against TorBox: not
+  IP-bound, CORS reflected, range requests honoured (a seek 2 GB in works).
+- **Off by default** (`stream.direct_debrid_handoff`). TorBox embeds the
+  ACCOUNT API KEY in that URL as `?token=`, and has no scoped or ephemeral
+  alternative — `user/refreshtoken` rotates the real key. Enabling it hands
+  the key to every device that plays.
+- TRAP: probe the TorBox API from **inside the container**. Cloudflare answers
+  plain `urllib` with 403 "error code: 1010" on browser fingerprint, which
+  reads exactly like a revoked key.
+
 ## Running the tests
 These suites are plain scripts with a local `check(name, cond)` harness, not
 pytest. On the server:
