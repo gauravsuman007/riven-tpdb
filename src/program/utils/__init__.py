@@ -5,7 +5,14 @@ import string
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from time import time
+# Bound under a private alias deliberately. `program.utils.time` is a
+# SUBMODULE of this package, and importing it anywhere in the app rebinds the
+# name `time` in this namespace to that module -- so a plain
+# `from time import time` here silently turns into a module reference and
+# every benchmark() raises "TypeError: 'module' object is not callable".
+# That broke every uncached VFS read, i.e. all playback, with an error that
+# named the debrid provider and not this line.
+from time import perf_counter as _perf_counter
 from loguru import logger
 from pathlib import Path
 
@@ -51,12 +58,12 @@ def benchmark(
 ) -> Iterator[None]:
     """Context manager for benchmarking code execution time."""
 
-    start_time = time()
+    start_time = _perf_counter()
 
     try:
         yield
     finally:
-        end_time = time()
+        end_time = _perf_counter()
         elapsed = end_time - start_time
 
         if log:
