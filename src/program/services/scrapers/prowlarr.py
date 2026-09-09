@@ -59,6 +59,14 @@ class Indexer(BaseModel):
     enable: bool
     protocol: str
     capabilities: Capabilities
+    privacy: str | None = None
+    """"public", "semiPrivate" or "private", straight from Prowlarr.
+
+    Carried through to every result this indexer returns because it decides
+    whether a debrid service can fetch the release at all -- see the note on
+    `ScrapeResult.privacy`. Prowlarr reports it per indexer, never per
+    release, so this is the only place it can be picked up.
+    """
 
 
 class Params(BaseModel):
@@ -299,6 +307,7 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                     enable=enable,
                     protocol=protocol,
                     capabilities=capabilities,
+                    privacy=getattr(indexer_data, "privacy", None),
                 )
             )
 
@@ -552,6 +561,11 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                 leechers=release.leechers,
                 size=release.size,
                 indexer=release.indexer or indexer.name,
+                # Per indexer, not per release: Prowlarr only reports it on
+                # the indexer definition, and the search response carries no
+                # equivalent field.
+                privacy=indexer.privacy,
+                download_url=release.download_url,
             )
 
         # List of (torrent, title) tuples that need URL fetching

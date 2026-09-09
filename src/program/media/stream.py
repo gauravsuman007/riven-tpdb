@@ -66,6 +66,20 @@ class Stream(Base):
     leechers: Mapped[int | None] = mapped_column(sqlalchemy.Integer, nullable=True)
     size: Mapped[int | None] = mapped_column(sqlalchemy.BigInteger, nullable=True)
     indexer: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True)
+    privacy: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True)
+    """"public", "semiPrivate" or "private" -- see `ScrapeResult.privacy`.
+
+    Stored rather than looked up at display time because an indexer can be
+    reconfigured or removed, and a stream already in the database still needs
+    to explain why it never downloaded.
+    """
+    download_url: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True)
+    """The indexer's .torrent link -- see `ScrapeResult.download_url`.
+
+    Stored because the fetch happens later than the scrape, and re-running the
+    search to recover a URL we already had would be both slow and unreliable
+    (indexer results move).
+    """
     is_cached: bool = False
     parents: Mapped[list["MediaItem"]] = relationship(
         secondary="StreamRelation", back_populates="streams", lazy="selectin"
@@ -105,6 +119,8 @@ class Stream(Base):
             self.leechers = result.leechers
             self.size = result.size
             self.indexer = result.indexer
+            self.privacy = result.privacy
+            self.download_url = result.download_url
 
     def __hash__(self):
         return hash(self.infohash)
@@ -127,5 +143,14 @@ class Stream(Base):
             "leechers": self.leechers,
             "size": self.size,
             "indexer": self.indexer,
+            "privacy": self.privacy,
+            # The URL itself is NOT serialised: it carries the Prowlarr API
+            # key. Callers only need to know whether one exists.
+            "has_torrent_file": bool(self.download_url),
+            # Surfaced so a person picking a release can see the difference
+            # between "few seeders" and "seeders your debrid service can
+            # never reach". They are not the same problem and only one of
+            # them is fixable by waiting.
+            "debrid_reachable": self.privacy in (None, "public"),
             "is_cached": self.is_cached,
         }

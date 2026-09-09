@@ -356,7 +356,7 @@ def parse_results(
         ordered = list(sorted_torrents.values())
 
         if adult_item:
-            ordered = _order_adult_torrents(ordered, evidence_by_hash)
+            ordered = _order_adult_torrents(ordered, evidence_by_hash, results)
 
         # Carry the indexer's own numbers onto the stream. `results` is keyed
         # by the infohash as the scraper gave it, which is not always the same
@@ -364,9 +364,28 @@ def parse_results(
         def _reported(infohash: str) -> ScrapeResult | None:
             return results.get(infohash) or results.get(infohash.lower())
 
+        def _stream(torrent: Torrent) -> Stream:
+            stream = Stream(torrent, _reported(torrent.infohash))
+
+            # Keep the evidence score, scaled to an integer.
+            #
+            # RTN's rank scores mainstream quality markers that adult releases
+            # do not carry, so it is 0 for essentially every one of them --
+            # every candidate in the live library was rank 0, which left the
+            # manual pick list with nothing to sort by and no way for a person
+            # to see that one release was far better identified than another.
+            # `_order_adult_torrents` already computed exactly that number and
+            # then threw it away.
+            if adult_item:
+                evidence = evidence_by_hash.get(torrent.infohash.lower())
+
+                if evidence is not None:
+                    stream.rank = int(round(evidence.score * 100))
+
+            return stream
+
         torrent_stream_map = {
-            torrent.infohash.lower(): Stream(torrent, _reported(torrent.infohash))
-            for torrent in ordered
+            torrent.infohash.lower(): _stream(torrent) for torrent in ordered
         }
 
         logger.debug(
@@ -447,21 +466,49 @@ def _filter_adult_torrents(
     return kept, evidence_by_hash
 
 
-def _order_adult_torrents(
-    torrents: list[Torrent], evidence_by_hash: dict[str, MatchEvidence]
-) -> list[Torrent]:
-    """Order by how well a release is identified, then by quality.
+def _debrid_reachable(privacy: str | None) -> bool:
+    """Whether a debrid service can actually join this release's swarm.
 
-    Evidence first: a release proven to be this scene beats a better-encoded
-    one that merely might be. Resolution then decides between genuine matches,
-    with RTN's rank as the final tie-break.
+    A private or semi-private tracker gates its announce behind a passkey
+    bound to an account, and a debrid service has no account there -- so every
+    seeder the indexer reports is announcing somewhere it cannot reach.
+
+    Measured, not assumed. A PornoLab release ("semiPrivate") reported 19
+    seeders; the torrent file's only announce URL was
+    `http://plab.site/ann?uk=<passkey>`, the private flag was not set so there
+    was no DHT swarm to fall back on, and TorBox sat at "stalled (no seeds)"
+    with 0 peers indefinitely -- both from a bare magnet and from the real
+    torrent file uploaded whole.
     """
 
-    def key(torrent: Torrent) -> tuple[float, int, int]:
-        evidence = evidence_by_hash.get(torrent.infohash.lower())
+    return privacy in (None, "public")
+
+
+def _order_adult_torrents(
+    torrents: list[Torrent],
+    evidence_by_hash: dict[str, MatchEvidence],
+    results: dict[str, ScrapeResult],
+) -> list[Torrent]:
+    """Order by whether it can be fetched, then how well it is identified.
+
+    Reachability comes FIRST, ahead of evidence: a perfectly identified
+    release on a tracker the debrid service cannot join is worth less than a
+    plausible one it can actually download. It is not filtered out, because a
+    person may still want to see it and fetch it by other means -- but it must
+    never out-rank something that will work, which is exactly what happened
+    when the ordering did not know about it.
+
+    Resolution then decides between genuine matches, with RTN's rank last.
+    """
+
+    def key(torrent: Torrent) -> tuple[int, float, int, int]:
+        infohash = torrent.infohash.lower()
+        evidence = evidence_by_hash.get(infohash)
+        reported = results.get(infohash) or results.get(torrent.infohash)
         resolution = getattr(torrent.data, "resolution", None) or ""
 
         return (
+            1 if _debrid_reachable(reported.privacy if reported else None) else 0,
             evidence.score if evidence else 0.0,
             _RESOLUTION_ORDER.get(resolution, 0),
             getattr(torrent, "rank", 0) or 0,
