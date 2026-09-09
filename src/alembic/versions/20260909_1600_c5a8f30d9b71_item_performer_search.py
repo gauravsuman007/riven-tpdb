@@ -21,6 +21,17 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+_TRIGRAM_STATEMENTS = (
+    "CREATE EXTENSION IF NOT EXISTS pg_trgm",
+    'CREATE INDEX IF NOT EXISTS ix_item_performer_name_trgm '
+    'ON "ItemPerformer" USING gin (name_normalized gin_trgm_ops)',
+    'CREATE INDEX IF NOT EXISTS ix_mediaitem_site_name_trgm '
+    'ON "MediaItem" USING gin (lower(site_name) gin_trgm_ops)',
+    'CREATE INDEX IF NOT EXISTS ix_mediaitem_title_trgm '
+    'ON "MediaItem" USING gin (lower(title) gin_trgm_ops)',
+)
+
+
 def _is_postgres() -> bool:
     return op.get_bind().dialect.name == "postgresql"
 
@@ -78,26 +89,18 @@ def upgrade() -> None:
     # every deployment, so a failure here degrades to a sequential scan over
     # a few thousand short rows rather than failing the upgrade -- search
     # still works, it is only unindexed.
-    statements = (
-        "CREATE EXTENSION IF NOT EXISTS pg_trgm",
-        'CREATE INDEX IF NOT EXISTS ix_item_performer_name_trgm '
-        'ON "ItemPerformer" USING gin (name_normalized gin_trgm_ops)',
-        'CREATE INDEX IF NOT EXISTS ix_mediaitem_site_name_trgm '
-        'ON "MediaItem" USING gin (lower(site_name) gin_trgm_ops)',
-        'CREATE INDEX IF NOT EXISTS ix_mediaitem_title_trgm '
-        'ON "MediaItem" USING gin (lower(title) gin_trgm_ops)',
-    )
-
-    for statement in statements:
-        # Each in its own SAVEPOINT: a failed statement poisons the whole
-        # transaction in Postgres, so catching the exception without one
-        # would abort the migration anyway -- the rollback is what makes the
-        # degradation real.
+    #
+    # TRAP: `env.py` runs migrations with isolation_level="AUTOCOMMIT", so
+    # there is no transaction to wrap these in and `begin_nested()` (a
+    # SAVEPOINT) raises before the statement is even sent -- which is exactly
+    # how the first deployment of this migration created none of the four.
+    # AUTOCOMMIT is also why a plain try/except is enough: a failed statement
+    # commits nothing and poisons nothing.
+    for statement in _TRIGRAM_STATEMENTS:
         try:
-            with connection.begin_nested():
-                connection.execute(sa.text(statement))
+            connection.execute(sa.text(statement))
         except Exception:  # noqa: BLE001 - see comment above
-            break
+            continue
 
 
 def downgrade() -> None:

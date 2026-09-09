@@ -455,11 +455,22 @@ stack is a full checkout at `/home/hellonfire/Server/riven-tpdb`.
   every pipeline state transition; without the gate one state change becomes a
   delete plus three inserts for every title in flight.
 - Migration `c5a8f30d9b71` backfills in SQL and adds pg_trgm GIN indexes on
-  cast, `site_name` and `title`. TRAP: each optional index runs in its own
-  SAVEPOINT (`connection.begin_nested()`). A failed statement poisons the whole
-  transaction in Postgres, so catching the exception without one aborts the
-  migration anyway -- the rollback is what makes the "degrade to a seq scan"
-  fallback real.
+  cast, `site_name` and `title`.
+- TRAP, and it cost a deploy: **`alembic/env.py` runs migrations with
+  `isolation_level="AUTOCOMMIT"`.** `connection.begin_nested()` (a SAVEPOINT)
+  is invalid there and raises before the statement is even sent, so the
+  optional-index loop created NONE of its four statements and swallowed the
+  reason. Under AUTOCOMMIT there is no poisoned transaction to protect against
+  in the first place -- a plain try/except per statement is both necessary and
+  sufficient. Do not reach for a savepoint in a migration in this repo.
+  `e2b7c40a9d16` repeats the statements for databases already stamped past the
+  broken version; fixing a migration in place only helps one that has not run
+  it yet.
+- Everything about the indexes is a performance property only. Search is
+  correct without them, so `IF NOT EXISTS` plus a swallowed failure is the
+  right shape -- but verify with `SELECT indexname FROM pg_indexes WHERE
+  indexname LIKE '%trgm%'` after deploying, because a silent skip looks
+  exactly like success.
 - `search` (substring, all three fields) and `performer=`/`site=` (exact,
   case-insensitive) are deliberately different params. Clicking "Riley Reid" in
   the dropdown sets the facet, not the text search: a substring search for a
