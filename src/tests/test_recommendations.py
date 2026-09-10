@@ -68,6 +68,7 @@ _stub(
     "sqlalchemy",
     select=lambda *a, **k: _Anything(),
     func=_Anything(),
+    or_=lambda *a, **k: _Anything(),
 )
 _stub("sqlalchemy.orm", joinedload=lambda *a, **k: _Anything())
 _stub(
@@ -90,6 +91,8 @@ RECS = SRC / "program" / "services" / "recommendations"
 facets_module = _load("program.services.recommendations.facets", RECS / "facets.py")
 intents_module = _load("program.services.recommendations.intents", RECS / "intents.py")
 engine_module = _load("program.services.recommendations.engine", RECS / "engine.py")
+_load("program.services.recommendations.adultempire", RECS / "adultempire.py")
+ratings_module = _load("program.services.recommendations.ratings", RECS / "ratings.py")
 
 Facet = facets_module.Facet
 FacetVocabulary = facets_module.FacetVocabulary
@@ -106,6 +109,9 @@ SceneEngine = engine_module.SceneEngine
 LibraryTaste = engine_module.LibraryTaste
 AWARD_WEIGHTS = engine_module.AWARD_WEIGHTS
 NOMINEE_FRACTION = engine_module.NOMINEE_FRACTION
+
+RatingBackfill = ratings_module.RatingBackfill
+RankedTitle = sys.modules["program.services.recommendations.adultempire"].RankedTitle
 
 PASSED = []
 FAILED = []
@@ -514,6 +520,115 @@ def test_the_scene_engine_pulls_rather_than_requires_its_any_terms():
     engine.rank(Intent(name="t", label="t", any=["Locations:Outdoors"]))
 
     assert sent["tags"]["modifier"] == "INCLUDES", sent["tags"]
+
+
+
+# --- the rating backfill ---------------------------------------------------
+#
+# The measured facts these guard: a storefront LISTING carries no rating (48
+# of 48 bestseller rows had none), a PRODUCT page does, and TPDB writes a
+# literal 0 meaning "no ranking" -- which is the value most likely to be
+# mistaken for a real score.
+
+
+def _rating_entry(**kwargs):
+    defaults = {
+        "title": "A Title",
+        "rating": None,
+        "year": None,
+        "duration_minutes": None,
+        "media_item": None,
+    }
+    defaults.update(kwargs)
+
+    return SimpleNamespace(**defaults)
+
+
+def _detail(**kwargs):
+    return RankedTitle(
+        product_id="700215",
+        title="Pirates",
+        rank=0,
+        listing="rating-backfill",
+        url="/700215/",
+        **kwargs,
+    )
+
+
+def test_backfill_writes_the_rating_it_read():
+    entry = _rating_entry()
+
+    assert RatingBackfill._apply(entry, _detail(rating=4.69)) is True
+    assert entry.rating == 4.69
+
+
+def test_backfill_reports_a_page_with_no_rating_rather_than_writing_none():
+    # Most product pages have no reviews. That must count as "nothing found",
+    # not as a rating, or the entry would never be retried.
+    entry = _rating_entry()
+
+    assert RatingBackfill._apply(entry, _detail(rating=None)) is False
+    assert entry.rating is None
+
+
+def test_backfill_only_fills_gaps():
+    # The entry's own year came from the source that created it. A storefront
+    # disagreeing with an award ballot is not grounds to overwrite the ballot.
+    entry = _rating_entry(year=1984, duration_minutes=95)
+
+    RatingBackfill._apply(entry, _detail(rating=4.0, year=2005, duration_minutes=120))
+
+    assert entry.year == 1984
+    assert entry.duration_minutes == 95
+
+
+def test_backfill_fills_a_missing_year_and_runtime():
+    entry = _rating_entry()
+
+    RatingBackfill._apply(entry, _detail(rating=4.0, year=2005, duration_minutes=120))
+
+    assert entry.year == 2005
+    assert entry.duration_minutes == 120
+
+
+def test_backfill_treats_a_tpdb_zero_as_no_rating():
+    # TPDB stores 0 for every record. Guarding only on None would leave that 0
+    # in place forever and the library would show a real score of zero.
+    item = SimpleNamespace(rating=0)
+    entry = _rating_entry(media_item=item)
+
+    RatingBackfill._apply(entry, _detail(rating=4.69))
+
+    assert item.rating == 4.69
+
+
+def test_backfill_does_not_overwrite_a_real_item_rating():
+    item = SimpleNamespace(rating=3.5)
+    entry = _rating_entry(media_item=item)
+
+    RatingBackfill._apply(entry, _detail(rating=4.69))
+
+    assert item.rating == 3.5
+
+
+def test_backfill_addresses_a_product_by_bare_id():
+    # The slug in an Adult Empire product URL is ignored -- /700215/ and
+    # /700215/anything-porn-movies.html both return Pirates. That is what
+    # makes a backfill possible with no sitemap index and no slug guessing,
+    # so it is worth a test that the bare form is what gets requested.
+    asked = []
+
+    class _Client:
+        def enrich(self, title):
+            asked.append(title.url)
+            title.rating = 4.69
+
+            return title
+
+    backfill = RatingBackfill(client=_Client())
+
+    assert backfill._detail("700215").rating == 4.69
+    assert asked == ["/700215/"]
 
 
 import tempfile  # noqa: E402 - only the harness below needs it

@@ -28,6 +28,7 @@ from program.services.recommendations.adultempire_categories import (
     category_index,
 )
 from program.services.recommendations.facets import vocabulary
+from program.services.recommendations.ratings import rating_backfill
 from program.services.recommendations.intents import library
 
 router = APIRouter(prefix="/explore", tags=["explore"])
@@ -190,6 +191,55 @@ def sync_categories(
     background.add_task(category_index.sync, pages_per_category=pages_per_category)
 
     return category_status()
+
+
+class RatingBackfillStatus(BaseModel):
+    """How far the audience-rating backfill has got.
+
+    Every field is here because the run is minutes long and a progress bar
+    that only says "working" is not one. ``pending`` is what is left to do,
+    and is what tells a caller whether pressing the button would do anything.
+    """
+
+    running: bool
+    pending: int
+    considered: int
+    fetched: int
+    rated: int
+    failed: int
+    started_at: float | None = None
+    finished_at: float | None = None
+    last_title: str | None = None
+
+
+def _rating_status() -> RatingBackfillStatus:
+    snapshot = rating_backfill.progress.snapshot()
+
+    return RatingBackfillStatus(pending=rating_backfill.pending(), **snapshot)
+
+
+@router.get("/ratings", operation_id="get_rating_backfill")
+def rating_status() -> RatingBackfillStatus:
+    return _rating_status()
+
+
+@router.post("/ratings/sync", operation_id="sync_ratings")
+def sync_ratings(
+    background: BackgroundTasks,
+    limit: Annotated[int, Query(ge=0, le=5000)] = 0,
+) -> RatingBackfillStatus:
+    """Read the audience rating for every catalogue entry that lacks one.
+
+    A storefront *listing* carries no rating -- 48 of 48 bestseller rows came
+    back without one -- but a *product page* does, and the product URL's slug
+    is ignored, so ``/{id}/`` is enough. That makes this one request per title
+    at the one-per-second courtesy delay: minutes, in the background, with
+    progress committed in batches. Poll ``GET /explore/ratings``.
+    """
+
+    background.add_task(rating_backfill.sync, limit=limit)
+
+    return _rating_status()
 
 
 @router.get("/recommendations", operation_id="get_recommendations")
