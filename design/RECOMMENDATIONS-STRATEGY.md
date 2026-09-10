@@ -1,8 +1,17 @@
 # Recommendation engine + generic list import — strategy
 
-Status: **design, not built.** Researched and verified 2026-09-10. Every
-access claim below was checked against the live source on that date; re-check
-robots.txt before acting on any of it.
+Status: **partly built** as of 2026-09-11 -- build-order steps 1, 2 and 4
+(facets + StashDB tag ingest, the intent library and scene engine, and the
+studio "beyond bestselling" re-rank) are in
+`program/services/recommendations/{facets,intents,engine}.py`, served at
+`/api/v1/explore/*` and surfaced on the frontend's Explore page. See the
+engine section of `AGENTS.md` for what shipped and its traps. Steps 3, 5, 6, 7
+and 8 -- list import, the movie facet index, XBIZ/XRCO corpora and Excalibur
+-- remain design.
+
+Researched and verified 2026-09-10. Every access claim below was checked
+against the live source on that date; re-check robots.txt before acting on any
+of it.
 
 ---
 

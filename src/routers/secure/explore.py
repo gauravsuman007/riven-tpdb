@@ -179,9 +179,13 @@ def rows(
     rails: list[Rail] = []
     notices: list[str] = []
 
-    # The unfiltered rail first: it is the one that always has something in
-    # it, because it needs neither an ingested vocabulary nor a provider.
-    baseline = movies.rank(limit=per_rail)
+    # One read of the corpus for every movie rail. The award ballot alone runs
+    # to five figures of rows, and ranking per rail would re-read all of it --
+    # plus rebuild the taste profile and the award index -- once per row on
+    # the page.
+    movie_intents = library.for_engine("movies")
+    ranked = movies.rank_many([None, *movie_intents], limit=per_rail)
+    baseline, per_intent = ranked[0], ranked[1:]
 
     if baseline:
         rails.append(
@@ -202,9 +206,7 @@ def rows(
             "corpus in Settings and let one sync finish."
         )
 
-    for intent in library.for_engine("movies"):
-        items = movies.rank(intent=intent, limit=per_rail)
-
+    for intent, items in zip(movie_intents, per_intent):
         if not items:
             continue
 

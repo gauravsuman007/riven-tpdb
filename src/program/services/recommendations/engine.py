@@ -254,6 +254,32 @@ class MovieEngine:
         studio: str | None = None,
         include_requested: bool = False,
     ) -> list[Recommendation]:
+        return self.rank_many(
+            [intent],
+            limit=limit,
+            sources=sources,
+            studio=studio,
+            include_requested=include_requested,
+        )[0]
+
+    def rank_many(
+        self,
+        intents: Sequence[Intent | None],
+        *,
+        limit: int = 30,
+        sources: Sequence[str] | None = None,
+        studio: str | None = None,
+        include_requested: bool = False,
+    ) -> list[list[Recommendation]]:
+        """Rank the same corpus against several intents in one read.
+
+        The Explore page asks for half a dozen rails at once and the corpus is
+        the whole award ballot plus every mirrored shelf -- tens of thousands
+        of rows. Ranking per rail would re-read all of it, and rebuild the
+        taste profile and the award index with it, once per row on the page.
+        The scoring is cheap; the reading is not.
+        """
+
         with db_session() as session:
             query = (
                 select(CollectionEntry)
@@ -273,37 +299,39 @@ class MovieEngine:
             entries = session.execute(query).unique().scalars().all()
 
             if not entries:
-                return []
+                return [[] for _ in intents]
 
             taste = build_taste(session)
             awards = self._award_index(session)
             mean_rating = self._mean_rating(entries)
 
             # One title can appear on several shelves and in several award
-            # categories. Ranking the rows would fill a row with the same
+            # categories. Ranking the rows would fill a rail with the same
             # film; collapse to the best-scoring row per title first.
-            best: dict[str, Recommendation] = {}
+            best: list[dict[str, Recommendation]] = [{} for _ in intents]
 
             for entry in entries:
-                scored = self._score(
-                    entry,
-                    intent=intent,
-                    taste=taste,
-                    awards=awards,
-                    mean_rating=mean_rating,
-                )
+                for slot, intent in enumerate(intents):
+                    scored = self._score(
+                        entry,
+                        intent=intent,
+                        taste=taste,
+                        awards=awards,
+                        mean_rating=mean_rating,
+                    )
 
-                if scored is None:
-                    continue
+                    if scored is None:
+                        continue
 
-                existing = best.get(scored.key)
+                    existing = best[slot].get(scored.key)
 
-                if existing is None or scored.score > existing.score:
-                    best[scored.key] = scored
+                    if existing is None or scored.score > existing.score:
+                        best[slot][scored.key] = scored
 
-            ranked = sorted(best.values(), key=lambda r: r.score, reverse=True)
-
-            return ranked[:limit]
+            return [
+                sorted(slot.values(), key=lambda r: r.score, reverse=True)[:limit]
+                for slot in best
+            ]
 
     # --- signals -----------------------------------------------------------
 

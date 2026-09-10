@@ -94,6 +94,84 @@ The import pipeline IS the Reddit integration. Do not build a crawler for it,
 and do not build embedding search over titles -- see the doc for why that
 contradicts the refuse-rather-than-guess stance the matcher is built on.
 
+## The recommendation engine (built; steps 1, 2, 4 of the design doc)
+
+Three modules under `program/services/recommendations/`, served by
+`routers/secure/explore.py` at `/api/v1/explore/*`.
+
+### facets.py -- the vocabulary
+
+`MediaItem.genres` is one flat list mixing kinds of fact (`blowjob`,
+`narrative` and `brown hair` in the same bag), which is why nothing could act
+on it. `Facet(kind, category, value)` restores the kind, adopting StashDB's
+grouped tag graph as canonical and normalising every other provider into it by
+alias.
+
+- **Normalisation refuses rather than guesses.** An unrecognised string becomes
+  `GENRE / Unknown` carrying the original text, never a plausible-looking
+  `Moods:` facet. A guessed facet would be matched by every mood intent
+  forever with nothing to show it was invented -- the same stance as
+  `assign_provider_id` writing nothing rather than the wrong column.
+- The graph is **ingested, not invented**: `POST /explore/vocabulary/ingest`
+  reads ~3,000 tags in ~30 calls and caches them as `tag_graph.json` in the
+  StashDB cache dir. Until that has run there are no tag ids, so the scene
+  engine reports itself unavailable instead of quietly serving newest-first
+  results under an intent's name. The button is on the Explore page.
+
+### intents.py -- what a person asks for
+
+"Outdoor", "real plot", "believable" are named facet expressions with `any`
+(pull), `all` (requirement), `none` (veto) and runtime/year bounds. Defaults in
+`DEFAULT_INTENTS`; an operator's `intents.json` in the data dir merges **per
+intent by name**, so retuning one does not fork the rest.
+
+- `Intent.evaluate` returns `None` for *disqualified* and `(0.0, [])` for
+  "eligible, nothing pulled". Collapsing those would fill a rail with exactly
+  the titles the intent rules out as soon as nothing else scored.
+- Every intent declares which `engines` it suits. "Real plot" is `movies` only:
+  StashDB's corpus is modern amateur/gonzo scenes, so asking it that question
+  returns confident nonsense.
+
+### engine.py -- the two engines and the studio split
+
+- **MovieEngine** ranks `CollectionEntry` rows already in the database
+  (brochure shelves, AVN ballots, imported lists). No fetching, works with no
+  provider configured. Signals: award density (per body -- AVN/XRCO/XBIZ are
+  weighted apart because they disagree usefully), rating shrunk toward the
+  corpus mean, bestseller rank as demand, recency, and library affinity.
+  - **TRAP: rank once for all rails.** `/explore/rows` calls `rank_many`, not
+    `rank` per row. The corpus is five figures of rows and ranking per rail
+    re-reads all of it, plus the taste profile and award index, once per row
+    on the page.
+  - The award index is keyed on the **folded title**, not an id: an award
+    corpus and a storefront share no identifier, and pooling must not wait on
+    the awards service having resolved a provider match.
+  - `CollectionEntry` carries no tags, so facets come from the **award
+    category** ("Best Parody" is a genre claim by an editorial body) plus the
+    MediaItem's genres once requested.
+- **SceneEngine** asks StashDB's `queryScenes`, which facets server-side.
+  - **TRAP: `INCLUDES`, never `INCLUDES_ALL`.** An intent's `any` list is a
+    pull; requiring all eleven location tags demands a scene shot on a beach
+    *and* a boat *and* a balcony, which returns nothing.
+  - The server-side filter is a narrowing, not the judgement: a `none` term
+    with no tag id is invisible to StashDB, so `evaluate` still runs locally on
+    every returned scene.
+- **StudioEngine** answers "best of X" without meaning "best-selling". Adult
+  Empire carries a rating per title but will not order by it (hence
+  `STUDIO_SORTS`), so the mirrored catalogue is re-ranked locally and returned
+  as **two labelled rows** -- deep cuts (rates above the studio's *own*
+  baseline, sells poorly) and popular -- rather than one blend that answers
+  neither question.
+
+Every result carries its `signals` and `reasons`, and the page prints them. A
+recommendation nobody can interrogate is one nobody can correct.
+
+Tests: `src/tests/test_recommendations.py` (stdlib-only, stubs the framework
+deps; no network, no database).
+
+Still unbuilt from the design doc: import v1/v2, the movie facet index, XBIZ /
+XRCO corpora, Excalibur.
+
 ## A bare magnet cannot reach most swarms
 
 `add_torrent` used to send `magnet:?xt=urn:btih:<hash>` and nothing else. With
