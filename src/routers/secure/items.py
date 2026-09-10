@@ -38,14 +38,33 @@ class MediaTypeEnum(str, Enum):
 
 
 class SortOrderEnum(str, Enum):
+    """How the library grid may be ordered.
+
+    ``date`` is when the title was requested; ``year`` is when it was
+    released, which is a different question and the one a "group by decade"
+    view needs. ``rating`` and ``studio`` exist so grouping can order by the
+    key it groups on -- otherwise a group's members are scattered across
+    pages and the headers repeat.
+    """
+
     TITLE_ASC = "title_asc"
     TITLE_DESC = "title_desc"
     DATE_ASC = "date_asc"
     DATE_DESC = "date_desc"
+    RATING_ASC = "rating_asc"
+    RATING_DESC = "rating_desc"
+    YEAR_ASC = "year_asc"
+    YEAR_DESC = "year_desc"
+    STUDIO_ASC = "studio_asc"
+    STUDIO_DESC = "studio_desc"
 
     @property
     def sort_type(self) -> str:
-        return "title" if self.value.startswith("title") else "date"
+        # One sort per type, so this has to name the column rather than
+        # guess. Splitting on the last underscore keeps it correct as values
+        # are added; the old form assumed everything that was not "title" was
+        # a date.
+        return self.value.rsplit("_", 1)[0]
 
 
 # How many candidate releases a detail view gets by rank. Releases that were
@@ -359,6 +378,30 @@ async def get_items(
                 query = query.order_by(MediaItem.requested_at.asc())
             elif sort_criterion == SortOrderEnum.DATE_DESC:
                 query = query.order_by(MediaItem.requested_at.desc())
+            # NULLS LAST on every optional column. Postgres sorts NULL highest
+            # by default, so a descending rating sort would otherwise open
+            # with every unrated title -- the exact opposite of what "best
+            # rated first" asks for. A stored 0 is left where it falls: it is
+            # a real value in the column, and the card is what knows TPDB's 0
+            # means "no ranking".
+            elif sort_criterion == SortOrderEnum.RATING_ASC:
+                query = query.order_by(MediaItem.rating.asc().nullslast())
+            elif sort_criterion == SortOrderEnum.RATING_DESC:
+                query = query.order_by(MediaItem.rating.desc().nullslast())
+            elif sort_criterion == SortOrderEnum.YEAR_ASC:
+                query = query.order_by(MediaItem.aired_at.asc().nullslast())
+            elif sort_criterion == SortOrderEnum.YEAR_DESC:
+                query = query.order_by(MediaItem.aired_at.desc().nullslast())
+            elif sort_criterion == SortOrderEnum.STUDIO_ASC:
+                query = query.order_by(
+                    func.lower(MediaItem.site_name).asc().nullslast(),
+                    MediaItem.title.asc(),
+                )
+            elif sort_criterion == SortOrderEnum.STUDIO_DESC:
+                query = query.order_by(
+                    func.lower(MediaItem.site_name).desc().nullslast(),
+                    MediaItem.title.asc(),
+                )
 
     else:
         query = query.order_by(MediaItem.requested_at.desc())
