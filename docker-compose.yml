@@ -83,6 +83,82 @@ services:
             riven_postgres:
                 condition: service_healthy
 
+    # Clears a stale RivenVFS mount so the backend above can start.
+    #
+    # THE PROBLEM. `/mount` is bound `rshared`, which is not optional -- it
+    # is what lets Jellyfin (below) see a filesystem that RivenVFS mounts
+    # inside another container. The cost is that the mount escapes to the
+    # host, and if the backend then dies without unmounting -- a crash, a
+    # SIGKILL, the docker daemon stopping underneath it -- the mount outlives
+    # it there as a dead endpoint.
+    #
+    # From then on the daemon cannot stat the bind source, so it refuses to
+    # create the container at all:
+    #
+    #     invalid mount config for type "bind": stat /path/to/riven/mount:
+    #     transport endpoint is not connected
+    #
+    # `restart: unless-stopped` then makes it permanent rather than
+    # self-limiting: every retry fails the same way, forever, and because the
+    # failure is on the daemon side there is nothing in the backend's own log
+    # to read. Observed on the server at 118 consecutive failures overnight
+    # after a daemon restart. Nothing recovers on its own, and no guard
+    # inside the backend image can help -- that image never gets to run.
+    #
+    # THE FIX. Bind the PARENT directory instead. Docker never stats the
+    # children of a bind source, so this container starts when the backend
+    # cannot, and `rshared` -- the same propagation that leaked the mount out
+    # -- carries the unmount back to the host. The backend's own restart
+    # policy then does the rest, with no ordering between the two required.
+    #
+    # DETECTION: read the directory (`ls -A`), never merely stat it. A dead
+    # endpoint has two observable states and only one of them fails to stat.
+    # Measured on the server, on the same orphaned mount:
+    #
+    #     ls -d .../library   ->  succeeds, prints the path
+    #     ls -A .../library   ->  transport endpoint is not connected
+    #
+    # So `[ -d ]`, `test -e` and `ls -d` all report a dead mount as perfectly
+    # healthy, and a guard built on any of them silently does nothing. The
+    # daemon hits the same split, which is why the backend sometimes fails to
+    # be created and sometimes starts onto a library it cannot read.
+    #
+    # Deliberately no `timeout` around it: a hung but LIVE mount blocks the
+    # read, and blocking is the safe outcome -- a timeout would turn that
+    # hang into a false positive and unmount a filesystem still serving.
+    riven-mountguard:
+        image: alpine:3
+        container_name: riven-mountguard
+        restart: unless-stopped
+        # Only to unmount. Notably NOT privileged, and no /dev/fuse.
+        cap_add:
+            - SYS_ADMIN
+        environment:
+            # The final path segment of the /mount bind source below.
+            - MOUNT_NAME=mount
+        volumes:
+            # The PARENT of the backend's /mount bind source. Binding the
+            # mount point itself would fail for the very reason this exists.
+            - /path/to/riven:/host:rshared
+        command:
+            - sh
+            - -c
+            - |
+                echo "Watching /host/$$MOUNT_NAME for a stale FUSE mount."
+                while true; do
+                    if ! ls -A "/host/$$MOUNT_NAME" > /dev/null 2>&1; then
+                        echo "$$(date -Is) stale mount at $$MOUNT_NAME, clearing"
+                        umount -l "/host/$$MOUNT_NAME" 2>/dev/null || true
+                        mkdir -p "/host/$$MOUNT_NAME" 2>/dev/null || true
+                        if ls -A "/host/$$MOUNT_NAME" > /dev/null 2>&1; then
+                            echo "cleared; the backend can start again"
+                        else
+                            echo "STILL UNREADABLE -- needs a look"
+                        fi
+                    fi
+                    sleep 15
+                done
+
     # The web UI is a separate application; the backend above serves only the
     # JSON API. Its settings form is rendered from the backend's JSON schema,
     # so the TPDB section appears automatically -- no TPDB-specific frontend

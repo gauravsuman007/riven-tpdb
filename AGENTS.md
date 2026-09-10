@@ -549,12 +549,32 @@ stack is a full checkout at `/home/hellonfire/Server/riven-tpdb`.
 - Verifying without the api_key: `local_access` is on for loopback and the
   frontend proxies with the key injected, so from the server
   `curl -s http://127.0.0.1:3001/api/v1/items?limit=30` returns real data.
-- TRAP: if the previous `riven-tpdb` container was killed uncleanly (crash,
-  `docker compose up -d` on a hung process) while RivenVFS had it mounted,
-  `docker compose up -d riven-tpdb` fails with `invalid mount config for type
-  "bind": stat .../library: transport endpoint is not connected` -- a stale
-  FUSE mount survives the dead container. Fix: `umount -l
-  /home/hellonfire/Server/riven-tpdb/library` on the host, then retry `up -d`.
+- A stale FUSE mount left by an uncleanly-killed `riven-tpdb` is now cleared
+  automatically by the `riven-tpdb-mountguard` sidecar in docker-compose.yml
+  (see the long comment there). Read that before touching either half.
+  - The failure this prevents: the `rshared` bind leaks the RivenVFS mount to
+    the host, and a crash orphans it there. `restart: unless-stopped` then
+    retries against the dead endpoint forever -- 118 consecutive failures
+    overnight, with nothing in the backend's log, because the daemon refuses
+    to create the container and the image never runs. The manual fix that
+    used to be documented here (`umount -l .../library`) still works, but
+    only helps someone who happens to be watching, which is why it recurred.
+  - **A dead endpoint has two states and only one of them fails to stat.**
+    Measured on the same orphaned mount: `ls -d .../library` succeeded while
+    `ls -A .../library` returned ENOTCONN. So `[ -d ]`, `test -e` and `ls -d`
+    all report a dead mount as healthy -- any check built on them silently
+    does nothing. Always read the directory. The daemon hits the same split,
+    which is why the backend sometimes fails to be created and sometimes
+    starts onto a library it cannot read while reporting itself healthy.
+  - The guard binds the PARENT directory, deliberately: docker never stats
+    the children of a bind source, so the guard starts when the backend
+    cannot, and `rshared` carries its unmount back out to the host.
+  - `rshared` cannot simply be dropped to avoid all this -- it is what lets
+    the Jellyfin service see a filesystem mounted inside another container.
+  - `entrypoint.sh` carries the same check as a second line of defence, for
+    the case where the daemon binds a dead endpoint through instead of
+    refusing. It cannot replace the sidecar: in the refusing case it never
+    runs at all.
 - `RIVEN_FORCE_ENV=true` is set on the server. Any `RIVEN_*` env var silently
   overwrites the UI-saved setting on every start.
 
