@@ -54,6 +54,10 @@ class BackfillProgress:
     considered: int = 0
     fetched: int = 0
     rated: int = 0
+    #: Pages that were read and simply carry no rating -- nobody reviewed the
+    #: title. Counted apart from `failed` because they are the normal case,
+    #: not an error: roughly a third of product pages have no score.
+    unrated: int = 0
     failed: int = 0
     started_at: float | None = None
     finished_at: float | None = None
@@ -65,6 +69,7 @@ class BackfillProgress:
             "considered": self.considered,
             "fetched": self.fetched,
             "rated": self.rated,
+            "unrated": self.unrated,
             "failed": self.failed,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -165,9 +170,10 @@ class RatingBackfill:
 
                 if detail is None:
                     self.progress.failed += 1
+                elif self._apply(entry, detail):
+                    self.progress.rated += 1
                 else:
-                    if self._apply(entry, detail):
-                        self.progress.rated += 1
+                    self.progress.unrated += 1
 
                 # Committed as we go. A run of several hundred titles is
                 # minutes long; a single commit at the end would show no
@@ -178,8 +184,9 @@ class RatingBackfill:
             session.commit()
 
         logger.success(
-            f"Rated {self.progress.rated} of {self.progress.considered} entries "
-            f"({self.progress.failed} pages carried no rating)."
+            f"Rated {self.progress.rated} of {self.progress.considered} entries; "
+            f"{self.progress.unrated} product pages carry no rating and "
+            f"{self.progress.failed} could not be read."
         )
 
         return self.progress.snapshot()

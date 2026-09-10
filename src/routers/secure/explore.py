@@ -211,6 +211,9 @@ class RatingBackfillStatus(BaseModel):
     considered: int
     fetched: int
     rated: int
+    #: Read successfully but carrying no score -- nobody reviewed the title.
+    #: About a third of product pages, and not an error.
+    unrated: int
     failed: int
     started_at: float | None = None
     finished_at: float | None = None
