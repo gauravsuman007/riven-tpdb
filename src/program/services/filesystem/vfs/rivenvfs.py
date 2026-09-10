@@ -33,6 +33,7 @@ Usage:
 from __future__ import annotations
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import pyfuse3
 import trio
@@ -101,6 +102,23 @@ class FileHandle(TypedDict):
 class CachedDirectoryEntry(TypedDict):
     name: str
     is_directory: bool
+
+
+def _timestamp(value: datetime | None) -> str:
+    """An ISO timestamp for the VFS, never None.
+
+    `FilesystemEntry.created_at` uses a SQLAlchemy column default, which is
+    applied at INSERT time -- so an entry built in memory and registered
+    before its session flushes still has None here. That is not a rare path:
+    it is exactly what the candidate-release swap does, and it took down the
+    swap with "'NoneType' object has no attribute 'isoformat'" at the moment a
+    background download finally succeeded.
+
+    Now is the honest answer for a row that does not exist yet, and the DB
+    default will write the same instant a moment later.
+    """
+
+    return (value or datetime.now(timezone.utc)).isoformat()
 
 
 class RivenVFS(pyfuse3.Operations):
@@ -988,8 +1006,8 @@ class RivenVFS(pyfuse3.Operations):
                     clean_path=path,
                     original_filename=entry.original_filename,
                     file_size=entry.file_size,
-                    created_at=(entry.created_at.isoformat()),
-                    updated_at=(entry.updated_at.isoformat()),
+                    created_at=_timestamp(entry.created_at),
+                    updated_at=_timestamp(entry.updated_at),
                     entry_type="media",
                 ):
                     registered_paths.append(path)
@@ -1020,8 +1038,8 @@ class RivenVFS(pyfuse3.Operations):
                     clean_path=subtitle_path,
                     original_filename=f"subtitle:{entry.parent_original_filename}:{language}",
                     file_size=entry.file_size,
-                    created_at=(entry.created_at.isoformat()),
-                    updated_at=(entry.updated_at.isoformat()),
+                    created_at=_timestamp(entry.created_at),
+                    updated_at=_timestamp(entry.updated_at),
                     entry_type="subtitle",
                 ):
                     registered_paths.append(subtitle_path)

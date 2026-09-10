@@ -1013,6 +1013,18 @@ class Downloader(Runner[None, DownloaderBase]):
                 for existing in item.filesystem_entries:
                     existing.is_active = False
 
+                # Set AFTER the loop above, and not left to the constructor.
+                #
+                # `create_virtual_entry` was called with `is_active=not
+                # keep_existing`, which is False on precisely this path -- so
+                # the deactivation loop then cleared the old entry too and the
+                # item was left with NO active entry at all. `media_entry`
+                # resolves to None in that state, which means no VFS mount and
+                # nothing to play: a successful background download made the
+                # title unplayable. Confirmed on a real item, whose two
+                # entries were both is_active=False after the swap.
+                entry.is_active = True
+
                 item.filesystem_entries.append(entry)
                 item.downloading_stream_hash = None
             else:
