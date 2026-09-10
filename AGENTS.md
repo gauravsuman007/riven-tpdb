@@ -218,6 +218,55 @@ exists to avoid.
 Every result carries its `signals` and `reasons`, and the page prints them. A
 recommendation nobody can interrogate is one nobody can correct.
 
+### Ratings: where they come from, and the two zeros
+
+`ratings.py` / `POST /explore/ratings/sync`. The measured facts, all of which
+look like bugs until you know them:
+
+- **TPDB writes a literal `0` on every record.** It exposes no ranking at all,
+  so a stored 0 means "no ranking", not "rated zero" -- 60 of 68 library items
+  held it. Anything checking `rating is None` alone will treat that 0 as a
+  real score and show it, and will refuse to overwrite it.
+- **An Adult Empire *listing* page carries no rating.** 48 of 48 rows on the
+  all-time-bestsellers page came back with none, which is why only 35 of 2,577
+  catalogue entries had one.
+- **An Adult Empire *product* page does.** `rating-stars-avg`, out of five.
+  Roughly two thirds of pages have one; the rest have no reviews, which the
+  backfill counts as `unrated`, not `failed`.
+- **The slug in a product URL is ignored.** `/700215/` and
+  `/700215/anything-porn-movies.html` both return Pirates. That is what makes
+  the backfill possible with no sitemap index and no slug reconstruction.
+
+The backfill commits in batches of 25 rather than at the end, unlike the
+category index -- a twelve-minute run that writes only on completion looks
+like nothing is happening and loses everything to a restart.
+
+It only ever fills gaps in `year`/`duration_minutes`: a storefront disagreeing
+with an award ballot is not grounds to overwrite the ballot. It does replace a
+MediaItem's 0, which is not a score.
+
+### Rail filtering and sorting
+
+`engine.arrange()`, behind `min_rating` / `sort` on `/explore/recommendations`
+and `/explore/rows`. Two rules that are choices, not accidents:
+
+- **An unrated title never satisfies a minimum.** Most entries have no rating,
+  and "no rating" is not evidence of a good one.
+- **Sorting by rating does not hide the unrated** -- they sort last, still in
+  score order. A sort is an ordering; turning it silently into a filter drops
+  titles nobody asked to drop.
+
+The filter runs after scoring and before the limit. A per-rail control
+re-ranks the whole corpus through `/explore/recommendations` rather than
+filtering the twenty items on screen: "the four titles in this row with four
+stars" and "the catalogue's best four-star titles for this intent" are
+different answers, and only the second is the one anyone means. `Rail.intent`
+is carried in the response for this -- do not split `key` on a hyphen, which
+works only until an intent name contains one.
+
+A scene rail can only empty under a minimum: StashDB carries no audience
+score at all.
+
 Tests: `src/tests/test_recommendations.py` (stdlib-only, stubs the framework
 deps; no network, no database).
 
@@ -707,6 +756,27 @@ stack is a full checkout at `/home/hellonfire/Server/riven-tpdb`.
     runs at all.
 - `RIVEN_FORCE_ENV=true` is set on the server. Any `RIVEN_*` env var silently
   overwrites the UI-saved setting on every start.
+
+## Library sorting and grouping
+- `SortOrderEnum` covers title, added-date, rating, release year and studio.
+  `sort_type` (which enforces one sort per column) splits the value rather
+  than assuming anything not "title" is a date -- the old form broke the
+  moment a third column existed.
+- **Every optional column sorts NULLS LAST.** Postgres puts NULL highest, so a
+  descending rating sort would otherwise open with every unrated title, which
+  is the opposite of what it asks for.
+- **Grouping is a frontend rendering choice**, applied to the page the grid
+  received; there is no `group` parameter on the backend and the loader strips
+  it. What makes it correct is that choosing a group also sets the sort on the
+  same key (`GROUP_SORT`), so consecutive runs in the page *are* the groups.
+  They are built by appending in order, never by bucketing on the key --
+  bucketing would merge two runs that a page boundary separated and claim a
+  group was complete when it was not.
+- A rating of 0 groups with the unrated. See the two zeros above.
+- TRAP: `providers/riven.ts` is generated from the backend's OpenAPI spec and
+  needs a running backend to regenerate, so it lags new query values. The zod
+  schema in `schemas/items.ts` is the check that matters; keep any cast
+  confined to the one field that drifted.
 
 ## Library search: studio and cast
 - The search box matches a **title, its studio, or anyone in its cast**, and
