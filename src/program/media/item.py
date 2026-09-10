@@ -68,6 +68,14 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
     # in the brochure carry enough metadata to be downloaded without a TPDB
     # record, and TPDB details are filled in afterwards if a match turns up.
     adultempire_id: Mapped[str | None]
+    #: StashDB scene UUID. A third independent identifier, for titles resolved
+    #: from StashDB when TPDB has no record or is unavailable.
+    #:
+    #: Its own column rather than reusing `tpdb_id`, because a StashDB UUID is
+    #: not a TPDB id: sharing the column would make every tpdb_id lookup,
+    #: dedupe and "already in the library" check quietly wrong, and there
+    #: would be no way to tell afterwards which provider a value came from.
+    stashdb_id: Mapped[str | None]
     #: A person set or cleared this item's TPDB association by hand, so the
     #: automatic matcher must leave it alone.
     #:
@@ -188,6 +196,7 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         Index("ix_mediaitem_tvdb_id", "tvdb_id"),
         Index("ix_mediaitem_tmdb_id", "tmdb_id"),
         Index("ix_mediaitem_tpdb_id", "tpdb_id"),
+        Index("ix_mediaitem_stashdb_id", "stashdb_id"),
         Index("ix_mediaitem_site_id", "site_id"),
         Index("ix_mediaitem_network", "network"),
         Index("ix_mediaitem_country", "country"),
@@ -230,6 +239,7 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         # scrape for "Pirates" came back with five Pirates of the Caribbean
         # films and nothing else.
         self.adultempire_id = item.get("adultempire_id")
+        self.stashdb_id = item.get("stashdb_id")
         self.site_id = item.get("site_id")
         self.site_name = item.get("site_name")
         self.network = item.get("network")

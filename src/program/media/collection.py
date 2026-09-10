@@ -126,6 +126,12 @@ class CollectionEntry(Base):
     # Resolution against TPDB.
     tpdb_id: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True, index=True)
     tpdb_kind: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True)
+    #: StashDB scene UUID, when the entry was matched from StashDB instead.
+    #: Its own column for the same reason as on MediaItem: the two id spaces
+    #: are unrelated and sharing one makes every TPDB lookup silently wrong.
+    stashdb_id: Mapped[str | None] = mapped_column(
+        sqlalchemy.String, nullable=True, index=True
+    )
     match_state: Mapped[str] = mapped_column(
         sqlalchemy.String, default="pending", index=True
     )
@@ -174,7 +180,7 @@ class CollectionEntry(Base):
         a download without asking anyone else first.
         """
 
-        return bool(self.tpdb_id or self.external_id)
+        return bool(self.tpdb_id or self.stashdb_id or self.external_id)
 
     def __repr__(self) -> str:
         return f"<CollectionEntry {self.title!r} [{self.match_state}]>"

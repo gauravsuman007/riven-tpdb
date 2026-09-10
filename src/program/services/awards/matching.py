@@ -77,12 +77,20 @@ def title_symmetry(left: str, right: str) -> float:
 
 @dataclass(slots=True)
 class Match:
-    """How well one TPDB candidate fits an award entry."""
+    """How well one provider's candidate fits an award entry."""
 
     tpdb_id: str
     kind: str
     title: str
     poster: str | None = None
+    provider: str = "tpdb"
+    """Which metadata provider supplied `tpdb_id`.
+
+    The field name is historical -- this was TPDB-only -- but the value is now
+    whichever provider matched, so callers MUST read `provider` before storing
+    the id. A StashDB UUID written into a `tpdb_id` column makes every lookup
+    and dedupe against TPDB quietly wrong.
+    """
     title_ratio: float = 0.0
     # How much of the LONGER title the overlap accounts for. Low means the
     # candidate carries words the entry never mentioned.

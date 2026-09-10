@@ -1375,6 +1375,79 @@ class TpdbModel(Observable):
     )
 
 
+class StashdbModel(Observable):
+    """StashDB, the community metadata database, as a second provider.
+
+    It is a GraphQL API rather than REST, and it is *scene*-oriented: where
+    TPDB models both scenes and movies, StashDB models scenes with a studio
+    attached. That is close enough to map onto the same shape -- see
+    `stashdb_mapping` -- because everything Riven needs (title, studio, cast,
+    date, poster) exists on both sides.
+
+    An API key is required for every query, including search: StashDB answers
+    an unauthenticated request with "not authorized" rather than a 401, so a
+    missing key looks like a query error unless it is checked for.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable StashDB as a metadata provider. Needs an API key "
+        "from your StashDB account (Account -> API Key).",
+    )
+    api_key: str = Field(default="", description="StashDB API key")
+    api_url: str = Field(
+        default="https://stashdb.org/graphql",
+        description="StashDB GraphQL endpoint",
+    )
+    cache_enabled: bool = Field(default=True, description="Cache StashDB responses")
+    cache_dir: Path = Field(
+        default=Path("/riven/data/stashdb_cache"),
+        description="Directory for the StashDB response cache.",
+    )
+    cache_max_size_mb: int = Field(default=100, ge=0)
+    cache_ttl_seconds: int = Field(default=6 * 60 * 60, ge=0)
+
+
+class MetadataModel(Observable):
+    """Which metadata providers to use, and in what order.
+
+    The order is the point. A title that one provider does not have, or gets
+    wrong, is the normal case rather than the exception -- TPDB has no record
+    for plenty of older releases, and its text search ranks its own way -- so
+    the second provider is consulted whenever the first returns no acceptable
+    match, and also whenever the first is unreachable, unconfigured or
+    erroring. A provider that is disabled, or has no credentials, is skipped
+    rather than counted as a failed attempt.
+    """
+
+    providers: list[str] = Field(
+        default_factory=lambda: ["tpdb", "stashdb"],
+        description=(
+            "Metadata providers in priority order. The first is primary; the "
+            "rest are consulted in turn when it finds no acceptable match or "
+            "cannot be reached. Known values: tpdb, stashdb. Remove one to "
+            "stop using it, or disable it in its own section."
+        ),
+    )
+
+    @field_validator("providers")
+    @classmethod
+    def _known_providers(cls, value: list[str]) -> list[str]:
+        known = {"tpdb", "stashdb"}
+        cleaned = list[str]()
+
+        for name in value:
+            key = str(name).strip().lower()
+
+            # Dropped rather than rejected. A typo in this list should cost
+            # that one provider, not refuse to load settings at all and leave
+            # the whole app down.
+            if key in known and key not in cleaned:
+                cleaned.append(key)
+
+        return cleaned or ["tpdb"]
+
+
 class LocalAccessModel(Observable):
     """Skip the login screen for clients on your own network.
 
@@ -1644,6 +1717,14 @@ class AppModel(Observable):
     tpdb: TpdbModel = Field(
         default_factory=lambda: TpdbModel(),
         description="ThePornDB metadata configuration",
+    )
+    stashdb: StashdbModel = Field(
+        default_factory=lambda: StashdbModel(),
+        description="StashDB metadata configuration",
+    )
+    metadata: MetadataModel = Field(
+        default_factory=lambda: MetadataModel(),
+        description="Which metadata providers to use, and in what order",
     )
     ranking: RTNSettingsModel = Field(
         default_factory=lambda: RTNSettingsModel(),

@@ -170,17 +170,22 @@ def enrich_entry(entry: CollectionEntry) -> bool:
     Mutates ``entry``; the caller owns the commit.
     """
 
-    if entry.tpdb_id or not entry.title:
+    if entry.tpdb_id or entry.stashdb_id or not entry.title:
         return False
 
-    api = client()
+    # Imported here, not at module scope: `metadata_lookup` imports THIS
+    # module for the TPDB half of the chain, so a top-level import would be
+    # circular.
+    from program.services.recommendations.metadata_lookup import (
+        resolve_movie as chain_resolve_movie,
+    )
 
-    if api is None:
-        return False
-
+    # No `client()` guard any more: which providers are usable is the
+    # resolver's decision now, and refusing here when TPDB alone is
+    # unconfigured would disable the fallback in exactly the case the user
+    # configured it for.
     try:
-        match = resolve_movie(
-            api,
+        match = chain_resolve_movie(
             title=entry.title,
             studio=entry.studio,
             year=entry.year,
@@ -193,14 +198,20 @@ def enrich_entry(entry: CollectionEntry) -> bool:
         logger.debug(f"TPDB unavailable while resolving {entry.title!r}: {exc}")
         return False
     except Exception as exc:
-        logger.debug(f"TPDB lookup failed for {entry.title!r}: {exc}")
+        logger.debug(f"Metadata lookup failed for {entry.title!r}: {exc}")
         return False
 
     if match is None:
-        logger.debug(f"No TPDB match for {entry.title!r}; using storefront metadata")
+        logger.debug(
+            f"No metadata match for {entry.title!r}; using storefront metadata"
+        )
         return False
 
-    entry.tpdb_id = match.tpdb_id
+    if match.provider == "stashdb":
+        entry.stashdb_id = match.tpdb_id
+    else:
+        entry.tpdb_id = match.tpdb_id
+
     entry.tpdb_kind = match.kind
     entry.match_score = match.score
     entry.match_state = MATCH_MATCHED
@@ -209,6 +220,6 @@ def enrich_entry(entry: CollectionEntry) -> bool:
     if match.poster:
         entry.poster_path = match.poster
 
-    logger.debug(f"Matched {entry.title!r} to TPDB {match.tpdb_id}")
+    logger.debug(f"Matched {entry.title!r} to {match.provider} {match.tpdb_id}")
 
     return True

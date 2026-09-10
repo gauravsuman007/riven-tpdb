@@ -21,7 +21,7 @@ from sqlalchemy import select
 from program.apis.tpdb_api import TpdbApi, TpdbApiError
 from program.db.db import db_session
 from program.media.item import MediaItem
-from program.services.recommendations.tpdb_lookup import resolve_movie
+from program.services.recommendations.metadata_lookup import resolve_movie
 from program.settings import settings_manager
 
 
@@ -82,7 +82,15 @@ class TpdbEnricher:
                     # try again, and TPDB gains records over time.
                     continue
 
-                item.tpdb_id = match.tpdb_id
+                # The column depends on which provider answered. A StashDB
+                # UUID in `tpdb_id` would make every TPDB lookup, dedupe and
+                # "already in the library" check quietly wrong, and there
+                # would be no way afterwards to tell where the value came
+                # from.
+                if match.provider == "stashdb":
+                    item.stashdb_id = match.tpdb_id
+                else:
+                    item.tpdb_id = match.tpdb_id
 
                 if match.poster:
                     item.poster_path = match.poster
@@ -92,22 +100,25 @@ class TpdbEnricher:
                 enriched += 1
 
                 logger.debug(
-                    f"Attached TPDB {match.tpdb_id} to {item.log_string} "
-                    f"(score {match.score:.1f})"
+                    f"Attached {match.provider} {match.tpdb_id} to "
+                    f"{item.log_string} (score {match.score:.1f})"
                 )
 
         return enriched
 
     def _match(self, item: MediaItem):
-        """Find a TPDB record for a library item, or None.
+        """Find a metadata record for a library item, or None.
 
-        Delegates to the shared two-pass lookup so this path and the collections
-        path cannot drift apart -- and so the acceptance bar stays in one place,
-        because a wrong attachment here silently relabels an owned title.
+        Delegates to the shared provider chain so this path and the
+        collections path cannot drift apart -- and so the acceptance bar stays
+        in one place, because a wrong attachment here silently relabels an
+        owned title.
+
+        The returned `Match` carries `provider`; read it before storing the id,
+        because a StashDB UUID is not a TPDB id.
         """
 
         return resolve_movie(
-            self.api,
             title=item.title,
             # site_name carries the Adult Empire studio for these items.
             studio=item.site_name,

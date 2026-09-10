@@ -22,6 +22,7 @@ from program.media.state import States
 from program.services.indexers.base import BaseIndexer
 from program.services.indexers.adultempire_indexer import AdultEmpireIndexer
 from program.services.indexers.tpdb_indexer import TPDBIndexer
+from program.services.indexers.stashdb_indexer import StashDBIndexer
 from program.core.runner import MediaItemGenerator
 
 
@@ -33,6 +34,7 @@ class IndexerService(BaseIndexer):
 
         self.tpdb_indexer = TPDBIndexer()
         self.adultempire_indexer = AdultEmpireIndexer()
+        self.stashdb_indexer = StashDBIndexer()
 
     @classmethod
     def get_key(cls) -> str:
@@ -55,6 +57,15 @@ class IndexerService(BaseIndexer):
                 item=item,
                 log_msg=log_msg,
             )
+            return
+
+        # Ahead of the brochure, behind TPDB: StashDB carries a real record
+        # (studio, cast, date, images) where the brochure carries a
+        # storefront listing, so it is the better source of the two -- but
+        # TPDB stays first because an item already matched there should not
+        # be relabelled by a reindex.
+        if item.stashdb_id:
+            yield from self.stashdb_indexer.run(item=item, log_msg=log_msg)
             return
 
         if item.adultempire_id:

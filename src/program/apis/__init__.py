@@ -6,6 +6,7 @@ from .plex_api import PlexAPI
 from .tmdb_api import TMDBApi
 from .tvdb_api import TVDBApi
 from .tpdb_api import TpdbApi
+from .stashdb_api import StashdbApi
 
 
 def bootstrap_apis():
@@ -13,6 +14,7 @@ def bootstrap_apis():
     __setup_tmdb()
     __setup_tvdb()
     __setup_tpdb()
+    __setup_stashdb()
 
 
 def __setup_tmdb():
@@ -34,6 +36,14 @@ def __setup_tpdb():
         cache_ttl=tpdb_settings.cache_ttl_seconds,
         cache_max_size_mb=tpdb_settings.cache_max_size_mb,
     )
+
+
+def __setup_stashdb():
+    # Registered unconditionally, unlike Plex. It reads its own settings on
+    # every call and reports `configured` itself, so the resolver can skip it
+    # without having to know whether the container exists -- and turning
+    # StashDB on in the UI then takes effect without a restart.
+    di[StashdbApi] = StashdbApi()
 
 
 def __setup_plex():
