@@ -468,6 +468,33 @@ def test_the_scene_engine_will_not_query_an_intent_stashdb_cannot_express():
     assert engine.rank(intent) == []
 
 
+def test_the_scene_engine_never_sends_an_exclusion_to_stashdb():
+    """There is no exclusion key on this criterion.
+
+    An `excludes` alongside `value` is rejected with HTTP 422, which `_query`
+    raises and `rank` catches -- so every intent carrying a veto came back
+    empty with nothing but a warning in the log. Vetoes are applied locally.
+    """
+
+    facets_module.vocabulary._graph = TagGraph(
+        by_value={"outdoors": Facet("SCENE", "Locations", "Outdoors")},
+        ids={"outdoors": "uuid-3", "amateur": "uuid-4"},
+    )
+    sent = {}
+
+    def capture(_query, variables):
+        sent.update(variables["input"])
+
+        return {"queryScenes": {"scenes": []}}
+
+    engine = SceneEngine(api=SimpleNamespace(configured=True, _query=capture))
+    engine.rank(
+        Intent(name="t", label="t", any=["Locations:Outdoors"], none=["Themes:Amateur"])
+    )
+
+    assert "excludes" not in sent["tags"], sent["tags"]
+
+
 def test_the_scene_engine_pulls_rather_than_requires_its_any_terms():
     """INCLUDES_ALL over eleven location tags demands a scene shot on a beach
     *and* a boat *and* a balcony, which returns nothing."""

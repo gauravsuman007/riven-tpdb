@@ -200,9 +200,14 @@ exists to avoid.
   - **TRAP: `INCLUDES`, never `INCLUDES_ALL`.** An intent's `any` list is a
     pull; requiring all eleven location tags demands a scene shot on a beach
     *and* a boat *and* a balcony, which returns nothing.
-  - The server-side filter is a narrowing, not the judgement: a `none` term
-    with no tag id is invisible to StashDB, so `evaluate` still runs locally on
-    every returned scene.
+  - **TRAP: never send an exclusion on the tags criterion.** There is no
+    exclusion key on it -- an `excludes` alongside `value` is rejected with
+    HTTP 422, which `_query` raises and `rank` catches, so every intent
+    carrying a `none` term came back empty with nothing but a warning in the
+    log. Both scene rails were dead this way.
+  - The server-side filter is a narrowing, not the judgement: `none` is
+    applied locally on every returned scene, which is what the local
+    evaluation was always for. The query over-fetches to pay for it.
 - **StudioEngine** answers "best of X" without meaning "best-selling". Adult
   Empire carries a rating per title but will not order by it (hence
   `STUDIO_SORTS`), so the mirrored catalogue is re-ranked locally and returned

@@ -584,7 +584,9 @@ class SceneEngine:
 
         payload: dict[str, Any] = {
             "page": 1,
-            "per_page": min(limit * 2, 100),
+            # Over-fetch: `none` is applied locally below, so some of what
+            # comes back will be discarded before it is ranked.
+            "per_page": min(limit * 3, 100),
             "sort": "DATE",
             "direction": "DESC",
             "tags": {
@@ -597,8 +599,14 @@ class SceneEngine:
             },
         }
 
-        if excluded:
-            payload["tags"]["excludes"] = excluded
+        # `none` is deliberately NOT sent. There is no exclusion key on this
+        # criterion -- an `excludes` alongside `value` is rejected with HTTP
+        # 422, which `_query` raises and `rank` catches, so every intent
+        # carrying a veto came back empty with only a warning in the log. The
+        # vetoes are applied locally instead, which is what the local
+        # evaluation was always there to do: the server-side filter narrows,
+        # it does not judge.
+        _ = excluded
 
         try:
             data = self.api._query(_QUERY_SCENES, {"input": payload})  # noqa: SLF001
