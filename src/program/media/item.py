@@ -669,7 +669,7 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         categories, on indexers that do not carry them.
         """
 
-        return bool(self.tpdb_id or self.adultempire_id)
+        return bool(self.tpdb_id or self.adultempire_id or self.stashdb_id)
 
     # Filesystem entry properties
     @property
