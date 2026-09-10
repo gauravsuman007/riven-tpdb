@@ -432,7 +432,17 @@ def parse_detail(html: str, item: RankedTitle) -> RankedTitle:
         heading = _DETAIL_TITLE.search(html)
 
         if heading:
-            item.title = _unescape(re.sub(r"<[^>]+>", "", heading.group(1)).strip())
+            # Only the heading's OWN text, cut at the first nested element.
+            # Stripping every tag and keeping the remainder merges in whatever
+            # the page hangs inside the h1 -- currently a sale banner, so
+            # "Babysitters" came back as "Babysitters - On Sale! Brazzers,
+            # Digital Playground, Filthy Kings, Trans Angels DVD Sale". That
+            # scores as a different title and the right record is rejected.
+            #
+            # Invisible from the listing paths, which supply their own title;
+            # this only fills in for callers that start from a bare product
+            # id, which is the metadata provider and the studio-row promotion.
+            item.title = _unescape(heading.group(1).split("<", 1)[0].strip())
 
     rating = _RATING.search(html)
 
