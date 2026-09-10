@@ -1,5 +1,42 @@
 # Riven (adult-only TPDB fork) — agent notes
 
+## Metadata providers: TPDB, then StashDB
+
+`settings.metadata.providers` is an ordered list (`["tpdb", "stashdb"]` by
+default). `program.services.recommendations.metadata_lookup.resolve_movie` is
+the ONLY entry point callers should use -- `tpdb_lookup.resolve_movie` is now
+the TPDB half of the chain, not a thing to call directly.
+
+The chain moves on for two reasons, and both matter: no acceptable match, and
+the provider failing outright (no key, unreachable, GraphQL error). A provider
+that is disabled or has no credentials is **skipped**, not counted as a failed
+attempt.
+
+### The id must not be confused
+
+`Match.provider` says which provider answered. Read it before storing
+`Match.tpdb_id`: for StashDB that value is a StashDB UUID and belongs in
+`stashdb_id` (its own column on both MediaItem and CollectionEntry). Sharing
+`tpdb_id` would make every TPDB lookup and dedupe silently wrong, with no way
+afterwards to tell where a value came from.
+
+### StashDB specifics
+
+- GraphQL, so **errors come back HTTP 200 in the body**. Anything checking
+  `response.ok` alone reads a total failure as an empty result.
+- **Every query needs the API key, search included.** An unauthenticated
+  request answers 200 with `"not authorized"` -- not a 401 -- so a missing key
+  looks exactly like a malformed query.
+- Scene-oriented; there is no movie endpoint. One lookup, not TPDB's two.
+- `searchScenes(term, limit)` returns full records, so candidates can be
+  scored directly -- no flat/detail split to work around.
+- **Whisparr v3 is not a reference.** It never queries StashDB; it consumes
+  `api.whisparr.com/v3/` and receives generic Sonarr-shaped resources.
+
+`stashdb_mapping` must keep producing the same keys as `tpdb_mapping`.
+`src/tests/test_metadata_fallback.py` compares them directly and fails if they
+drift.
+
 ## A bare magnet cannot reach most swarms
 
 `add_torrent` used to send `magnet:?xt=urn:btih:<hash>` and nothing else. With
