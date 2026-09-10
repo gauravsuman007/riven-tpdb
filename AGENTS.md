@@ -79,6 +79,21 @@ TPDB directly, so an award entry can resolve from Adult Empire or StashDB.
 TPDB's *scene* index is kept as a last resort after the chain (a few
 categories genuinely name a scene) -- `_resolve_scene`.
 
+
+## Recommendations and list import: read the design doc first
+
+`design/RECOMMENDATIONS-STRATEGY.md` holds the researched strategy for the
+recommendation engine (scene / movie / studio) and the generic list-import
+feature. It is dated 2026-09-10 and every source-access claim in it was
+verified against the live site that day; re-check robots.txt before acting.
+
+The headline, because it is the thing most likely to be re-litigated:
+**Reddit cannot be harvested.** `robots.txt` is `User-agent: * / Disallow: /`,
+and NSFW content has been unavailable through the Data API since 5 July 2023.
+The import pipeline IS the Reddit integration. Do not build a crawler for it,
+and do not build embedding search over titles -- see the doc for why that
+contradicts the refuse-rather-than-guess stance the matcher is built on.
+
 ## A bare magnet cannot reach most swarms
 
 `add_torrent` used to send `magnet:?xt=urn:btih:<hash>` and nothing else. With
