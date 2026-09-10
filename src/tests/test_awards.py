@@ -426,6 +426,99 @@ def test_the_gate_can_veto_a_high_score():
     assert not wrong.accepted
 
 
+# ---------------------------------------------------------------------------
+# Pre-2000 ceremonies: the italic is the only title marker
+#
+# These articles never name the studio and run the cast straight into the
+# title. Before this was handled, "Best Sex Scene" rows arrived as a single
+# string naming two performers and a film, and every other row arrived with a
+# title and nothing else -- and a title alone can never clear ACCEPT_SCORE.
+
+
+_OLD_CEREMONY = """
+{|
+! Best Sex Scene—Feature Film !! Best All-Sex Video
+|-
+| * '''[[Nina Hartley]], [[Herschel Savage]]; ''Amanda by Night II'''''
+** Krista Lane, Mike Horner; ''Amanda by Night II''
+** Aja, Dana Lynn, Joey Silvera; Seance/orgy scene, ''Ghostess with the Mostess''
+| * '''''Angel Puss'''''
+** [[Shanna McCullough]], [[Tom Byron]]; ''Angel Puss''
+|}
+"""
+
+
+def _old_entries():
+    return {
+        (e.category, tuple(e.performers)): e
+        for e in avn.parse_ceremony(6, _OLD_CEREMONY)
+    }
+
+
+def test_cast_run_into_the_title_is_split_off():
+    """'Nina Hartley, Herschel Savage; Amanda by Night II' is not a title."""
+
+    titles = {e.title for e in avn.parse_ceremony(6, _OLD_CEREMONY)}
+
+    assert "Amanda by Night II" in titles, titles
+    assert not any(";" in t for t in titles if t), titles
+
+
+def test_the_cast_is_kept_rather_than_discarded():
+    entries = avn.parse_ceremony(6, _OLD_CEREMONY)
+    scene = [
+        e for e in entries
+        if e.title == "Amanda by Night II" and "Nina Hartley" in e.performers
+    ]
+
+    assert scene, [(e.title, e.performers) for e in entries]
+    assert "Herschel Savage" in scene[0].performers
+
+
+def test_a_scene_description_is_not_a_performer():
+    entries = avn.parse_ceremony(6, _OLD_CEREMONY)
+    names = {n for e in entries for n in e.performers}
+
+    assert "Seance/orgy scene" not in names, sorted(names)
+    assert "Joey Silvera" in names, sorted(names)
+
+
+def test_a_bare_title_borrows_the_cast_the_article_gave_elsewhere():
+    """The whole point: 'Angel Puss' alone is unmatchable at any score.
+
+    The article states its cast one row down, in a category that names the
+    same film. Borrowing it is what takes the entry from 5.0 (a perfect title,
+    below the 6.0 bar) to something that can actually be accepted.
+    """
+
+    bare = [
+        e for e in avn.parse_ceremony(6, _OLD_CEREMONY)
+        if e.title == "Angel Puss" and e.category == "Best All-Sex Video"
+    ]
+
+    assert bare, "the winner row went missing"
+    assert "Shanna McCullough" in bare[0].performers, bare[0].performers
+
+
+def test_cross_referencing_does_not_cross_ceremonies():
+    """Two unrelated films can share a title decades apart."""
+
+    other = avn.parse_ceremony(30, "{|\n! Best Movie\n|-\n| * '''''Angel Puss'''''\n|}\n")
+
+    assert other[0].title == "Angel Puss"
+    assert other[0].performers == [], other[0].performers
+
+
+def test_a_trailing_italic_studio_still_wins_over_the_italic_title():
+    """The modern layout must not regress: there the italic IS the studio."""
+
+    entries = avn.parse_ceremony(
+        39, "{|\n! Best Movie\n|-\n| * '''Strip - ''Dorcel/Pulse'''''\n|}\n"
+    )
+
+    assert entries[0].title == "Strip", entries[0].title
+    assert entries[0].studio == "Dorcel/Pulse", entries[0].studio
+
 for _name, _fn in sorted(list(globals().items())):
     if _name.startswith("test_") and callable(_fn):
         check(_name, _fn)

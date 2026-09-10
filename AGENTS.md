@@ -14,11 +14,26 @@ attempt.
 
 ### The id must not be confused
 
-`Match.provider` says which provider answered. Read it before storing
-`Match.tpdb_id`: for StashDB that value is a StashDB UUID and belongs in
-`stashdb_id` (its own column on both MediaItem and CollectionEntry). Sharing
-`tpdb_id` would make every TPDB lookup and dedupe silently wrong, with no way
-afterwards to tell where a value came from.
+`Match.provider` says which provider answered. Never store `Match.tpdb_id`
+by hand -- call `metadata_lookup.assign_provider_id(target, match)`, which
+routes it through `PROVIDER_ID_ATTRIBUTE` to the column that provider owns
+(`tpdb_id` / `stashdb_id` / `adultempire_id`, all three present on both
+MediaItem and CollectionEntry). Sharing `tpdb_id` would make every TPDB lookup
+and dedupe silently wrong, with no way afterwards to tell where a value came
+from.
+
+`assign_provider_id` returns **False and writes nothing** when the provider is
+unknown or the column is absent. That refusal is deliberate, but it surfaces
+as "this provider never resolves anything" rather than as an error -- which is
+how Adult Empire matches on collection entries were being dropped before
+`CollectionEntry.adultempire_id` existed. `src/tests/test_mediaitem_ids.py`
+now asserts the map and the two models agree.
+
+`CollectionEntry.external_id` is **not** the same thing as
+`CollectionEntry.adultempire_id`, even though both hold a product number:
+`external_id` says the row *came from* the storefront (and the brochure paths
+address it by that), while `adultempire_id` says a lookup *matched* it to a
+product. Request and link paths must check both.
 
 ### StashDB specifics
 
@@ -36,6 +51,33 @@ afterwards to tell where a value came from.
 `stashdb_mapping` must keep producing the same keys as `tpdb_mapping`.
 `src/tests/test_metadata_fallback.py` compares them directly and fails if they
 drift.
+
+
+## AVN entries: the italic is the title
+
+The pre-2000 ceremony articles never name a studio and run the cast straight
+into the title -- ``Nina Hartley, Herschel Savage; ''Amanda by Night II''``.
+Read as plain text that yields a "title" naming two people and a film, and
+throws the cast away. `avn._split_entry` now unwraps the line's bold first
+(the wrapper's own quotes are why the trailing-studio pattern never fired on a
+winner row), then takes a quoted segment, then an italic one.
+
+**This is not cosmetic.** A perfect title alone scores 5.0 against
+`ACCEPT_SCORE = 6.0`, so a title-only entry is unmatchable *in principle*, by
+any provider. Cast is what clears the bar. `avn._cross_reference` therefore
+pools cast and studio across every entry in the same ceremony naming the same
+film -- the person categories know who was in "Angel Puss" even though the
+"Best All-Sex Video" row does not. Scoped to one ceremony and keyed on the
+normalised title, so two unrelated films sharing a title decades apart cannot
+pool anything.
+
+Measured over ceremonies 4-43: media entries carrying a cast went 226 -> 2267,
+and titles still containing a stray `;` went 427 -> 39.
+
+`AwardsService._resolve_one` calls the shared `resolve_movie` chain now, not
+TPDB directly, so an award entry can resolve from Adult Empire or StashDB.
+TPDB's *scene* index is kept as a last resort after the chain (a few
+categories genuinely name a scene) -- `_resolve_scene`.
 
 ## A bare magnet cannot reach most swarms
 

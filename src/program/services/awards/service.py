@@ -23,7 +23,7 @@ from program.utils.time import utcnow
 
 from kink import di
 from loguru import logger
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 
 from program.apis.tpdb_api import TpdbApi, TpdbApiError
 from program.db.db import db_session
@@ -42,6 +42,10 @@ from program.services.awards.matching import (
     best_match,
     evaluate_candidate,
     title_ratio,
+)
+from program.services.recommendations.metadata_lookup import (
+    assign_provider_id,
+    resolve_movie,
 )
 from program.settings import settings_manager
 
@@ -367,8 +371,15 @@ class AwardsService:
                 if match is None:
                     entry.match_state = MATCH_UNMATCHED
                     unmatched += 1
+                elif not assign_provider_id(entry, match):
+                    # The provider answered but its id has nowhere to go.
+                    # Recorded as unmatched rather than written to whichever
+                    # column happens to exist: an Adult Empire product number
+                    # filed as a TPDB uuid poisons every later lookup and is
+                    # indistinguishable afterwards from a real one.
+                    entry.match_state = MATCH_UNMATCHED
+                    unmatched += 1
                 else:
-                    entry.tpdb_id = match.tpdb_id
                     entry.tpdb_kind = match.kind
                     entry.match_score = match.score
                     entry.poster_path = match.poster
@@ -386,23 +397,44 @@ class AwardsService:
         return matched, unmatched
 
     def _resolve_one(self, entry: CollectionEntry):
-        """Search TPDB for one entry and return the best acceptable match.
+        """The best acceptable match for one entry, from any provider.
 
-        Two passes, because TPDB's search and detail endpoints return different
-        shapes. ``/movies?q=`` gives a *flat* record: no nested ``site`` and no
-        ``performers``, only a top-level ``site_id``. Scoring straight off that
-        would leave studio and cast permanently unset -- the two strongest
-        signals -- and nothing would ever clear the acceptance bar.
+        The shared chain runs first. It used to be TPDB-only here, which meant
+        an award entry could not be resolved by Adult Empire or StashDB even
+        with both enabled -- the enrichment path had the fallback and this one
+        did not, so the two silently disagreed about what was resolvable.
 
-        So: shortlist on title similarity alone, then fetch the detail record
-        for the few plausible ones and score those properly. Movies are tried
-        before scenes because award categories overwhelmingly name feature
-        releases, and a scene search on a feature title returns that feature's
-        individual scenes, any of which would be a wrong match.
+        ``year_offset=1`` because an AVN entry's year is the *ceremony* year
+        and the work is from the year before.
         """
 
+        match = resolve_movie(
+            title=entry.title,
+            studio=entry.studio,
+            year=entry.year,
+            performers=list(entry.performers or []),
+            year_offset=1,
+        )
+
+        if match is not None:
+            return match
+
+        return self._resolve_scene(entry)
+
+    def _resolve_scene(self, entry: CollectionEntry):
+        """TPDB's scene index, as a last resort after the chain has passed.
+
+        Kept separate from the chain because the chain searches movies only,
+        and a handful of award categories genuinely name a scene rather than
+        a feature. Tried *after* everything else for the reason it always was:
+        a scene search on a feature title returns that feature's individual
+        scenes, any of which would be a wrong match.
+        """
+
+        if not self.initialized:
+            return None
+
         for kind, search, fetch in (
-            ("movie", self.api.search_movies_text, self.api.get_movie),
             ("scene", self.api.search_scenes_text, self.api.get_scene),
         ):
             try:
@@ -518,7 +550,17 @@ class AwardsService:
                         CollectionEntry.winner.is_(True),
                         CollectionEntry.match_state == MATCH_MATCHED,
                         CollectionEntry.media_item_id.is_(None),
-                        CollectionEntry.tpdb_id.is_not(None),
+                        # Either id is enough to start a request: the TPDB
+                        # path indexes from the uuid, the Adult Empire path
+                        # downloads on the storefront's own metadata. A
+                        # StashDB-only match is deliberately excluded -- there
+                        # is no request path that takes a StashDB UUID, so
+                        # queueing one would produce an item nothing can
+                        # resolve.
+                        or_(
+                            CollectionEntry.tpdb_id.is_not(None),
+                            CollectionEntry.adultempire_id.is_not(None),
+                        ),
                     )
                     .order_by(CollectionEntry.year.desc(), CollectionEntry.id)
                     .limit(limit)
@@ -528,8 +570,15 @@ class AwardsService:
             )
 
             for entry in eligible:
+                if entry.tpdb_id:
+                    payload = {"tpdb_id": entry.tpdb_id}
+                    owned = MediaItem.tpdb_id == entry.tpdb_id
+                else:
+                    payload = {"adultempire_id": entry.adultempire_id}
+                    owned = MediaItem.adultempire_id == entry.adultempire_id
+
                 existing = session.execute(
-                    select(MediaItem).where(MediaItem.tpdb_id == entry.tpdb_id)
+                    select(MediaItem).where(owned)
                 ).scalar_one_or_none()
 
                 if existing is not None:
@@ -540,7 +589,7 @@ class AwardsService:
 
                 item = MediaItem(
                     {
-                        "tpdb_id": entry.tpdb_id,
+                        **payload,
                         "requested_by": "awards",
                         "requested_at": utcnow(),
                     }

@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 from program.services.awards.wikitable import iter_tables
+from program.utils.text_matching import normalise
 
 WIKI_API = "https://en.wikipedia.org/w/api.php"
 USER_AGENT = "Riven-TPDB/1.0 (https://github.com/rivenmedia/riven)"
@@ -147,6 +148,26 @@ _TABLE_CLOSE = re.compile(r"^\|\}")
 # within one article.
 _QUOTED = re.compile(r"[\"“„]([^\"“”„]+)[\"”]")
 
+# The bold wrapper a winner line carries around its whole body. Removed before
+# looking for an italic title, because bold and italic are the same character
+# repeated: the first emphasis run in a bolded line starts at position zero, so
+# without unwrapping, the cast is read as the emphasised segment and the title
+# is lost.
+_BOLD_WRAP = re.compile(r"^'{3}(.*)'{3}$", re.S)
+
+# An italicised segment. In the pre-2000 ceremonies this is the ONLY marker of
+# where the work title begins -- those articles never name the studio, and they
+# run the cast straight into the title as
+# ``Nina Hartley, Herschel Savage; ''Amanda by Night II''``. Read as plain
+# text that yields a "title" naming two performers and a film, which no
+# metadata provider can ever match; the cast, meanwhile, is thrown away, and
+# the cast is precisely what a title-only entry needs to clear the acceptance
+# bar. Both halves of that are fixed by reading the italic.
+_ITALIC = re.compile(r"''([^']+)''")
+
+# A fragment naming a moment in the film rather than a person.
+_SCENE_DESCRIPTION = re.compile(r"(?i)\b(?:scenes?|sequence|orgy)$")
+
 
 def _pre_markup(text: str) -> str:
     """Strip refs, comments and templates but keep ``''italic''`` markers.
@@ -180,7 +201,32 @@ def _is_bold(raw: str) -> bool:
 
 
 def _clean(text: str) -> str:
-    return _strip_markup(text).strip(" –-,;|")
+    return _strip_markup(text).strip(" –—-,;|")
+
+
+def _split_cast(before: str) -> list[str]:
+    """The names preceding a work title, as a list.
+
+    Semicolons count as separators alongside commas and ampersands: the group
+    scene categories write the cast as ``A, B, C; Title``, so a split that
+    stopped at commas would leave the last performer glued to nothing useful.
+    """
+
+    names = list[str]()
+
+    for part in re.split(r"\s*&\s*|[,;]", before):
+        name = _clean(part)
+
+        # The scene categories often say *which* scene won before naming the
+        # film ("Aja, Joey Silvera; Seance/orgy scene, Ghostess with the
+        # Mostess"). Nothing ending this way is a person, and the phrasing is
+        # narrow enough to drop without risking a real name.
+        if not name or _SCENE_DESCRIPTION.search(name):
+            continue
+
+        names.append(name)
+
+    return names
 
 
 @dataclass(slots=True)
@@ -288,7 +334,12 @@ def _split_entry(raw: str, category: str) -> tuple[str | None, str | None, list[
     is what is quoted.
     """
 
-    text = _pre_markup(raw)
+    # The bold wrapper comes off first, before anything looks at emphasis or
+    # at what sits at the end of the line. A winner's whole body is bolded, so
+    # on ``'''Strip - ''Dorcel/Pulse'''''`` the studio's closing ``''`` is not
+    # at the end of the string at all -- it is followed by the wrapper's own
+    # three quotes, and the trailing-studio pattern never fires.
+    text = _BOLD_WRAP.sub(r"\1", _pre_markup(raw).strip()).strip()
     studio = None
 
     # Trailing " - ''Studio''" (en dash in modern articles, hyphen in some old).
@@ -312,9 +363,22 @@ def _split_entry(raw: str, category: str) -> tuple[str | None, str | None, list[
     if quoted:
         title = _clean(quoted.group(1))
         before = _clean(text[: quoted.start()])
-        performers = [p for p in (_clean(x) for x in re.split(r"\s*&\s*|,", before)) if p]
 
-        return title or None, studio, performers + trailing_cast
+        return title or None, studio, _split_cast(before) + trailing_cast
+
+    # An italic segment, once the surrounding bold is out of the way. Checked
+    # after the quote because modern articles quote the work and italicise the
+    # studio -- and by this point that trailing italic studio has already been
+    # taken off the end, so whatever italic is left is the work itself.
+    italic = _ITALIC.search(text)
+
+    if italic:
+        title = _clean(italic.group(1))
+
+        if title:
+            before = _clean(text[: italic.start()])
+
+            return title, studio, _split_cast(before) + trailing_cast
 
     plain = _clean(text)
 
@@ -442,7 +506,67 @@ def parse_ceremony(ceremony: int, wikitext: str) -> list[AwardEntry]:
 
     entries.extend(_parse_inline_lists(ceremony, wikitext))
 
-    return _dedupe(entries)
+    return _dedupe(_cross_reference(entries))
+
+
+# How many borrowed names to attach. The matcher scores at most two matching
+# performers, so a handful is already more than it can use, and a longer list
+# only makes the stored entry harder to read.
+MAX_BORROWED_PERFORMERS = 6
+
+
+def _cross_reference(entries: list[AwardEntry]) -> list[AwardEntry]:
+    """Fill in cast and studio from other entries naming the same film.
+
+    A ceremony article states the same film many times over, and the older
+    ones state it *unevenly*: "Best All-Sex Video" lists ``Angel Puss`` bare,
+    while the Best Actor and group-scene categories give four of its
+    performers. Parsed row by row, the bare entry keeps nothing but a title --
+    and a title alone can never clear the acceptance bar (a perfect title is
+    5.0 against a bar of 6.0), so it is unmatchable in principle no matter
+    which metadata provider is asked.
+
+    Every fact used here comes from the same article, about the same film, in
+    the same ceremony -- this borrows what the source already said elsewhere,
+    it does not guess. Titles are keyed on their normalised form and scoped to
+    the one ceremony, so two unrelated films sharing a title across decades
+    cannot pool their casts.
+    """
+
+    cast_by_title = dict[str, list[str]]()
+    studio_by_title = dict[str, str]()
+
+    for entry in entries:
+        if not entry.title:
+            continue
+
+        key = normalise(entry.title)
+
+        if not key:
+            continue
+
+        known = cast_by_title.setdefault(key, [])
+
+        for name in entry.performers:
+            if name not in known:
+                known.append(name)
+
+        if entry.studio and key not in studio_by_title:
+            studio_by_title[key] = entry.studio
+
+    for entry in entries:
+        if not entry.title:
+            continue
+
+        key = normalise(entry.title)
+
+        if entry.studio is None:
+            entry.studio = studio_by_title.get(key)
+
+        borrowed = [n for n in cast_by_title.get(key, ()) if n not in entry.performers]
+        entry.performers = (entry.performers + borrowed)[:MAX_BORROWED_PERFORMERS]
+
+    return entries
 
 
 def _dedupe(entries: list[AwardEntry]) -> list[AwardEntry]:
