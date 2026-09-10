@@ -85,6 +85,11 @@ class Rail(BaseModel):
     title: str
     reason: str
     kind: Literal["movies", "scenes"]
+    #: The intent this row asks, or null for the unfiltered baseline row.
+    #: Carried so a client can re-rank this one rail through
+    #: ``/explore/recommendations`` -- deriving it by splitting ``key`` on a
+    #: hyphen works only until an intent name contains one.
+    intent: str | None = None
     items: list[RecommendationResponse]
 
 
@@ -247,8 +252,20 @@ def recommendations(
     intent: Annotated[str | None, Query()] = None,
     engine: Annotated[Literal["movies", "scenes"], Query()] = "movies",
     limit: Annotated[int, Query(ge=1, le=100)] = 30,
+    min_rating: Annotated[
+        float | None,
+        Query(ge=0, le=5, description="Audience stars, out of five"),
+    ] = None,
+    sort: Annotated[Literal["score", "rating"], Query()] = "score",
 ) -> list[RecommendationResponse]:
-    """One rail's worth of titles for a named intent."""
+    """One rail's worth of titles for a named intent.
+
+    This is what a per-rail rating control calls. It re-ranks the whole
+    corpus rather than filtering what a previous response happened to
+    contain: a rail holds twenty titles, and narrowing those twenty to the
+    four with four stars is a different -- and much worse -- answer than
+    asking the catalogue for its best four-star titles under this intent.
+    """
 
     resolved = None
 
@@ -262,17 +279,37 @@ def recommendations(
         if resolved is None:
             raise HTTPException(400, "The scene engine needs an intent to query on")
 
-        return [_response(item) for item in scenes.rank(resolved, limit=limit)]
+        return [
+            _response(item)
+            for item in scenes.rank(
+                resolved, limit=limit, min_rating=min_rating, sort=sort
+            )
+        ]
 
-    return [_response(item) for item in movies.rank(intent=resolved, limit=limit)]
+    return [
+        _response(item)
+        for item in movies.rank(
+            intent=resolved, limit=limit, min_rating=min_rating, sort=sort
+        )
+    ]
 
 
 @router.get("/rows", operation_id="get_explore_rows")
 def rows(
     per_rail: Annotated[int, Query(ge=1, le=50)] = 20,
     include_scenes: Annotated[bool, Query()] = True,
+    min_rating: Annotated[
+        float | None,
+        Query(ge=0, le=5, description="Audience stars, out of five"),
+    ] = None,
+    sort: Annotated[Literal["score", "rating"], Query()] = "score",
 ) -> ExploreRows:
-    """Every recommendation rail in one request."""
+    """Every recommendation rail in one request.
+
+    ``min_rating`` and ``sort`` apply to every rail here, and are the page's
+    default rather than its only control -- a single rail overrides them
+    through ``/explore/recommendations``.
+    """
 
     rails: list[Rail] = []
     notices: list[str] = []
@@ -282,7 +319,9 @@ def rows(
     # plus rebuild the taste profile and the award index -- once per row on
     # the page.
     movie_intents = library.for_engine("movies")
-    ranked = movies.rank_many([None, *movie_intents], limit=per_rail)
+    ranked = movies.rank_many(
+        [None, *movie_intents], limit=per_rail, min_rating=min_rating, sort=sort
+    )
     baseline, per_intent = ranked[0], ranked[1:]
 
     if baseline:
@@ -290,6 +329,7 @@ def rows(
             Rail(
                 key="for-you",
                 title="Recommended for you",
+                intent=None,
                 reason=(
                     "Ranked from awards, storefront ratings and what your "
                     "library already contains."
@@ -312,6 +352,7 @@ def rows(
             Rail(
                 key=f"movies-{intent.name}",
                 title=intent.label,
+                intent=intent.name,
                 reason=intent.description,
                 kind="movies",
                 items=[_response(item) for item in items],
@@ -326,7 +367,9 @@ def rows(
             )
         else:
             for intent in library.for_engine("scenes"):
-                items = scenes.rank(intent, limit=per_rail)
+                items = scenes.rank(
+                    intent, limit=per_rail, min_rating=min_rating, sort=sort
+                )
 
                 if not items:
                     continue
@@ -337,6 +380,7 @@ def rows(
                         title=f"{intent.label} (scenes)",
                         reason=intent.description,
                         kind="scenes",
+                        intent=intent.name,
                         items=[_response(item) for item in items],
                     )
                 )

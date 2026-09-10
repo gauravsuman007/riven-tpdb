@@ -24,7 +24,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Literal, Sequence
 
 from loguru import logger
 from sqlalchemy import select
@@ -221,6 +221,52 @@ def build_taste(session: Any, limit: int = 500) -> LibraryTaste:
 # ------------------------------------------------------------ movie engine
 
 
+#: How a rail may be ordered. ``score`` is the engine's own ranking; ``rating``
+#: is the audience score, which is a different question and often a different
+#: answer -- a heavily awarded film with no reviews outranks a well-liked one
+#: on score and loses to it on rating.
+SortKey = Literal["score", "rating"]
+
+
+def arrange(
+    results: Iterable[Recommendation],
+    *,
+    limit: int,
+    min_rating: float | None = None,
+    sort: SortKey = "score",
+) -> list[Recommendation]:
+    """Filter and order a rail's worth of results.
+
+    Two rules worth stating, because both are choices:
+
+    **An unrated title never satisfies a minimum.** Most catalogue entries
+    have no audience rating -- the storefront only carries one for titles
+    somebody reviewed -- and "no rating" is not evidence of a good one. Asking
+    for three stars and up and being shown titles with no stars at all would
+    make the control meaningless.
+
+    **Sorting by rating does not hide the unrated.** They sort after every
+    rated title, still in score order, rather than being dropped. A sort is an
+    ordering; silently turning it into a filter would remove titles the reader
+    never asked to remove. Combine it with a minimum to actually exclude them.
+    """
+
+    kept = list(results)
+
+    if min_rating is not None and min_rating > 0:
+        kept = [item for item in kept if item.rating is not None and item.rating >= min_rating]
+
+    if sort == "rating":
+        kept.sort(
+            key=lambda r: (r.rating is not None, r.rating or 0.0, r.score),
+            reverse=True,
+        )
+    else:
+        kept.sort(key=lambda r: r.score, reverse=True)
+
+    return kept[:limit]
+
+
 class MovieEngine:
     """Ranks the locally mirrored catalogue.
 
@@ -288,6 +334,8 @@ class MovieEngine:
         sources: Sequence[str] | None = None,
         studio: str | None = None,
         include_requested: bool = False,
+        min_rating: float | None = None,
+        sort: SortKey = "score",
     ) -> list[Recommendation]:
         return self.rank_many(
             [intent],
@@ -295,6 +343,8 @@ class MovieEngine:
             sources=sources,
             studio=studio,
             include_requested=include_requested,
+            min_rating=min_rating,
+            sort=sort,
         )[0]
 
     def rank_many(
@@ -305,6 +355,8 @@ class MovieEngine:
         sources: Sequence[str] | None = None,
         studio: str | None = None,
         include_requested: bool = False,
+        min_rating: float | None = None,
+        sort: SortKey = "score",
     ) -> list[list[Recommendation]]:
         """Rank the same corpus against several intents in one read.
 
@@ -363,8 +415,12 @@ class MovieEngine:
                     if existing is None or scored.score > existing.score:
                         best[slot][scored.key] = scored
 
+            # Filtered and ordered after scoring, never during: a minimum
+            # rating applied to the corpus would change which titles the
+            # intent ever saw, and the rail is meant to be the intent's
+            # answer narrowed, not a different question.
             return [
-                sorted(slot.values(), key=lambda r: r.score, reverse=True)[:limit]
+                arrange(slot.values(), limit=limit, min_rating=min_rating, sort=sort)
                 for slot in best
             ]
 
@@ -568,7 +624,14 @@ class SceneEngine:
 
         return self.api.configured and not vocabulary.graph.empty
 
-    def rank(self, intent: Intent, limit: int = 30) -> list[Recommendation]:
+    def rank(
+        self,
+        intent: Intent,
+        limit: int = 30,
+        *,
+        min_rating: float | None = None,
+        sort: SortKey = "score",
+    ) -> list[Recommendation]:
         if not self.available:
             return []
 
@@ -624,9 +687,11 @@ class SceneEngine:
             if recommendation is not None:
                 ranked.append(recommendation)
 
-        ranked.sort(key=lambda r: r.score, reverse=True)
-
-        return ranked[:limit]
+        # StashDB carries no audience score, so every scene here is unrated.
+        # A minimum rating therefore empties a scene rail, which is the
+        # honest outcome rather than a special case: the filter is asking for
+        # evidence this corpus does not have.
+        return arrange(ranked, limit=limit, min_rating=min_rating, sort=sort)
 
     def _score(self, scene: dict[str, Any], intent: Intent) -> Recommendation | None:
         tags = [str((tag or {}).get("name") or "") for tag in scene.get("tags") or []]

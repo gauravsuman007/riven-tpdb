@@ -109,6 +109,8 @@ SceneEngine = engine_module.SceneEngine
 LibraryTaste = engine_module.LibraryTaste
 AWARD_WEIGHTS = engine_module.AWARD_WEIGHTS
 NOMINEE_FRACTION = engine_module.NOMINEE_FRACTION
+arrange = engine_module.arrange
+Recommendation = engine_module.Recommendation
 
 RatingBackfill = ratings_module.RatingBackfill
 RankedTitle = sys.modules["program.services.recommendations.adultempire"].RankedTitle
@@ -629,6 +631,79 @@ def test_backfill_addresses_a_product_by_bare_id():
 
     assert backfill._detail("700215").rating == 4.69
     assert asked == ["/700215/"]
+
+
+
+# --- rail filtering and ordering -------------------------------------------
+
+
+def _rec(key, score, rating=None):
+    return Recommendation(key=key, title=key, kind="movie", score=score, rating=rating)
+
+
+def test_a_minimum_rating_keeps_only_titles_that_clear_it():
+    kept = arrange(
+        [_rec("a", 9.0, 2.5), _rec("b", 1.0, 4.5), _rec("c", 8.0, 4.0)],
+        limit=10,
+        min_rating=4.0,
+    )
+
+    assert [item.key for item in kept] == ["c", "b"]
+
+
+def test_an_unrated_title_never_satisfies_a_minimum():
+    # Most catalogue entries have no rating at all, and "no rating" is not
+    # evidence of a good one. Letting them through would make the control
+    # meaningless -- asking for four stars would still show titles with none.
+    kept = arrange([_rec("unrated", 9.0, None)], limit=10, min_rating=1.0)
+
+    assert kept == []
+
+
+def test_a_minimum_of_zero_is_no_filter_at_all():
+    kept = arrange([_rec("unrated", 9.0, None)], limit=10, min_rating=0)
+
+    assert [item.key for item in kept] == ["unrated"]
+
+
+def test_sorting_by_rating_orders_by_the_audience_score():
+    kept = arrange(
+        [_rec("a", 9.0, 3.0), _rec("b", 1.0, 4.8), _rec("c", 5.0, 4.1)],
+        limit=10,
+        sort="rating",
+    )
+
+    assert [item.key for item in kept] == ["b", "c", "a"]
+
+
+def test_sorting_by_rating_does_not_hide_the_unrated():
+    # A sort is an ordering. Silently turning it into a filter would drop
+    # titles the reader never asked to drop; they sort last instead, and a
+    # minimum is what actually excludes them.
+    kept = arrange(
+        [_rec("unrated", 9.0, None), _rec("rated", 1.0, 3.0)],
+        limit=10,
+        sort="rating",
+    )
+
+    assert [item.key for item in kept] == ["rated", "unrated"]
+
+
+def test_the_default_order_is_still_the_engine_score():
+    kept = arrange([_rec("a", 1.0, 5.0), _rec("b", 9.0, 2.0)], limit=10)
+
+    assert [item.key for item in kept] == ["b", "a"]
+
+
+def test_the_limit_is_applied_after_filtering_not_before():
+    # Otherwise asking for the top three four-star titles would take the top
+    # three by score and then discard most of them.
+    corpus = [_rec(f"low{i}", 100 - i, 1.0) for i in range(10)]
+    corpus += [_rec("high", 1.0, 5.0)]
+
+    kept = arrange(corpus, limit=3, min_rating=4.0)
+
+    assert [item.key for item in kept] == ["high"]
 
 
 import tempfile  # noqa: E402 - only the harness below needs it
