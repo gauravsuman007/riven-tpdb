@@ -16,6 +16,7 @@ the FUSE-backed filesystem models, none of which this needs.
 """
 
 import ast
+import re
 import sys
 from pathlib import Path
 
@@ -190,6 +191,37 @@ def test_every_call_site_passing_a_bare_item_passes_adultempire_id():
         f"{offenders} pass tpdb_id but not adultempire_id; an Adult Empire "
         "title with no other id trips the 'At least one ID' guard"
     )
+
+
+def test_every_provider_id_has_a_column_on_both_targets():
+    """`assign_provider_id` writes nothing when the column is missing.
+
+    That refusal is correct -- guessing a column files an Adult Empire product
+    number as a TPDB uuid -- but it means a missing column shows up as a
+    provider that silently never resolves anything, which is exactly how the
+    Adult Empire match on a collection entry was lost. Assert the map and the
+    two models agree instead of finding out from an empty result.
+    """
+
+    lookup = (SRC / "program/services/recommendations/metadata_lookup.py").read_text()
+    start = lookup.index("PROVIDER_ID_ATTRIBUTE = {")
+    block = lookup[start : lookup.index("}", start)]
+    columns = set(re.findall(r'"(\w+_id)",?\s*$', block, re.M))
+
+    assert columns, block
+
+    for model, path in (
+        ("MediaItem", "program/media/item.py"),
+        ("CollectionEntry", "program/media/collection.py"),
+    ):
+        source = (SRC / path).read_text()
+        body = source[source.index(f"class {model}(") :]
+        missing = sorted(c for c in columns if f"\n    {c}:" not in body)
+
+        assert not missing, (
+            f"PROVIDER_ID_ATTRIBUTE routes to {missing}, which {model} does "
+            "not declare -- matches from that provider are dropped"
+        )
 
 
 for _name, _fn in sorted(list(globals().items())):

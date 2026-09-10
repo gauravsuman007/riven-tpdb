@@ -132,6 +132,15 @@ class CollectionEntry(Base):
     stashdb_id: Mapped[str | None] = mapped_column(
         sqlalchemy.String, nullable=True, index=True
     )
+    #: Adult Empire product number, when the entry was *matched* against Adult
+    #: Empire. Deliberately not ``external_id``: that column says where the row
+    #: came from, and a brochure row that Riven created and an award row that a
+    #: lookup happened to resolve to a product are different claims. Sharing
+    #: one column would make a resolved award entry indistinguishable from a
+    #: storefront listing, and the request path treats those differently.
+    adultempire_id: Mapped[str | None] = mapped_column(
+        sqlalchemy.String, nullable=True, index=True
+    )
     match_state: Mapped[str] = mapped_column(
         sqlalchemy.String, default="pending", index=True
     )
@@ -180,7 +189,12 @@ class CollectionEntry(Base):
         a download without asking anyone else first.
         """
 
-        return bool(self.tpdb_id or self.stashdb_id or self.external_id)
+        return bool(
+            self.tpdb_id
+            or self.stashdb_id
+            or self.external_id
+            or self.adultempire_id
+        )
 
     def __repr__(self) -> str:
         return f"<CollectionEntry {self.title!r} [{self.match_state}]>"

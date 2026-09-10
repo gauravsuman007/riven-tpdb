@@ -48,6 +48,9 @@ class CollectionEntryResponse(BaseModel):
     tpdb_kind: str | None
     external_source: str | None
     external_id: str | None
+    #: Set when a *lookup* resolved this entry to an Adult Empire product, as
+    #: opposed to `external_id`, which says the row came from there.
+    adultempire_id: str | None
     rank: int | None
     rating: float | None
     duration_minutes: int | None
@@ -110,6 +113,7 @@ def _entry_response(
         tpdb_kind=entry.tpdb_kind,
         external_source=entry.external_source,
         external_id=entry.external_id,
+        adultempire_id=entry.adultempire_id,
         rank=entry.rank,
         rating=entry.rating,
         duration_minutes=entry.duration_minutes,
@@ -305,18 +309,22 @@ def request_entry(
         if enrich_entry(entry):
             session.commit()
 
+        # `external_id` and `adultempire_id` both hold a product number and
+        # both are requestable the same way; they differ only in what they
+        # claim about the row (came from the storefront vs. was matched to it),
+        # which does not matter here.
+        product_id = entry.external_id or entry.adultempire_id
+
         if entry.tpdb_id:
-            existing = session.execute(
-                select(MediaItem).where(MediaItem.tpdb_id == entry.tpdb_id)
-            ).scalar_one_or_none()
             payload = {"tpdb_id": entry.tpdb_id}
+            owned = MediaItem.tpdb_id == entry.tpdb_id
         else:
-            existing = session.execute(
-                select(MediaItem).where(
-                    MediaItem.adultempire_id == entry.external_id
-                )
-            ).scalar_one_or_none()
-            payload = {"adultempire_id": entry.external_id}
+            payload = {"adultempire_id": product_id}
+            owned = MediaItem.adultempire_id == product_id
+
+        existing = session.execute(
+            select(MediaItem).where(owned)
+        ).scalar_one_or_none()
 
         if existing is not None:
             entry.media_item_id = existing.id
@@ -447,7 +455,9 @@ def get_entry(entry_id: Annotated[int, Path()]) -> CollectionEntryResponse:
         if entry is None:
             raise HTTPException(status_code=404, detail="No such entry")
 
-        if entry.media_item_id is None and (entry.tpdb_id or entry.external_id):
+        if entry.media_item_id is None and (
+            entry.tpdb_id or entry.external_id or entry.adultempire_id
+        ):
             # Insurance, not the fix: `media_item_id` should already be set by
             # `_link_collection_entries` (program/db/db_functions.py) once the
             # title this entry named is actually indexed. This fallback only
@@ -462,8 +472,9 @@ def get_entry(entry_id: Annotated[int, Path()]) -> CollectionEntryResponse:
             if entry.tpdb_id:
                 conditions.append(MediaItem.tpdb_id == entry.tpdb_id)
 
-            if entry.external_id:
-                conditions.append(MediaItem.adultempire_id == entry.external_id)
+            for product_id in (entry.external_id, entry.adultempire_id):
+                if product_id:
+                    conditions.append(MediaItem.adultempire_id == product_id)
 
             match = session.execute(
                 select(MediaItem.id).where(or_(*conditions))

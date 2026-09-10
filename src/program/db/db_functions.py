@@ -394,7 +394,11 @@ def _link_collection_entries(session: Session, item: "MediaItem") -> None:
         conditions.append(CollectionEntry.tpdb_id == item.tpdb_id)
 
     if item.adultempire_id:
+        # Both columns, because the same product number reaches an entry two
+        # ways: `external_id` on a row that *came from* Adult Empire, and
+        # `adultempire_id` on an award row a lookup resolved to that product.
         conditions.append(CollectionEntry.external_id == item.adultempire_id)
+        conditions.append(CollectionEntry.adultempire_id == item.adultempire_id)
 
     entries = (
         session.execute(
