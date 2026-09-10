@@ -57,10 +57,19 @@ _SCENE_FIELDS = """
     images { id url width height }
 """
 
+# `searchScenes` does NOT return a list of scenes. It returns
+# QueryScenesResultType, a `{count, scenes}` wrapper -- so asking for scene
+# fields at the top level is rejected outright, with one
+# GRAPHQL_VALIDATION_FAILED per field and an HTTP 422 rather than a partial
+# result. `findScene` below is the asymmetric one: it returns a Scene
+# directly.
 _SEARCH_QUERY = f"""
 query Search($term: String!, $limit: Int!) {{
     searchScenes(term: $term, limit: $limit) {{
-        {_SCENE_FIELDS}
+        count
+        scenes {{
+            {_SCENE_FIELDS}
+        }}
     }}
 }}
 """
@@ -206,7 +215,8 @@ class StashdbApi:
             return []
 
         data = self._query(_SEARCH_QUERY, {"term": term, "limit": limit})
-        scenes = data.get("searchScenes")
+        result = data.get("searchScenes")
+        scenes = result.get("scenes") if isinstance(result, dict) else None
 
         return [scene for scene in (scenes or []) if isinstance(scene, dict)]
 
