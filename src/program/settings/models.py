@@ -1408,6 +1408,48 @@ class StashdbModel(Observable):
     cache_ttl_seconds: int = Field(default=6 * 60 * 60, ge=0)
 
 
+class AdultEmpireMetadataModel(Observable):
+    """Adult Empire as a metadata provider.
+
+    A storefront, and therefore movie-shaped: it catalogues DVD features by
+    title, which is exactly the gap the other two leave. TPDB is patchy on
+    older catalogue releases and StashDB is scene-oriented, so a title like
+    "Babysitters" (Digital Playground, 2007) resolves on neither.
+
+    It is searched through a locally-built title index rather than the site's
+    own search, because **robots.txt disallows every /Search path**. The
+    sitemap is published and allowed, and every product URL carries the title
+    in its slug, so the index is built from sitemaps alone -- no detail page
+    is fetched until a title actually matches. That is both permitted and
+    considerably less traffic than searching would be.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Use Adult Empire's catalogue as a metadata provider. "
+        "Requires the title index below, which is built from their sitemaps.",
+    )
+    index_path: Path = Field(
+        default=Path("/riven/data/adultempire_index.json"),
+        description="Where the locally-built title index is cached.",
+    )
+    index_max_age_days: int = Field(
+        default=30,
+        ge=1,
+        description="Rebuild the title index when it is older than this.",
+    )
+    index_sitemap_limit: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Cap on how many sitemap pages to read when building the index. "
+            "0 means all of them (~1300 pages, ~130k titles, and at one "
+            "request per second roughly 20 minutes). Lower it to trade "
+            "coverage for a faster first build."
+        ),
+    )
+
+
 class MetadataModel(Observable):
     """Which metadata providers to use, and in what order.
 
@@ -1425,8 +1467,8 @@ class MetadataModel(Observable):
     # the priority order, and the form's array controls are what the user
     # reorders it with -- a plain `list[str]` gave them a text box per row and
     # no indication of which names are valid.
-    providers: list[Literal["tpdb", "stashdb"]] = Field(
-        default_factory=lambda: ["tpdb", "stashdb"],
+    providers: list[Literal["tpdb", "adultempire", "stashdb"]] = Field(
+        default_factory=lambda: ["tpdb", "adultempire", "stashdb"],
         description=(
             "Metadata providers in priority order. The first is primary; the "
             "rest are consulted in turn when it finds no acceptable match or "
@@ -1442,7 +1484,7 @@ class MetadataModel(Observable):
     @field_validator("providers", mode="before")
     @classmethod
     def _known_providers(cls, value: Any) -> list[str]:
-        known = ("tpdb", "stashdb")
+        known = ("tpdb", "adultempire", "stashdb")
         cleaned = list[str]()
 
         for name in value if isinstance(value, (list, tuple)) else []:
@@ -1727,6 +1769,10 @@ class AppModel(Observable):
     stashdb: StashdbModel = Field(
         default_factory=lambda: StashdbModel(),
         description="StashDB metadata configuration",
+    )
+    adultempire_metadata: AdultEmpireMetadataModel = Field(
+        default_factory=lambda: AdultEmpireMetadataModel(),
+        description="Adult Empire metadata configuration",
     )
     metadata: MetadataModel = Field(
         default_factory=lambda: MetadataModel(),

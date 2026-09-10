@@ -170,6 +170,16 @@ class ProgramScheduler:
                     "interval": brochure.enrich_interval
                 }
 
+        if settings_manager.settings.adultempire_metadata.enabled:
+            # Weekly and overnight, for the same reason as the studio
+            # directory above: ~1300 sitemap reads at a one-second courtesy
+            # delay is twenty minutes of crawling someone's shop, for a
+            # catalogue that grows by a handful of titles a day. The lookup
+            # path deliberately never triggers this itself.
+            scheduled_functions[self._build_adultempire_index] = {
+                "cron": {"day_of_week": "sun", "hour": 4, "minute": 30}
+            }
+
         # Add scheduler processing and monitoring
         scheduled_functions[self._process_scheduled_tasks] = {"interval": 60}
         scheduled_functions[self._monitor_ongoing_schedules] = {"interval": 15 * 60}
@@ -670,6 +680,21 @@ class ProgramScheduler:
         except SQLAlchemyError as e:
             logger.error(f"Scheduler DB error: {e}")
             return []
+
+    def _build_adultempire_index(self) -> None:
+        """Rebuild the Adult Empire title index. See adultempire_lookup."""
+
+        from program.services.recommendations.adultempire_lookup import (
+            build_and_save_index,
+        )
+
+        try:
+            build_and_save_index()
+        except Exception as exc:
+            # A failed index build leaves the previous one in place and costs
+            # one provider until next week; it must not take the scheduler
+            # down with it.
+            logger.error(f"Adult Empire index build failed: {exc}")
 
     def _process_scheduled_tasks(self) -> None:
         """

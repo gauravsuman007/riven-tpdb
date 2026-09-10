@@ -36,7 +36,8 @@ from program.apis.stashdb_api import StashdbApi, StashdbApiError
 from program.apis.tpdb_api import TpdbApi
 from program.services.awards.matching import Match, evaluate_candidate, best_match
 from program.services.indexers.stashdb_mapping import scene_to_movie_dict
-from program.services.recommendations import tpdb_lookup
+from program.services.recommendations import adultempire_lookup, tpdb_lookup
+from program.services.recommendations.adultempire import AdultEmpireClient
 from program.settings import settings_manager
 
 # StashDB's search is a single fuzzy `searchScenes` call that already returns
@@ -44,6 +45,12 @@ from program.settings import settings_manager
 # TPDB -- so every hit can be scored directly and a wider net costs one
 # request rather than one per candidate.
 STASHDB_SEARCH_LIMIT = 15
+
+
+# One client for the process. It serialises its own requests and sleeps
+# between them, which is the whole point -- a per-lookup client would have no
+# memory of the last request and would defeat the rate limit.
+_adultempire_client = AdultEmpireClient()
 
 
 def _provider_order() -> list[str]:
@@ -60,6 +67,71 @@ def _resolve_via_tpdb(**kwargs) -> Match | None:
     api = di[TpdbApi]
 
     return tpdb_lookup.resolve_movie(api, **kwargs)
+
+
+def _adultempire_enabled() -> bool:
+    return bool(settings_manager.settings.adultempire_metadata.enabled)
+
+
+def _resolve_via_adultempire(
+    *,
+    title: str,
+    studio: str | None = None,
+    year: int | None = None,
+    performers: list[str] | None = None,
+    year_offset: int = 0,
+) -> Match | None:
+    """The best acceptable Adult Empire title, or None.
+
+    Returns None rather than building the index when it is missing or stale.
+    Building takes roughly twenty minutes of rate-limited crawling, and doing
+    that inside a lookup would stall whatever is waiting on it and then do it
+    again on the next call. The scheduled job owns the build; this only reads.
+    """
+
+    settings = settings_manager.settings.adultempire_metadata
+    entries = adultempire_lookup.load_index(
+        settings.index_path, settings.index_max_age_days
+    )
+
+    if not entries:
+        logger.debug(
+            "Adult Empire index is missing or stale; skipping. It is built by "
+            "the scheduled job, or manually with build_adultempire_index()."
+        )
+        return None
+
+    candidates = list[Match]()
+
+    for entry in adultempire_lookup.rank_candidates(entries, title):
+        detail = adultempire_lookup.fetch_detail(_adultempire_client, entry)
+
+        if detail is None or not detail.title:
+            continue
+
+        candidates.append(
+            evaluate_candidate(
+                entry_title=title,
+                entry_studio=studio,
+                entry_year=year,
+                year_offset=year_offset,
+                entry_performers=list(performers or []),
+                tpdb_id=detail.product_id,
+                tpdb_kind="movie",
+                tpdb_title=detail.title,
+                tpdb_site=detail.studio,
+                tpdb_date=f"{detail.year}-01-01" if detail.year else None,
+                tpdb_performers=list(detail.performers or []),
+                tpdb_poster=detail.poster,
+            )
+        )
+
+    match = best_match(candidates)
+
+    if match is not None:
+        match.provider = "adultempire"
+
+    return match
 
 
 def _resolve_via_stashdb(
@@ -129,6 +201,49 @@ def _resolve_via_stashdb(
     return match
 
 
+#: Which column on a MediaItem or CollectionEntry each provider's id belongs
+#: in. Sharing one map is the point: the id routing used to be an if/else at
+#: every call site, so adding a provider meant an unknown one fell through to
+#: `tpdb_id` -- silently filing an Adult Empire product number as a TPDB uuid,
+#: which then poisons every TPDB lookup and dedupe with no way to tell where
+#: the value came from.
+PROVIDER_ID_ATTRIBUTE = {
+    "tpdb": "tpdb_id",
+    "stashdb": "stashdb_id",
+    "adultempire": "adultempire_id",
+}
+
+
+def assign_provider_id(target: object, match: Match) -> bool:
+    """Store `match.tpdb_id` on `target` in the column its provider owns.
+
+    Returns False, having written nothing, when the provider is unknown or
+    the target has no such column. Refusing is deliberate: writing the id to
+    the wrong column is worse than not recording it, because it is
+    indistinguishable afterwards from a genuine id of that kind.
+    """
+
+    attribute = PROVIDER_ID_ATTRIBUTE.get(match.provider)
+
+    if attribute is None:
+        logger.warning(
+            f"Not storing id {match.tpdb_id!r}: provider {match.provider!r} "
+            "has no column. Add it to PROVIDER_ID_ATTRIBUTE."
+        )
+        return False
+
+    if not hasattr(target, attribute):
+        logger.warning(
+            f"Not storing {match.provider} id: {type(target).__name__} has no "
+            f"{attribute!r} column."
+        )
+        return False
+
+    setattr(target, attribute, match.tpdb_id)
+
+    return True
+
+
 def resolve_movie(
     *,
     title: str,
@@ -162,6 +277,12 @@ def resolve_movie(
 
                 attempted.append(provider)
                 match = _resolve_via_tpdb(**kwargs)
+            elif provider == "adultempire":
+                if not _adultempire_enabled():
+                    continue
+
+                attempted.append(provider)
+                match = _resolve_via_adultempire(**kwargs)
             elif provider == "stashdb":
                 if not di[StashdbApi].configured:
                     continue
@@ -194,7 +315,7 @@ def resolve_movie(
     if not attempted:
         logger.debug(
             f"No metadata provider is configured; cannot resolve {title!r}. "
-            "Set a TPDB token or a StashDB API key."
+            "Set a TPDB token, enable Adult Empire, or add a StashDB key."
         )
 
     return None

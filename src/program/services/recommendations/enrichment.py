@@ -21,7 +21,10 @@ from sqlalchemy import select
 from program.apis.tpdb_api import TpdbApi, TpdbApiError
 from program.db.db import db_session
 from program.media.item import MediaItem
-from program.services.recommendations.metadata_lookup import resolve_movie
+from program.services.recommendations.metadata_lookup import (
+    assign_provider_id,
+    resolve_movie,
+)
 from program.settings import settings_manager
 
 
@@ -87,10 +90,8 @@ class TpdbEnricher:
                 # "already in the library" check quietly wrong, and there
                 # would be no way afterwards to tell where the value came
                 # from.
-                if match.provider == "stashdb":
-                    item.stashdb_id = match.tpdb_id
-                else:
-                    item.tpdb_id = match.tpdb_id
+                if not assign_provider_id(item, match):
+                    continue
 
                 if match.poster:
                     item.poster_path = match.poster

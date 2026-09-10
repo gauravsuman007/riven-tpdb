@@ -207,10 +207,12 @@ def enrich_entry(entry: CollectionEntry) -> bool:
         )
         return False
 
-    if match.provider == "stashdb":
-        entry.stashdb_id = match.tpdb_id
-    else:
-        entry.tpdb_id = match.tpdb_id
+    # Local import: `metadata_lookup` imports this module, so a module-scope
+    # import here is a cycle.
+    from program.services.recommendations.metadata_lookup import assign_provider_id
+
+    if not assign_provider_id(entry, match):
+        return False
 
     entry.tpdb_kind = match.kind
     entry.match_score = match.score
