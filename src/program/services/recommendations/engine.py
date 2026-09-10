@@ -34,6 +34,7 @@ from program.apis.stashdb_api import StashdbApi, StashdbApiError
 from program.db.db import db_session
 from program.media.collection import Collection, CollectionEntry
 from program.media.item import MediaItem
+from program.services.recommendations.adultempire_categories import category_index
 from program.services.recommendations.facets import Facet, vocabulary
 from program.services.recommendations.intents import Intent, library
 from program.utils.time import utcnow
@@ -165,6 +166,22 @@ def _fold(value: str | None) -> str:
     return (value or "").strip().lower()
 
 
+def decade_facet(year: int | None) -> str | None:
+    """``1978 -> "1970s"``, matching StashDB's decade themes.
+
+    A year is a fact the corpus has for most titles, and StashDB's tag graph
+    already carries `Themes:1970s` through `Themes:1990s`, so turning one into
+    the other lets an era intent be answered without inventing vocabulary.
+    Restricted to the range the graph actually covers: a "2010s" facet would
+    match nothing and read like a bug.
+    """
+
+    if not year or not (1970 <= year <= 1999):
+        return None
+
+    return f"{year // 10 * 10}s"
+
+
 def build_taste(session: Any, limit: int = 500) -> LibraryTaste:
     """Read the owned library into a taste profile."""
 
@@ -221,14 +238,32 @@ class MovieEngine:
     def entry_facets(entry: CollectionEntry) -> set[Facet]:
         """Everything this entry says about itself, typed.
 
-        A ``CollectionEntry`` carries no tag list, so the facets are derived
-        from what it *does* carry. The award category is the strongest of them
-        and the least obvious: "Best Parody" and "Best Drama" are genre
-        statements made by an editorial body, which is better evidence than a
-        storefront's own keywords.
+        A ``CollectionEntry`` carries no tag list, so the facets are assembled
+        from four sources, in descending order of how much they are worth:
+
+        * **The storefront's categories** (``adultempire_categories``). The
+          only real genre data the movie corpus has, and the reason that
+          module exists -- a product page carries none at all.
+        * **The award category.** "Best Parody" and "Best Drama" are genre
+          statements made by an editorial body, which is stronger evidence
+          than a storefront keyword, just far sparser.
+        * **The release decade**, derived. StashDB's vocabulary has
+          ``Themes:1970s`` through ``1990s``, so a known year is a fact about
+          the title in exactly the terms an intent already speaks.
+        * **The MediaItem's genres**, once the entry has been requested.
         """
 
         sources: list[str] = []
+
+        sources.extend(
+            category_index.categories_for(entry.external_id or entry.adultempire_id)
+        )
+
+        year = entry.year or (entry.released_at.year if entry.released_at else None)
+        decade = decade_facet(year)
+
+        if decade:
+            sources.append(decade)
 
         if entry.category:
             # "Best Drama Release" -> the words that carry the genre.

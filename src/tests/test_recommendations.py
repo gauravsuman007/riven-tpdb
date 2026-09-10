@@ -238,14 +238,47 @@ def test_a_title_matching_nothing_the_intent_asks_for_is_excluded():
     assert intent.evaluate(_facets("drama")) is None
 
 
-def test_a_bound_requires_the_fact_it_bounds_to_be_known():
-    """An unknown year is not evidence of falling inside a year range -- that
-    is how a 2020 release turned up under "The golden age"."""
+def test_a_bound_only_excludes_a_value_it_actually_knows():
+    """A bound says nothing about an unknown value; the `any` list filters.
 
-    intent = Intent(name="t", label="t", any=["drama"], max_year=1989)
+    Making bounds strict instead threw away the entire award corpus at once,
+    because award entries carry no runtime -- which is what emptied "Has a
+    real plot". Era membership is kept honest by requiring a positive decade
+    facet, not by treating a missing year as disqualifying.
+    """
 
-    assert intent.evaluate(_facets("drama"), year=None) is None
-    assert intent.evaluate(_facets("drama"), year=1980) is not None
+    intent = Intent(name="t", label="t", any=["drama"], min_runtime=80)
+
+    assert intent.evaluate(_facets("drama"), runtime=None) is not None
+    assert intent.evaluate(_facets("drama"), runtime=45) is None
+
+
+def test_a_decade_facet_is_derived_only_where_stashdb_has_the_theme():
+    """`Themes:1970s` through `1990s` exist in the tag graph; `2010s` does not,
+    and a facet matching nothing reads as a bug."""
+
+    assert engine_module.decade_facet(1978) == "1970s"
+    assert engine_module.decade_facet(1985) == "1980s"
+    assert engine_module.decade_facet(2020) is None
+    assert engine_module.decade_facet(None) is None
+
+
+def test_an_entry_takes_its_genres_from_the_storefront_categories():
+    """The only real genre data in the movie corpus. A product page has none,
+    so without this the theme rails have nothing to match on."""
+
+    engine_module.category_index._index = {"999": ["Classic Plot", "Feature"]}
+
+    try:
+        facets = MovieEngine.entry_facets(_entry(external_id="999", year=1984))
+        values = {f.value.lower() for f in facets}
+
+        assert "classic plot" in values, values
+        assert "feature" in values, values
+        # And the decade the year implies, in StashDB's own vocabulary.
+        assert "1980s" in values, values
+    finally:
+        engine_module.category_index._index = {}
 
 
 def test_score_is_the_share_of_any_terms_matched():

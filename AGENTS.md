@@ -125,6 +125,11 @@ alias.
 `DEFAULT_INTENTS`; an operator's `intents.json` in the data dir merges **per
 intent by name**, so retuning one does not fork the rest.
 
+- **A bound excludes a known-and-outside value, and says nothing about an
+  unknown one.** Making bounds strict (unknown = excluded) looked principled
+  and emptied "Has a real plot" outright, because the award corpus carries no
+  runtime at all. Era membership is kept honest by requiring a positive decade
+  facet instead, which is the `any` list doing the filtering.
 - **`Intent.evaluate` returns `None` when nothing in `any` matched, not 0.0.**
   It briefly did the latter, on the theory that "eligible but unwanted" was a
   useful fallback. Measured on the live catalogue with the vocabulary not yet
@@ -153,9 +158,44 @@ intent by name**, so retuning one does not fork the rest.
   - The award index is keyed on the **folded title**, not an id: an award
     corpus and a storefront share no identifier, and pooling must not wait on
     the awards service having resolved a provider match.
-  - `CollectionEntry` carries no tags, so facets come from the **award
-    category** ("Best Parody" is a genre claim by an editorial body) plus the
-    MediaItem's genres once requested.
+  - `CollectionEntry` carries no tags, so facets are assembled from the
+    storefront categories (below), the **award category** ("Best Parody" is a
+    genre claim by an editorial body), a **decade derived from the year**
+    (`decade_facet`, restricted to 1970s-1990s because those are the themes
+    StashDB's graph actually has), and the MediaItem's genres once requested.
+
+### adultempire_categories.py -- where movie genres actually come from
+
+**An Adult Empire product page carries no genre information at all.** Verified
+on the live site: length, production year, studio, cast, UPC, disc count, and
+every `Label=` on the page is navigation. This is why the theme and mood rails
+came back empty -- there was nothing on a brochure entry to match against.
+
+The genres exist only in the other direction: 507 browsable categories, each a
+listing of the titles in it. So the index is built by reading the categories an
+intent names and recording which products appear in them. Measured sizes:
+Feature 12,238, Classic Plot 1,836 (literally the "real plot" signal), Classic
+7,827, Outdoors 2,368, Romance 1,485, Parody 1,296, Comedy 815, Beach 277,
+Vintage Porn 193.
+
+- Category pages parse with the existing `parse_listing` -- same product-card
+  markup as a studio listing, 48 per page, `?sort=bestseller&page=N`.
+- **Only the first pages of each category.** Listings are demand-ordered and
+  the brochure mirrors top-ranked titles, so the overlap is front-loaded. A
+  full Feature crawl is 255 requests at one per second for twelve thousand
+  titles we do not hold.
+- A JSON file in the data dir, not a table: derived, rebuildable, no migration.
+- The sync **runs in the background** and the endpoint returns immediately.
+  Holding an HTTP response for a four-minute crawl times out at the proxy and
+  reports failure while the crawl is still working. Poll
+  `GET /explore/categories`.
+
+**"Shot with care" is `engines=["scenes"]` on purpose.** StashDB has
+`Moods:Artistic`; the movie corpus has no equivalent -- Adult Empire publishes
+no such category, and no AVN category in the corpus names cinematography,
+screenplay or direction (checked: zero rows). A movies rail for it would be
+filled by whatever came closest, which is the confident wrong answer the engine
+exists to avoid.
 - **SceneEngine** asks StashDB's `queryScenes`, which facets server-side.
   - **TRAP: `INCLUDES`, never `INCLUDES_ALL`.** An intent's `any` list is a
     pull; requiring all eleven location tags demands a scene shot on a beach

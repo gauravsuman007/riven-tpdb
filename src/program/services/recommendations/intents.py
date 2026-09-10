@@ -88,9 +88,14 @@ class Intent:
         one, because every title was eligible for all of them. A row labelled
         "Outdoors" that is really "everything" is worse than no row.
 
-        A bound also requires the fact it bounds to be *known*. An unknown
-        year is not evidence of falling inside a year range -- that is how a
-        2020 release turned up under "The golden age".
+        A bound excludes a title whose value is *known* and outside it, and
+        says nothing about one whose value is unknown. The filtering is the
+        `any` list's job: a 2020 release stopped turning up under "The golden
+        age" once era membership had to be positively evidenced (a decade
+        facet derived from the year) rather than merely not contradicted.
+        Doing it with the bound instead threw away every award entry at once,
+        because the award corpus carries no runtime at all -- which is what
+        emptied "Has a real plot".
         """
 
         present = {normalise_value(facet.value) for facet in facets}
@@ -107,16 +112,16 @@ class Intent:
 
             reasons.append(key)
 
-        if self.min_runtime is not None and (runtime or 0) < self.min_runtime:
+        if self.min_runtime is not None and runtime is not None and runtime < self.min_runtime:
             return None
 
-        if self.max_runtime is not None and (runtime is None or runtime > self.max_runtime):
+        if self.max_runtime is not None and runtime is not None and runtime > self.max_runtime:
             return None
 
-        if self.min_year is not None and (year or 0) < self.min_year:
+        if self.min_year is not None and year is not None and year < self.min_year:
             return None
 
-        if self.max_year is not None and (year is None or year > self.max_year):
+        if self.max_year is not None and year is not None and year > self.max_year:
             return None
 
         hits = [key for key in self.any if _present(key, present)]
@@ -169,14 +174,21 @@ DEFAULT_INTENTS: list[Intent] = [
             "scenes. Runtime is part of the definition: nothing under 80 "
             "minutes sustains a plot."
         ),
+        # "Classic Plot" and "Feature" are Adult Empire's own categories and
+        # carry most of this rail; "drama", "parody" and "film" come from
+        # award category names. Both are real editorial statements about the
+        # title, which is why this does not need a keyword search over
+        # descriptions.
         any=[
+            "Classic Plot",
+            "Feature",
             "Themes:3rd Person Narrative",
             "Themes:Parody",
             "narrative",
             "character",
             "story",
             "drama",
-            "feature",
+            "film",
         ],
         none=["Themes:Amateur", "Themes:Casting", "gonzo", "compilation"],
         min_runtime=80,
@@ -189,7 +201,15 @@ DEFAULT_INTENTS: list[Intent] = [
             "Warm rather than performative, and nothing built on coercion or "
             "a power imbalance."
         ),
-        any=["Moods:Passion", "Moods:Romance", "Moods:Relaxed", "Moods:Playful", "sensual"],
+        any=[
+            "Moods:Passion",
+            "Moods:Romance",
+            "Moods:Relaxed",
+            "Moods:Playful",
+            "Romance",
+            "Couples",
+            "sensual",
+        ],
         none=[
             "Moods:Brutal",
             "Moods:Aggressive",
@@ -214,6 +234,9 @@ DEFAULT_INTENTS: list[Intent] = [
             "Locations:Poolside",
             "Locations:Garden",
             "Locations:Balcony",
+            "Outdoors",
+            "Beach",
+            "Public Sex",
         ],
     ),
     Intent(
@@ -222,12 +245,20 @@ DEFAULT_INTENTS: list[Intent] = [
         description="Cinematography and mood carrying as much weight as the sex.",
         any=["Moods:Artistic", "Moods:Sultry", "Moods:Sunlit", "Moods:Night", "artistic"],
         none=["Themes:Amateur"],
+        # Scenes only, and this is a statement about the *sources*, not a
+        # preference. StashDB has `Moods:Artistic`; the movie corpus has
+        # nothing equivalent -- Adult Empire publishes no such category and no
+        # AVN category in the corpus names cinematography, screenplay or
+        # direction. Listing "movies" here would produce a row filled by
+        # whatever loosely-related category came closest, which is the kind of
+        # confident wrong answer the whole engine is built to avoid.
+        engines=["scenes"],
     ),
     Intent(
         name="comedy",
         label="Funny",
         description="Parody and comedy -- the genre with the most award history behind it.",
-        any=["Themes:Parody", "Themes:Comedy", "comedy", "parody"],
+        any=["Themes:Parody", "Themes:Comedy", "Parody", "Comedy", "comedy", "parody"],
         engines=["movies"],
     ),
     Intent(
@@ -237,7 +268,20 @@ DEFAULT_INTENTS: list[Intent] = [
             "The 1970s and 1980s feature era, when these were shot on film and "
             "released in cinemas."
         ),
-        any=["Themes:1970s", "Themes:1980s", "vintage", "classic"],
+        # The decade facets are derived from the release year (see
+        # `engine.decade_facet`), so era membership is positively evidenced
+        # rather than assumed from a missing year.
+        any=[
+            "Themes:1970s",
+            "Themes:1980s",
+            "1970s",
+            "1980s",
+            "Classic",
+            "Classic Plot",
+            "Vintage Porn",
+            "vintage",
+            "classic",
+        ],
         max_year=1989,
         engines=["movies"],
     ),

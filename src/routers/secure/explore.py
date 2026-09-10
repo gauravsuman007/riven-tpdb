@@ -14,7 +14,7 @@ inspectable expressions precisely so it can be argued with.
 from dataclasses import asdict
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
 
 from program.services.recommendations.engine import (
@@ -22,6 +22,10 @@ from program.services.recommendations.engine import (
     movies,
     scenes,
     studios,
+)
+from program.services.recommendations.adultempire_categories import (
+    DEFAULT_CATEGORIES,
+    category_index,
 )
 from program.services.recommendations.facets import vocabulary
 from program.services.recommendations.intents import library
@@ -91,6 +95,16 @@ class ExploreRows(BaseModel):
     notices: list[str]
 
 
+class CategoryIndexStatus(BaseModel):
+    """The movie corpus's genre index, and whether it has been built."""
+
+    built: bool
+    running: bool
+    titles: int
+    categories: list[str]
+    fetched_at: float | None
+
+
 class VocabularyStatus(BaseModel):
     ingested: bool
     tags: int
@@ -142,6 +156,40 @@ def ingest_vocabulary(force: Annotated[bool, Query()] = False) -> VocabularyStat
     vocabulary.ingest(force=force)
 
     return vocabulary_status()
+
+
+@router.get("/categories", operation_id="get_category_index")
+def category_status() -> CategoryIndexStatus:
+    return CategoryIndexStatus(
+        built=not category_index.empty,
+        running=category_index.running,
+        titles=len(category_index.index),
+        categories=list(DEFAULT_CATEGORIES),
+        fetched_at=category_index.fetched_at or None,
+    )
+
+
+@router.post("/categories/sync", operation_id="sync_category_index")
+def sync_categories(
+    background: BackgroundTasks,
+    pages_per_category: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> CategoryIndexStatus:
+    """Index Adult Empire's categories so movie entries gain genres.
+
+    A product page carries length, year, studio and cast and **no genre at
+    all**, so this reads the other direction: the categories an intent asks
+    about, and which titles are listed under them. One request per page at the
+    storefront's one-per-second courtesy delay, so a default run is a few
+    minutes. It therefore runs in the background and this returns immediately
+    with the *current* status -- holding an HTTP response open for four
+    minutes would time out at the proxy long before the crawl finished, and
+    the caller would be told it failed while it was still working. Poll
+    ``GET /explore/categories`` for progress.
+    """
+
+    background.add_task(category_index.sync, pages_per_category=pages_per_category)
+
+    return category_status()
 
 
 @router.get("/recommendations", operation_id="get_recommendations")
