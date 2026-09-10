@@ -125,9 +125,16 @@ alias.
 `DEFAULT_INTENTS`; an operator's `intents.json` in the data dir merges **per
 intent by name**, so retuning one does not fork the rest.
 
-- `Intent.evaluate` returns `None` for *disqualified* and `(0.0, [])` for
-  "eligible, nothing pulled". Collapsing those would fill a rail with exactly
-  the titles the intent rules out as soon as nothing else scored.
+- **`Intent.evaluate` returns `None` when nothing in `any` matched, not 0.0.**
+  It briefly did the latter, on the theory that "eligible but unwanted" was a
+  useful fallback. Measured on the live catalogue with the vocabulary not yet
+  ingested, four intents produced rails byte-identical to the unfiltered one,
+  because every title was eligible for all of them. A row labelled "Outdoors"
+  that is really "everything" is worse than no row -- and the router already
+  drops empty rails.
+- **A declared bound requires the fact it bounds to be known.** An unknown year
+  is not evidence of falling inside a year range; that is how a 2020 release
+  turned up under "The golden age".
 - Every intent declares which `engines` it suits. "Real plot" is `movies` only:
   StashDB's corpus is modern amateur/gonzo scenes, so asking it that question
   returns confident nonsense.

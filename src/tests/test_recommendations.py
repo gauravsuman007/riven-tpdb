@@ -224,6 +224,30 @@ def test_runtime_and_year_bounds_disqualify():
     assert intent.evaluate(_facets("drama"), runtime=95, year=1980) is not None
 
 
+def test_a_title_matching_nothing_the_intent_asks_for_is_excluded():
+    """Not a weak match -- no match.
+
+    Scoring it zero and keeping it is what made four rails come back
+    byte-identical to the unfiltered one on the live catalogue: every title
+    was "eligible" for every intent. A row labelled "Outdoors" that is really
+    "everything" is worse than no row.
+    """
+
+    intent = Intent(name="t", label="t", any=["parody"])
+
+    assert intent.evaluate(_facets("drama")) is None
+
+
+def test_a_bound_requires_the_fact_it_bounds_to_be_known():
+    """An unknown year is not evidence of falling inside a year range -- that
+    is how a 2020 release turned up under "The golden age"."""
+
+    intent = Intent(name="t", label="t", any=["drama"], max_year=1989)
+
+    assert intent.evaluate(_facets("drama"), year=None) is None
+    assert intent.evaluate(_facets("drama"), year=1980) is not None
+
+
 def test_score_is_the_share_of_any_terms_matched():
     intent = Intent(name="t", label="t", any=["a", "b", "c", "d"])
     verdict = intent.evaluate(_facets("a", "b"))

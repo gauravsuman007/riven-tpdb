@@ -77,11 +77,20 @@ class Intent:
     ) -> tuple[float, list[str]] | None:
         """Score a title against this intent, with its reasons.
 
-        Returns ``None`` when the title is *disqualified* -- a ``none`` hit, a
-        missing ``all`` term, or a bound it falls outside. That is distinct
-        from scoring 0.0, which means "eligible, nothing pulled for it", and
-        the two must not be collapsed: a bare list would otherwise fill with
-        titles the intent explicitly rules out.
+        Returns ``None`` when the title does not belong in this intent's
+        results at all: a ``none`` hit, a missing ``all`` term, a bound it
+        falls outside, or simply nothing that the ``any`` list pulled on.
+
+        That last case used to score 0.0 and stay in, on the theory that
+        "eligible but unwanted" was worth keeping as a fallback. Measured
+        against the live catalogue it was not: with the tag vocabulary not yet
+        ingested, four intents produced rails byte-identical to the unfiltered
+        one, because every title was eligible for all of them. A row labelled
+        "Outdoors" that is really "everything" is worse than no row.
+
+        A bound also requires the fact it bounds to be *known*. An unknown
+        year is not evidence of falling inside a year range -- that is how a
+        2020 release turned up under "The golden age".
         """
 
         present = {normalise_value(facet.value) for facet in facets}
@@ -101,23 +110,22 @@ class Intent:
         if self.min_runtime is not None and (runtime or 0) < self.min_runtime:
             return None
 
-        if self.max_runtime is not None and runtime is not None and runtime > self.max_runtime:
+        if self.max_runtime is not None and (runtime is None or runtime > self.max_runtime):
             return None
 
         if self.min_year is not None and (year or 0) < self.min_year:
             return None
 
-        if self.max_year is not None and year is not None and year > self.max_year:
+        if self.max_year is not None and (year is None or year > self.max_year):
             return None
 
         hits = [key for key in self.any if _present(key, present)]
         reasons.extend(hits)
 
-        if self.any and not hits and not self.all:
-            # Nothing pulled and nothing was required: eligible but unwanted.
-            # Scored zero rather than rejected, so a rail can still fall back
-            # to it when an intent is too narrow for the corpus on hand.
-            return 0.0, reasons
+        if self.any and not hits:
+            # Nothing this intent asks for is present. Not a weak match -- no
+            # match, and an intent's rail must not contain it.
+            return None
 
         score = len(hits) / len(self.any) if self.any else 1.0
 
