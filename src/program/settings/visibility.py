@@ -27,9 +27,26 @@ HIDDEN_SECTIONS: dict[str, frozenset[str]] = {
     ),
     # Stremio-style scrapers: they look content up by IMDb id, so they can only
     # ever return nothing here.
+    #
+    # `dubbed_anime_only` is upstream's anime filter. There is no anime in an
+    # adult-only library, so the toggle can only ever do harm: turning it on
+    # restricts every scrape to a language tag none of these releases carry.
     "scraping": frozenset(
-        {"torrentio", "orionoid", "mediafusion", "comet", "rarbg", "aiostreams"}
+        {
+            "torrentio", "orionoid", "mediafusion", "comet", "rarbg",
+            "aiostreams", "dubbed_anime_only",
+        }
     ),
+    # Upstream's other two media servers. This fork's library is a debrid VFS,
+    # which Plex and Emby cannot scan the way Jellyfin can -- and the fork's
+    # own answer to that problem is `jellyfin_server`, on the same tab, where
+    # Riven *is* the server. Leaving all three visible presented two dead
+    # options beside the one that works.
+    "updaters": frozenset({"plex", "emby"}),
+    # Upstream ships movie/show/season/episode here. This fork only ever
+    # produces movies, so the list is a choice between one real value and
+    # three that match nothing.
+    "notifications": frozenset({"on_item_type"}),
     # Provider wiring, not a user setting. `tailscale.auth_key` is the field
     # that matters and it already has a dedicated write path: the VPN tab's
     # control panel saves it as a side effect of clicking "Connect with key".

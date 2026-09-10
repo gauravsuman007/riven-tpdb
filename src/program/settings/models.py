@@ -1420,28 +1420,34 @@ class MetadataModel(Observable):
     rather than counted as a failed attempt.
     """
 
-    providers: list[str] = Field(
+    # Typed as a Literal rather than a bare str so the settings form renders a
+    # provider picker instead of a free-text list. The order of the array is
+    # the priority order, and the form's array controls are what the user
+    # reorders it with -- a plain `list[str]` gave them a text box per row and
+    # no indication of which names are valid.
+    providers: list[Literal["tpdb", "stashdb"]] = Field(
         default_factory=lambda: ["tpdb", "stashdb"],
         description=(
             "Metadata providers in priority order. The first is primary; the "
             "rest are consulted in turn when it finds no acceptable match or "
-            "cannot be reached. Known values: tpdb, stashdb. Remove one to "
-            "stop using it, or disable it in its own section."
+            "cannot be reached. Remove one to stop using it, or turn it off "
+            "in its own section below."
         ),
     )
 
-    @field_validator("providers")
+    # `mode="before"` matters: the Literal above would *reject* an unknown
+    # name outright, and a settings.json carrying one would leave the app
+    # refusing to start. Cleaning the list first turns that into the intended
+    # behaviour -- a typo costs that one provider, not the whole load.
+    @field_validator("providers", mode="before")
     @classmethod
-    def _known_providers(cls, value: list[str]) -> list[str]:
-        known = {"tpdb", "stashdb"}
+    def _known_providers(cls, value: Any) -> list[str]:
+        known = ("tpdb", "stashdb")
         cleaned = list[str]()
 
-        for name in value:
+        for name in value if isinstance(value, (list, tuple)) else []:
             key = str(name).strip().lower()
 
-            # Dropped rather than rejected. A typo in this list should cost
-            # that one provider, not refuse to load settings at all and leave
-            # the whole app down.
             if key in known and key not in cleaned:
                 cleaned.append(key)
 
