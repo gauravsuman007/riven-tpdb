@@ -222,8 +222,50 @@ class RatingBackfill:
             self.progress.running = False
             self.progress.finished_at = time.time()
 
+    @staticmethod
+    def _propagate(session) -> int:
+        """Push ratings entries already have onto the items they matched.
+
+        `_apply` only touches a MediaItem when it writes a rating in that same
+        run, so an entry rated before this service existed -- or by any other
+        path -- left its library item showing nothing. One pass over the join
+        rather than a special case inside the crawl, because the gap has
+        nothing to do with crawling.
+        """
+
+        rows = (
+            session.execute(
+                select(CollectionEntry).where(
+                    CollectionEntry.rating.isnot(None),
+                    CollectionEntry.media_item_id.isnot(None),
+                )
+            )
+            .unique()
+            .scalars()
+            .all()
+        )
+
+        filled = 0
+
+        for entry in rows:
+            item = entry.media_item
+
+            # `not item.rating` and not `is None`: TPDB writes a literal 0,
+            # which is not a score and must not block a real one.
+            if item is not None and not item.rating:
+                item.rating = entry.rating
+                filled += 1
+
+        if filled:
+            logger.info(f"Copied {filled} entry ratings onto their library items.")
+
+        return filled
+
     def _sync(self, limit: int, force: bool = False) -> dict[str, object]:
         with db_session() as session:
+            self._propagate(session)
+            session.commit()
+
             # Filtered in Python, not SQL: the set of already-checked products
             # lives in a file, and an `IN` clause over a few thousand ids to
             # avoid reading a few thousand rows is not a trade worth making.

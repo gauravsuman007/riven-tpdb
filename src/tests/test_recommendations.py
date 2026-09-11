@@ -749,6 +749,40 @@ def test_external_id_answers_when_there_is_no_matched_product(tmp_path):
     )
 
 
+
+def test_propagation_fills_a_library_item_from_an_already_rated_entry(tmp_path):
+    # `_apply` only touches an item when it writes a rating in that same run,
+    # so an entry rated before this service existed left its library item
+    # blank. Four real items were in that state.
+    item = SimpleNamespace(rating=0)
+    entry = SimpleNamespace(rating=4.69, media_item=item)
+    session = SimpleNamespace(
+        execute=lambda *a, **k: SimpleNamespace(
+            unique=lambda: SimpleNamespace(
+                scalars=lambda: SimpleNamespace(all=lambda: [entry])
+            )
+        )
+    )
+
+    assert RatingBackfill._propagate(session) == 1
+    assert item.rating == 4.69
+
+
+def test_propagation_leaves_a_real_item_rating_alone(tmp_path):
+    item = SimpleNamespace(rating=3.5)
+    entry = SimpleNamespace(rating=4.69, media_item=item)
+    session = SimpleNamespace(
+        execute=lambda *a, **k: SimpleNamespace(
+            unique=lambda: SimpleNamespace(
+                scalars=lambda: SimpleNamespace(all=lambda: [entry])
+            )
+        )
+    )
+
+    assert RatingBackfill._propagate(session) == 0
+    assert item.rating == 3.5
+
+
 import tempfile  # noqa: E402 - only the harness below needs it
 
 for _name, _fn in sorted(list(globals().items())):
