@@ -133,6 +133,7 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
         item: MediaItem,
         verbose_logging: bool = True,
         manual: bool = False,
+        include_filtered: bool = False,
     ) -> dict[str, Stream]:
         """Scrape an item.
 
@@ -140,6 +141,8 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
             item: The media item to scrape.
             verbose_logging: Whether to log verbose messages.
             manual: If True, bypass content filters for manual scraping.
+            include_filtered: Also return the releases the adult matcher
+                rejected, flagged and scored -- see `parse_results`.
         """
 
         results = dict[str, ScrapeResult]()
@@ -188,7 +191,9 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
             logger.log("NOT_FOUND", f"No streams to process for {item.log_string}")
             return {}
 
-        sorted_streams = parse_results(item, results, manual=manual)
+        sorted_streams = parse_results(
+            item, results, manual=manual, include_filtered=include_filtered
+        )
 
         if sorted_streams and (verbose_logging and settings_manager.settings.log_level):
             top_results = list(sorted_streams.values())[:10]
@@ -208,12 +213,15 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
         self,
         item: MediaItem,
         manual: bool = False,
+        include_filtered: bool = False,
     ) -> Generator[tuple[str, dict[str, Stream], str | None], None, None]:
         """Scrape an item and yield results incrementally as each scraper finishes.
 
         Args:
             item: The media item to scrape.
             manual: If True, bypass content filters for manual scraping.
+            include_filtered: Also yield the releases the adult matcher
+                rejected, flagged and scored -- see `parse_results`.
 
         Yields:
             Tuples of (service_name, parsed_streams_dict, error) as each
@@ -275,6 +283,7 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
                             item,
                             all_raw_results,
                             manual=manual,
+                            include_filtered=include_filtered,
                         )
 
                         yield (service_name, parsed_streams, None)

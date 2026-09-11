@@ -874,6 +874,100 @@ stack is a full checkout at `/home/hellonfire/Server/riven-tpdb`.
   the token means a playlist that opens and whose every track 401s. `.m3u`
   earns its place in the Android chooser exactly the way `.mp4` does.
 
+## The request button: what the entry matcher was getting wrong
+Audited by resolving 50 matched `CollectionEntry` rows against the live TPDB
+record their `tpdb_id` names (2026-09-11). 47 of 50 landed on the right title.
+The three that did not were three separate holes, all in
+`program/services/awards/matching.py`, and all now closed and covered by
+`src/tests/test_awards.py`:
+
+- **The season was never read.** "Girlcore: Season 1" matched "Girlcore Season
+  Two: Volume 1" at a score of 9.0. Both titles contain a 1 -- the entry's
+  SEASON and the candidate's VOLUME -- and the volume check compared those two
+  numbers and found them equal. `extract_season` is now a separate axis, and it
+  reads number words ("Season Two") because series spell seasons out and number
+  volumes in digits.
+- **An unnumbered entry matched any instalment.** The volume check only fired
+  when BOTH sides named a number, so "Black Ass Addiction" agreed with "Black
+  Ass Addiction 5". Whether such a pair was accepted came down to title LENGTH:
+  the identical shape was rejected for "Trans-Visions" (2 tokens) and accepted
+  for this one (3), because the extra token moved `title_symmetry` either side
+  of 0.7. Now `instalment_only_on_candidate` -- but volume 1 is excluded, since
+  a first instalment is routinely written both ways.
+- **Title plus year alone was a match.** The weights are tuned so a title tops
+  out at 5.0 against `ACCEPT_SCORE = 6.0`, but the year bonus is worth exactly
+  the missing 1.0 -- so an entry corroborated by nothing but a plausible date
+  landed precisely ON the bar. That is how "Big Wet Asses" became "Big Black
+  Wet Asses". With no studio and no cast agreeing, the titles must now be
+  token-identical.
+
+TRAP when tuning any of this: **most correct matches score exactly 6.0**, with
+no studio and no cast, because catalogue entries usually carry neither. So
+raising `ACCEPT_SCORE`, or demanding studio-or-cast outright, trades three wrong
+matches for dozens of missing ones. The gates above were chosen because,
+measured over those 50, they reject only the wrong ones.
+
+Known and NOT fixed, because both are genuinely ambiguous rather than wrong:
+an AVN performer-category entry whose title is a bare performer name ("Abella
+Danger" -> "Danger: Abella"), and word-vs-digit tokens ("Season Two" and
+"Season 2" are 67% alike, so that pair fails the title gate).
+
+## Seeing what a manual scrape filtered out
+`GET /api/v1/scrape?include_filtered=true` also returns the releases the adult
+matcher REJECTED, each flagged `filtered` with `filter_reason` (the evidence
+verbatim) and ranked on the SAME scale as the accepted ones, so a close call
+reads as one. The Settings-free toggle is on the manual scrape results
+toolbar.
+
+- Worth having because `manual=True` already bypasses every other filter, so
+  `_filter_adult_torrents` is the only thing left that can drop a candidate --
+  and an empty pick list gave no way to tell "nothing was found" from
+  "seventeen were found and discarded".
+- They are still PICKABLE. The point is to let someone overrule a filter they
+  can see, not to hide it better. They sort below every accepted release
+  (`byRankAcceptedFirst`), so they can never be chosen by accident.
+- TRAP: `Stream.filtered` / `Stream.filter_reason` are **`ClassVar`**, not
+  columns. A bare `filtered: bool` annotation on a declarative class is read as
+  a column declaration and raises `MappedAnnotationError` at import time -- the
+  whole app fails to start, not just the scrape path.
+- `_filter_adult_torrents` now returns three values (kept, evidence, dropped).
+- Toggling the checkbox RE-SCRAPES. The rejected set is built server-side and
+  was never sent, so there is nothing on screen to filter.
+
+## Multi-part playback: two bugs, both outside the playlist code
+The playlist feature below was correct; these were URLs that forgot the part.
+
+- **The HTML player played part 0 for every track.** Every stream URL in
+  `video-player.svelte` carries `partQuery` except the CDN hand-off, which
+  fetched `/api/stream/{id}/direct` bare -- and the backend defaults a missing
+  `part` to 0. So a six-scene release offered six entries and played the first
+  one six times. Only when direct play was available, which is why it looked
+  like the player ignoring the track list. Verified on item 862 (Half His Age):
+  `/stream/direct/862?part=N` returns a different CDN URL per part, and
+  `playback_info` a different duration and size, so the backend was never at
+  fault.
+- **The external player got one file.** Both native bridges
+  (`openInExternalPlayer`, `playDirect`) address a video by Jellyfin ID, and an
+  id names ONE stream. The playlist URL was built and fetched, then discarded
+  in favour of the id. `openInExternal()` now drops the id when
+  `external_url` reports `parts > 1`, so the hand-off goes over as
+  `/Videos/{guid}/playlist.m3u` -- the only form that can carry a whole
+  release.
+
+## The lock screen hid the way out of the app
+`html[data-app-locked] body>*` hid `#mux-launcher`, the back-to-apps button the
+multiplexer injects into every page it proxies -- so someone who could not
+remember the PIN was stranded on a television with no keyboard and no other
+control. "Sign out instead" is not the same thing: it ends the session rather
+than switching apps.
+
+- The cover stylesheet in `hooks.server.ts` now exempts `#mux-launcher`, and
+  the lock overlay drops to `z-index: 2147483646` so the launcher (2147483647
+  while locked) is above it. Equal values would leave the winner to DOM order,
+  and both elements are appended to `<body>` by scripts that race.
+- It gives nothing away: the button navigates AWAY from the locked app, shows
+  no content, and coming back re-locks because the stamp it reads is stale.
+
 ## Two silent failures in the TPDB manual match picker
 Both had the same symptom -- "no results for anything" -- and either alone
 was enough:

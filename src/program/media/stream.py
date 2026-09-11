@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import sqlalchemy
 from RTN import Torrent
@@ -98,6 +98,17 @@ class Stream(Base):
         Index("ix_stream_resolution", "resolution"),
     )
 
+    #: Transient view state, not persisted. True only for a release returned
+    #: by a manual scrape that asked to see what the adult matcher rejected.
+    #: A stream that reached the database was accepted, so False is right for
+    #: every loaded row.
+    #:
+    #: ClassVar, and it has to be: a bare `filtered: bool` annotation on a
+    #: declarative class is read as a column declaration and raises at import
+    #: time. The instance attribute set in `__init__` shadows it.
+    filtered: ClassVar[bool] = False
+    filter_reason: ClassVar[str | None] = None
+
     def __init__(self, torrent: Torrent, result: "ScrapeResult | None" = None):
         self.raw_title = torrent.raw_title
         self.infohash = torrent.infohash
@@ -110,6 +121,14 @@ class Stream(Base):
         )
         self.is_cached = False
         # is_cached is handled by its default value in the mapped_column definition
+
+        # Transient, never columns: a candidate the adult matcher turned down,
+        # shown only when a manual scrape asked to see the filtered releases.
+        # Defaults set here rather than as class attributes so an instance
+        # loaded from the database answers them too -- a persisted stream was
+        # by definition not filtered out.
+        self.filtered = False
+        self.filter_reason = None
 
         # `result` is optional so existing callers that only have a ranked
         # Torrent keep working; they simply get a stream with no indexer

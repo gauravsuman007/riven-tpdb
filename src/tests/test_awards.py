@@ -40,6 +40,7 @@ avn = _load("avn_under_test", AWARDS / "avn.py")
 
 # matching.py imports program.utils.text_matching, which is stdlib-only.
 matching = _load("avn_matching_under_test", AWARDS / "matching.py")
+text_matching = sys.modules["program.utils.text_matching"]
 
 PASSED = []
 FAILED = []
@@ -518,6 +519,157 @@ def test_a_trailing_italic_studio_still_wins_over_the_italic_title():
 
     assert entries[0].title == "Strip", entries[0].title
     assert entries[0].studio == "Dorcel/Pulse", entries[0].studio
+
+
+# ---------------------------------------------------------------------------
+# What the request button actually pulls in.
+#
+# These three were measured, not imagined: a sample of 50 matched catalogue
+# entries was resolved against the live TPDB records their ids name, and these
+# are the three that came back as a different film. Each is a distinct hole,
+# and each stayed open because the entry and the candidate agreed on every
+# signal the matcher was reading.
+# ---------------------------------------------------------------------------
+
+
+def _entry_candidate(entry_title, tpdb_title, *, studio=None, site=None, year=None, date=None):
+    return matching.evaluate_candidate(
+        entry_title=entry_title,
+        entry_studio=studio,
+        entry_year=year,
+        entry_performers=None,
+        tpdb_id="x",
+        tpdb_kind="movie",
+        tpdb_title=tpdb_title,
+        tpdb_site=site,
+        tpdb_date=date,
+        tpdb_performers=None,
+    )
+
+
+def test_a_season_that_disagrees_is_a_different_work():
+    """The live failure: "Season 1" was handed "Season Two: Volume 1".
+
+    Both titles contain a 1, and until the season was read separately that 1
+    was the entry's season on one side and the candidate's volume on the
+    other -- so the volume check saw two 1s and agreed. Score was 9.0.
+    """
+
+    match = _entry_candidate(
+        "Girlcore: Season 1",
+        "Girlcore Season Two: Volume 1",
+        studio="Girlcore/Adult Time/Pulse",
+        site="Adult Time",
+        year=2020,
+        date="2020-01-28",
+    )
+
+    assert match.season_conflict, match.reasons
+    assert not match.accepted, match.score
+
+
+def test_a_season_written_as_a_word_still_counts():
+    """Series spell seasons out; volumes are written in digits."""
+
+    assert text_matching.extract_season("Girlcore Season Two: Volume 1") == 2
+    assert text_matching.extract_season("Girlcore: Season 1") == 1
+    assert text_matching.extract_season("Anal Savages 11") is None
+
+
+def test_the_same_season_is_not_a_conflict():
+    """A season stated both ways is the same season.
+
+    Only the conflict flag is asserted. Whether this pair is ACCEPTED is a
+    separate question the title gate answers, and it says no -- "two" and "2"
+    are different tokens, so the titles look 67% alike. That is a known and
+    unrelated limit; what matters here is that the season check does not
+    invent a disagreement on top of it.
+    """
+
+    match = _entry_candidate(
+        "Girlcore Season Two",
+        "Girlcore Season 2",
+        studio="Adult Time",
+        site="Adult Time",
+        year=2021,
+        date="2020-01-28",
+    )
+
+    assert not match.season_conflict, match.reasons
+    assert text_matching.extract_season("Girlcore Season Two") == 2
+    assert text_matching.extract_season("Girlcore Season 2") == 2
+
+
+def test_a_trailing_season_number_is_not_a_volume_number():
+    """"Girlcore Season 2" ends in a number that is not an instalment.
+
+    Without this, the same work written "Season Two" named no trailing number
+    at all, so one spelling claimed volume 2 and the other claimed none --
+    and the pair conflicted with itself.
+    """
+
+    assert text_matching.extract_volume("Girlcore Season 2") is None
+    assert text_matching.extract_volume("Anal Savages 11") == 11
+
+
+def test_an_unnumbered_entry_is_not_a_later_instalment():
+    """"Black Ass Addiction" is not "Black Ass Addiction 5".
+
+    The volume check only fired when BOTH sides named a number, so an entry
+    that named none agreed with every instalment of the series. Whether it
+    was accepted then came down to title length -- the same shape was
+    rejected for "Trans-Visions" (two tokens) and accepted for this one
+    (three), purely because the extra token moved the symmetry either side
+    of the bar.
+    """
+
+    match = _entry_candidate("Black Ass Addiction", "Black Ass Addiction 5", year=2009, date="2009-11-09")
+
+    assert match.instalment_only_on_candidate, match.reasons
+    assert not match.accepted, match.score
+
+
+def test_a_first_instalment_is_not_an_instalment_conflict():
+    """"Vol. 1" and a bare title are routinely the same film."""
+
+    match = _entry_candidate(
+        "Sibling Seductions",
+        "Sibling Seductions Volume 1",
+        studio="Sweet Sinner",
+        site="Sweet Sinner",
+        year=2018,
+        date="2017-09-29",
+    )
+
+    assert not match.instalment_only_on_candidate, match.reasons
+
+
+def test_title_and_year_alone_do_not_make_a_match():
+    """"Big Wet Asses" is not "Big Black Wet Asses".
+
+    The weights are tuned so a title alone tops out at 5.0 against a bar of
+    6.0 -- but the year bonus is worth exactly 1.0, so a title plus a
+    plausible date landed precisely ON the bar with nothing else agreeing.
+    """
+
+    match = _entry_candidate("Big Wet Asses", "Big Black Wet Asses", year=2006, date="2006-03-15")
+
+    assert match.score >= matching.ACCEPT_SCORE, match.score
+    assert not match.accepted, "title + year cannot corroborate itself"
+
+
+def test_an_exact_title_still_matches_without_studio_or_cast():
+    """The common case must survive the gate above.
+
+    Most catalogue entries name no studio and carry no cast, and their TPDB
+    record matches token for token. Rejecting those would have traded three
+    wrong matches for dozens of missing ones.
+    """
+
+    match = _entry_candidate("Lex the Impaler 5", "Lex the Impaler 5", year=2011, date="2010-03-18")
+
+    assert match.accepted, match.reasons
+
 
 for _name, _fn in sorted(list(globals().items())):
     if _name.startswith("test_") and callable(_fn):

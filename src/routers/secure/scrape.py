@@ -73,6 +73,12 @@ class Stream(BaseModel):
     size: int | None = None
     indexer: str | None = None
     is_cached: bool = False
+    #: True for a release the adult matcher REJECTED, returned only when the
+    #: caller passed `include_filtered`. It is still pickable -- the point is
+    #: to let a person overrule a filter they can see, not to hide it better.
+    filtered: bool = False
+    #: What the matcher weighed, when it turned the release down.
+    filter_reason: str | None = None
 
 
 class ScrapeStreamEvent(BaseModel):
@@ -734,6 +740,17 @@ def scrape_item(
         int | None,
         Query(description="Maximum filesize in MB"),
     ] = None,
+    include_filtered: Annotated[
+        bool,
+        Query(
+            description=(
+                "Also return the releases the adult matcher rejected, each "
+                "flagged `filtered` with the evidence that was weighed. They "
+                "are ranked on the same scale as the accepted ones, so a "
+                "close call is visible as one."
+            )
+        ),
+    ] = False,
 ):
     """Get streams for an item. Set stream=true for SSE streaming as scrapers complete."""
 
@@ -851,7 +868,11 @@ def scrape_item(
                             service_name,
                             parsed_streams,
                             service_error,
-                        ) in scraper.scrape_streaming(target_item, manual=True):
+                        ) in scraper.scrape_streaming(
+                            target_item,
+                            manual=True,
+                            include_filtered=include_filtered,
+                        ):
                             services_completed += 1
 
                             if service_error:
@@ -885,6 +906,10 @@ def scrape_item(
                                         leechers=s.leechers,
                                         size=s.size,
                                         indexer=s.indexer,
+                                        filtered=getattr(s, "filtered", False),
+                                        filter_reason=getattr(
+                                            s, "filter_reason", None
+                                        ),
                                     )
                                     all_streams[infohash] = stream_obj
                                     new_streams[infohash] = stream_obj
@@ -947,7 +972,9 @@ def scrape_item(
 
             streams: dict[str, ItemStream] = {}
             for target_item in items_to_scrape:
-                target_streams = scraper.scrape(target_item, manual=True)
+                target_streams = scraper.scrape(
+                    target_item, manual=True, include_filtered=include_filtered
+                )
                 for infohash, item_stream in target_streams.items():
                     if infohash not in streams:
                         streams[infohash] = item_stream
@@ -969,6 +996,8 @@ def scrape_item(
                     size=s.size,
                     indexer=s.indexer,
                     is_cached=s.is_cached,
+                    filtered=getattr(s, "filtered", False),
+                    filter_reason=getattr(s, "filter_reason", None),
                 )
                 for s in streams.values()
             },

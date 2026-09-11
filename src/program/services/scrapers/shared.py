@@ -113,6 +113,7 @@ def parse_results(
     results: dict[str, ScrapeResult],
     log_msg: bool = True,
     manual: bool = False,
+    include_filtered: bool = False,
 ) -> dict[str, Stream]:
     """Parse the results from the scrapers into Torrent objects.
 
@@ -120,6 +121,14 @@ def parse_results(
         item: The media item to parse results for.
         results: Dict mapping infohash to what the indexer reported.
         manual: If True, bypass content filters (for manual scraping).
+        include_filtered: Also return the releases the adult matcher REJECTED,
+            each carrying `filtered=True` and the evidence that was weighed.
+            `manual` already bypasses every other filter, so the adult matcher
+            is the only thing left that can silently drop a candidate -- and a
+            person looking at an empty pick list has no way to tell "nothing
+            was found" from "seventeen were found and discarded". They sort
+            below every accepted release and are never auto-selected; this
+            only makes them visible.
     """
 
     torrents = set[Torrent]()
@@ -339,10 +348,14 @@ def parse_results(
 
         evidence_by_hash = dict[str, MatchEvidence]()
 
-        if adult_item:
-            torrents, evidence_by_hash = _filter_adult_torrents(item, torrents)
+        filtered_out = set[Torrent]()
 
-            if not torrents:
+        if adult_item:
+            torrents, evidence_by_hash, filtered_out = _filter_adult_torrents(
+                item, torrents
+            )
+
+            if not torrents and not (include_filtered and filtered_out):
                 logger.debug(
                     f"No release matched {item.log_string} on site, cast or date"
                 )
@@ -387,6 +400,36 @@ def parse_results(
         torrent_stream_map = {
             torrent.infohash.lower(): _stream(torrent) for torrent in ordered
         }
+
+        if include_filtered and filtered_out:
+            # Scored the same way as the accepted ones, so the two are directly
+            # comparable: a rejected release showing rank 480 against an
+            # accepted 520 says the call was close, which is the whole reason
+            # to show them. `filtered` is a transient attribute, never a
+            # column -- these are candidates, not something to persist.
+            rejected = sorted(
+                filtered_out,
+                key=lambda t: _rejected_evidence(item, t).score,
+                reverse=True,
+            )
+
+            for torrent in rejected:
+                infohash = torrent.infohash.lower()
+
+                if infohash in torrent_stream_map:
+                    continue
+
+                evidence = _rejected_evidence(item, torrent)
+                stream = Stream(torrent, _reported(torrent.infohash))
+                stream.rank = int(round(evidence.score * 100))
+                stream.filtered = True
+                stream.filter_reason = (
+                    ", ".join(evidence.reasons)
+                    if evidence.reasons
+                    else "no corroborating site, cast or date"
+                )
+
+                torrent_stream_map[infohash] = stream
 
         logger.debug(
             f"Kept {len(torrent_stream_map)} streams for {item.log_string} after processing bucket limit"
@@ -437,12 +480,28 @@ def _match_evidence(item: MediaItem, torrent: Torrent) -> MatchEvidence:
     )
 
 
+def _rejected_evidence(item: MediaItem, torrent: Torrent) -> MatchEvidence:
+    """Evidence for a release the matcher turned down.
+
+    Recomputed rather than carried along, because the rejected set is only
+    ever walked when someone asked to see it -- which is rare, and costs
+    nothing on the path that does not.
+    """
+
+    return _match_evidence(item, torrent)
+
+
 def _filter_adult_torrents(
     item: MediaItem, torrents: set[Torrent]
-) -> tuple[set[Torrent], dict[str, MatchEvidence]]:
-    """Keep only releases with corroborated evidence of being this title."""
+) -> tuple[set[Torrent], dict[str, MatchEvidence], set[Torrent]]:
+    """Keep only releases with corroborated evidence of being this title.
+
+    Returns the kept set, the evidence behind each, and the set that was
+    turned down -- the last so a manual scrape can show its work.
+    """
 
     kept = set[Torrent]()
+    dropped_torrents = set[Torrent]()
     evidence_by_hash = dict[str, MatchEvidence]()
 
     for torrent in torrents:
@@ -452,18 +511,17 @@ def _filter_adult_torrents(
             kept.add(torrent)
             evidence_by_hash[torrent.infohash.lower()] = evidence
         else:
+            dropped_torrents.add(torrent)
             logger.trace(
                 f"Rejecting unrelated release for {item.log_string}: {torrent.raw_title}"
             )
 
-    dropped = len(torrents) - len(kept)
-
-    if dropped:
+    if dropped_torrents:
         logger.debug(
-            f"Dropped {dropped} unrelated release(s) for {item.log_string}"
+            f"Dropped {len(dropped_torrents)} unrelated release(s) for {item.log_string}"
         )
 
-    return kept, evidence_by_hash
+    return kept, evidence_by_hash, dropped_torrents
 
 
 def _debrid_reachable(privacy: str | None) -> bool:

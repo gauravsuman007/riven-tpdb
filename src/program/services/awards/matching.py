@@ -13,7 +13,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from program.utils.text_matching import extract_volume, normalise, tokenise
+from program.utils.text_matching import (
+    extract_season,
+    extract_volume,
+    normalise,
+    tokenise,
+)
 
 # An entry must clear this to be accepted. Tuned so that a title match alone is
 # never enough: the maximum from title similarity is 5.0.
@@ -99,6 +104,12 @@ class Match:
     year_delta: int | None = None
     performers: int = 0
     volume_conflict: bool = False
+    #: The candidate names a season the entry does not. A separate axis from
+    #: the volume: "Girlcore Season Two: Volume 1" states both.
+    season_conflict: bool = False
+    #: The entry names no instalment and the candidate claims a later one.
+    #: "Black Ass Addiction" is not "Black Ass Addiction 5".
+    instalment_only_on_candidate: bool = False
     reasons: list[str] = field(default_factory=list)
 
     @property
@@ -110,7 +121,7 @@ class Match:
         performers agreeing on the same title is close to conclusive.
         """
 
-        if self.volume_conflict:
+        if self.volume_conflict or self.season_conflict:
             return 0.0
 
         total = self.title_ratio * 5.0
@@ -134,12 +145,42 @@ class Match:
         if self.volume_conflict or self.title_ratio < MIN_TITLE_RATIO:
             return False
 
+        # A season that disagrees is a different work as surely as a volume
+        # that does, and until this was read the two were not even compared:
+        # "Girlcore: Season 1" was handed "Girlcore Season Two: Volume 1" at a
+        # score of 9.0, because the only number either title had in common --
+        # the 1 -- was the entry's season and the candidate's volume.
+        if self.season_conflict:
+            return False
+
+        # The entry names no instalment and the candidate claims a later one.
+        # Saying nothing is not the same as saying "5", and the candidate is
+        # the side making a claim the entry never made. Volume 1 is excluded
+        # deliberately: a first instalment is routinely written both ways.
+        if self.instalment_only_on_candidate:
+            return False
+
         # A gate rather than a score contribution, and that is the point.
         # Studio, cast and year together are worth 5.5 points, so whenever a
         # film and its spin-off share all three -- which is the normal case,
         # not an unlucky one -- no amount of score weighting lets the title
         # decide. It has to be able to veto.
         if self.title_symmetry < MIN_TITLE_SYMMETRY:
+            return False
+
+        # Title plus year, and nothing else, is not a match.
+        #
+        # The weights say a title alone can never clear the bar -- 5.0 against
+        # 6.0 -- but the year bonus is worth exactly the missing 1.0, so an
+        # entry corroborated by nothing but a plausible date landed precisely
+        # on the bar and was accepted. That is how "Big Wet Asses" became "Big
+        # Black Wet Asses": same year, no studio, no cast, and a title that is
+        # a strict subset of a different series.
+        #
+        # So when neither the studio nor the cast agrees, the titles have to
+        # be token-identical. Measured over 50 live entries this rejects only
+        # wrong matches and keeps every right one.
+        if not self.studio and not self.performers and self.title_symmetry < 1.0:
             return False
 
         return self.score >= ACCEPT_SCORE
@@ -191,6 +232,22 @@ def evaluate_candidate(
     if wanted is not None and found is not None and wanted != found:
         match.volume_conflict = True
         match.reasons.append(f"volume:{found}!={wanted}")
+    elif wanted is None and found is not None and found >= 2:
+        match.instalment_only_on_candidate = True
+        match.reasons.append(f"instalment:{found}/none")
+
+    # The season is read separately, because a title can state both and the
+    # volume alone then agrees for the wrong reason.
+    wanted_season = extract_season(entry_title)
+    found_season = extract_season(tpdb_title or "")
+
+    if (
+        wanted_season is not None
+        and found_season is not None
+        and wanted_season != found_season
+    ):
+        match.season_conflict = True
+        match.reasons.append(f"season:{found_season}!={wanted_season}")
 
     if entry_studio and tpdb_site:
         # Award listings write "Girlcore/Adult Time/Pulse"; any component

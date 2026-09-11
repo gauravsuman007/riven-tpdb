@@ -33,6 +33,22 @@ NOISE = frozenset({
 _VOLUME = re.compile(r"\b(?:vol(?:ume)?|part|pt)\.?\s*(\d{1,3})\b", re.I)
 _TRAILING_NUMBER = re.compile(r"\b(\d{1,3})\s*$")
 
+#: Small numbers written as words. Series titles number their volumes in
+#: digits, but seasons are routinely spelled out -- "Girlcore Season Two" --
+#: and a season written as a word is exactly as much a season number as one
+#: written as a digit.
+_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+
+# Season number: "Season 2", "Season Two", "S2". Deliberately a SEPARATE axis
+# from the volume number -- "Girlcore Season Two: Volume 1" states both, and
+# reading only the volume made it agree with "Girlcore: Season 1".
+_SEASON = re.compile(
+    r"\bs(?:eason)?\.?\s*(\d{1,2}|" + "|".join(_NUMBER_WORDS) + r")\b", re.I
+)
+
 
 def normalise(text: str) -> str:
     """Lowercase and strip everything that is not a letter or digit.
@@ -76,7 +92,11 @@ def extract_volume(text: str, *, trailing_number: bool = True) -> int | None:
     if not trailing_number:
         return None
 
-    trailing = _TRAILING_NUMBER.search(text.strip())
+    # "Girlcore Season 2" ends in a number that is the SEASON, not a volume.
+    # Reading it as one made a title conflict with itself: the same work
+    # written "Season Two" states no trailing number at all, so one side got
+    # a volume and the other did not.
+    trailing = _TRAILING_NUMBER.search(_SEASON.sub(" ", text).strip())
 
     if trailing:
         value = int(trailing.group(1))
@@ -86,3 +106,26 @@ def extract_volume(text: str, *, trailing_number: bool = True) -> int | None:
             return value
 
     return None
+
+
+def extract_season(text: str) -> int | None:
+    """The season a title refers to, if it states one.
+
+    Separate from :func:`extract_volume` on purpose. A title can state both --
+    "Girlcore Season Two: Volume 1" -- and a matcher that reads only the volume
+    concludes that it agrees with "Girlcore: Season 1", which is a different
+    season of the same series and so a different work. Measured against the
+    live catalogue, that was exactly the wrong match the request button made.
+    """
+
+    if not text:
+        return None
+
+    match = _SEASON.search(text)
+
+    if not match:
+        return None
+
+    value = match.group(1).lower()
+
+    return int(value) if value.isdigit() else _NUMBER_WORDS[value]
