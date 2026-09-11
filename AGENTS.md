@@ -241,6 +241,13 @@ The backfill commits in batches of 25 rather than at the end, unlike the
 category index -- a twelve-minute run that writes only on completion looks
 like nothing is happening and loses everything to a restart.
 
+**TRAP: the column cannot record "nobody reviewed this".** That and "we have
+not looked" are both `rating IS NULL`, so without a record of the attempt a
+third of the catalogue is re-fetched on every run and `pending` never reaches
+zero. Those product ids go in `adultempire_unrated.json` beside the category
+index -- derived, rebuildable, no migration -- and `?force=true` re-checks
+them when a title has since been reviewed.
+
 It only ever fills gaps in `year`/`duration_minutes`: a storefront disagreeing
 with an award ballot is not grounds to overwrite the ballot. It does replace a
 MediaItem's 0, which is not a score.

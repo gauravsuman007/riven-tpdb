@@ -706,6 +706,49 @@ def test_the_limit_is_applied_after_filtering_not_before():
     assert [item.key for item in kept] == ["high"]
 
 
+
+def test_a_page_with_no_rating_is_remembered_so_it_is_not_refetched(tmp_path):
+    # "Nobody reviewed this" and "we have not looked" are both rating IS NULL.
+    # Without a record of the attempt, a third of the catalogue is re-fetched
+    # on every run and the pending count never reaches zero.
+    backfill = RatingBackfill()
+    backfill.__dict__["_unrated"] = set()
+    entry = _rating_entry()
+
+    assert RatingBackfill._apply(entry, _detail(rating=None)) is False
+
+    # The sync loop is what records it; this asserts the bookkeeping the loop
+    # relies on -- an id in the set is skipped by _to_check.
+    backfill._unrated.add("700215")
+    kept = backfill._to_check([SimpleNamespace(adultempire_id="700215", external_id=None)], False)
+
+    assert kept == []
+
+
+def test_forcing_re_checks_a_product_known_to_have_no_rating(tmp_path):
+    backfill = RatingBackfill()
+    backfill.__dict__["_unrated"] = {"700215"}
+    entry = SimpleNamespace(adultempire_id="700215", external_id=None)
+
+    assert backfill._to_check([entry], True) == [entry]
+
+
+def test_an_entry_with_no_product_id_is_not_checkable(tmp_path):
+    backfill = RatingBackfill()
+    backfill.__dict__["_unrated"] = set()
+
+    assert backfill._to_check([SimpleNamespace(adultempire_id=None, external_id=None)], False) == []
+
+
+def test_external_id_answers_when_there_is_no_matched_product(tmp_path):
+    # The two columns mean different things: external_id says the row came
+    # from the storefront, adultempire_id that a lookup matched it.
+    assert (
+        RatingBackfill._product_id(SimpleNamespace(adultempire_id=None, external_id="5426"))
+        == "5426"
+    )
+
+
 import tempfile  # noqa: E402 - only the harness below needs it
 
 for _name, _fn in sorted(list(globals().items())):

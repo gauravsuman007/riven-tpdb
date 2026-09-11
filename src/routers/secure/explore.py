@@ -214,6 +214,9 @@ class RatingBackfillStatus(BaseModel):
     #: Read successfully but carrying no score -- nobody reviewed the title.
     #: About a third of product pages, and not an error.
     unrated: int
+    #: Products already known to carry no rating, and therefore skipped.
+    #: `pending` excludes them, which is what lets it reach zero.
+    known_unrated: int
     failed: int
     started_at: float | None = None
     finished_at: float | None = None
@@ -223,7 +226,11 @@ class RatingBackfillStatus(BaseModel):
 def _rating_status() -> RatingBackfillStatus:
     snapshot = rating_backfill.progress.snapshot()
 
-    return RatingBackfillStatus(pending=rating_backfill.pending(), **snapshot)
+    return RatingBackfillStatus(
+        pending=rating_backfill.pending(),
+        known_unrated=len(rating_backfill.unrated),
+        **snapshot,
+    )
 
 
 @router.get("/ratings", operation_id="get_rating_backfill")
@@ -235,6 +242,10 @@ def rating_status() -> RatingBackfillStatus:
 def sync_ratings(
     background: BackgroundTasks,
     limit: Annotated[int, Query(ge=0, le=5000)] = 0,
+    force: Annotated[
+        bool,
+        Query(description="Re-check products already known to carry no rating"),
+    ] = False,
 ) -> RatingBackfillStatus:
     """Read the audience rating for every catalogue entry that lacks one.
 
@@ -243,9 +254,13 @@ def sync_ratings(
     is ignored, so ``/{id}/`` is enough. That makes this one request per title
     at the one-per-second courtesy delay: minutes, in the background, with
     progress committed in batches. Poll ``GET /explore/ratings``.
+
+    Products whose page carried no rating are remembered and skipped, because
+    the column cannot tell "nobody reviewed this" from "we have not looked"
+    and about a third of pages are the former. ``force`` re-checks them.
     """
 
-    background.add_task(rating_backfill.sync, limit=limit)
+    background.add_task(rating_backfill.sync, limit=limit, force=force)
 
     return _rating_status()
 

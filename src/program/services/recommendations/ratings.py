@@ -20,13 +20,23 @@ Progress is committed in batches rather than at the end. The category index
 writes only when its whole crawl finishes, which makes a twelve-minute run
 look like nothing is happening and throws the work away if it is interrupted;
 this does not repeat that.
+
+A page that carries no rating needs remembering too, and cannot be remembered
+in the column: "nobody has reviewed this" and "we have not looked" are both
+``rating IS NULL``, so without a record of the attempt every unreviewed title
+is re-fetched on every run and the pending count never reaches zero. About a
+third of products are in that state. They are recorded in a JSON sidecar --
+derived, rebuildable, no migration -- exactly like the category index, and
+``force`` re-checks them when a title has since been reviewed.
 """
 
 from __future__ import annotations
 
+import json
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
 
 from loguru import logger
 from sqlalchemy import or_, select
@@ -39,11 +49,15 @@ from program.services.recommendations.adultempire import (
     AdultEmpireError,
     RankedTitle,
 )
+from program.utils import data_dir_path
 
 #: How many entries to enrich before committing. At the storefront's
 #: one-request-per-second courtesy delay this is a commit every ~25 seconds,
 #: which is often enough to watch and cheap enough not to matter.
 BATCH_SIZE = 25
+
+#: Where product ids whose page carried no rating are remembered.
+UNRATED_FILENAME = "adultempire_unrated.json"
 
 
 @dataclass
@@ -84,6 +98,7 @@ class RatingBackfill:
         self._client = client
         self._lock = threading.Lock()
         self.progress = BackfillProgress()
+        self._unrated: set[str] | None = None
 
     @property
     def client(self) -> AdultEmpireClient:
@@ -97,6 +112,46 @@ class RatingBackfill:
     @property
     def running(self) -> bool:
         return self.progress.running
+
+    # --- products known to carry no rating -------------------------------
+
+    @property
+    def unrated_path(self) -> Path:
+        return data_dir_path / UNRATED_FILENAME
+
+    @property
+    def unrated(self) -> set[str]:
+        """Product ids whose page was read and had no rating.
+
+        Held apart from the database because the column cannot express it:
+        `rating IS NULL` means both "nobody reviewed this" and "we have not
+        looked", and conflating them re-fetches a third of the catalogue on
+        every run forever.
+        """
+
+        if self._unrated is None:
+            try:
+                payload = json.loads(self.unrated_path.read_text(encoding="utf-8"))
+                self._unrated = {str(pid) for pid in payload.get("products", [])}
+            except FileNotFoundError:
+                self._unrated = set()
+            except (OSError, ValueError) as e:
+                logger.warning(f"Could not read {self.unrated_path}; ignoring it: {e}")
+                self._unrated = set()
+
+        return self._unrated
+
+    def _remember_unrated(self) -> None:
+        try:
+            self.unrated_path.parent.mkdir(parents=True, exist_ok=True)
+            self.unrated_path.write_text(
+                json.dumps(
+                    {"checked_at": time.time(), "products": sorted(self.unrated)}
+                ),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            logger.error(f"Could not write {self.unrated_path}: {e}")
 
     # --- counting --------------------------------------------------------
 
@@ -118,14 +173,40 @@ class RatingBackfill:
             ),
         )
 
-    def pending(self) -> int:
+    @staticmethod
+    def _product_id(entry: CollectionEntry) -> str | None:
+        product = entry.adultempire_id or entry.external_id
+
+        return str(product) if product else None
+
+    def _to_check(self, entries, force: bool) -> list[CollectionEntry]:
+        """Drop entries already known to have no rating, unless forcing."""
+
+        if force:
+            return list(entries)
+
+        skip = self.unrated
+
+        return [
+            entry
+            for entry in entries
+            if (pid := self._product_id(entry)) is not None and pid not in skip
+        ]
+
+    def pending(self, force: bool = False) -> int:
         with db_session() as session:
-            return len(session.execute(self._pending_query()).scalars().all())
+            entries = session.execute(self._pending_query()).scalars().all()
+
+            return len(self._to_check(entries, force))
 
     # --- the crawl -------------------------------------------------------
 
-    def sync(self, limit: int = 0) -> dict[str, object]:
-        """Enrich pending entries. ``limit`` of 0 means all of them."""
+    def sync(self, limit: int = 0, force: bool = False) -> dict[str, object]:
+        """Enrich pending entries. ``limit`` of 0 means all of them.
+
+        ``force`` re-checks products already recorded as carrying no rating,
+        which is how a title reviewed since the last run gets picked up.
+        """
 
         with self._lock:
             if self.progress.running:
@@ -136,19 +217,25 @@ class RatingBackfill:
             self.progress = BackfillProgress(running=True, started_at=time.time())
 
         try:
-            return self._sync(limit)
+            return self._sync(limit, force)
         finally:
             self.progress.running = False
             self.progress.finished_at = time.time()
 
-    def _sync(self, limit: int) -> dict[str, object]:
+    def _sync(self, limit: int, force: bool = False) -> dict[str, object]:
         with db_session() as session:
-            query = self._pending_query()
+            # Filtered in Python, not SQL: the set of already-checked products
+            # lives in a file, and an `IN` clause over a few thousand ids to
+            # avoid reading a few thousand rows is not a trade worth making.
+            # The limit is applied after, so it counts titles that will
+            # actually be fetched.
+            entries = self._to_check(
+                session.execute(self._pending_query()).scalars().all(), force
+            )
 
             if limit:
-                query = query.limit(limit)
+                entries = entries[:limit]
 
-            entries = session.execute(query).scalars().all()
             self.progress.considered = len(entries)
 
             if not entries:
@@ -159,12 +246,12 @@ class RatingBackfill:
             logger.info(f"Backfilling ratings for {len(entries)} catalogue entries.")
 
             for index, entry in enumerate(entries, start=1):
-                product_id = entry.adultempire_id or entry.external_id
+                product_id = self._product_id(entry)
 
                 if not product_id:
                     continue
 
-                detail = self._detail(str(product_id))
+                detail = self._detail(product_id)
                 self.progress.fetched += 1
                 self.progress.last_title = entry.title
 
@@ -172,16 +259,23 @@ class RatingBackfill:
                     self.progress.failed += 1
                 elif self._apply(entry, detail):
                     self.progress.rated += 1
+                    # A title can be reviewed after a run that found nothing.
+                    self.unrated.discard(product_id)
                 else:
                     self.progress.unrated += 1
+                    # Remembered so it is not re-fetched forever: the column
+                    # cannot tell "nobody reviewed it" from "not looked yet".
+                    self.unrated.add(product_id)
 
                 # Committed as we go. A run of several hundred titles is
                 # minutes long; a single commit at the end would show no
                 # progress and lose everything to a restart.
                 if index % BATCH_SIZE == 0:
                     session.commit()
+                    self._remember_unrated()
 
             session.commit()
+            self._remember_unrated()
 
         logger.success(
             f"Rated {self.progress.rated} of {self.progress.considered} entries; "
