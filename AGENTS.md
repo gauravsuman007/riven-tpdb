@@ -981,7 +981,7 @@ The picker now searches BOTH collections: `IndexerService` resolves a tpdb_id
 by trying `get_scene` then `get_movie`, so either kind of record is a valid
 answer, and a library title that is really a scene was otherwise unmatchable.
 
-## The noodlemagazine plugin
+## The direct-scraper plugins
 The direct-scraper plugins are their own repo,
 `gauravsuman007/riven-tpdb-scrapers` (`../riven-tpdb-scrapers`, files under
 `scrapers/`). `plugins/` in THIS repo holds only `.gitkeep`; the deployment
@@ -992,6 +992,27 @@ steps -- commit to the scrapers repo, `scp` the file to that server path, then
 `POST /api/v1/direct/plugins/rescan` (Settings -> Plugins -> Rescan folder).
 No rebuild, no restart. Check all three copies agree before assuming a fix is
 live; the server copy is the one that runs.
+
+Twenty scrapers are deployed as of 2026-09-11. Ten were added in one batch
+(porntrex, watchporn, whoreshub, xxxtube, pornwex, yespornvip, inxxx,
+saintporn, xxxfiles, pornone), and the useful fact for anyone adding more is
+that **most tube sites are the same CMS**, Kernel Video Sharing: eight of the
+ten are, and one template covers them. Some KVS deployments scramble the
+media URL behind a `function/0/` prefix that decodes with the page's own
+`license_code` -- the scrapers repo's AGENTS.md documents it in full.
+
+**A scraper returning nothing is usually not a bug in the scraper.**
+`DirectScraperService.search` filters each site's results centrally through
+`best_matches()` against the library entry, so a plugin can hand back thirty
+rows and `/direct/search` still answers with none, and `errors: {}` alongside
+an empty `results` means exactly that -- the plugin ran fine and the ranker
+discarded everything. Exercise `search()` directly before hunting a parsing
+bug; a whole debugging session was spent on this.
+
+Do not try to import `program.*` in a throwaway script on this host to test a
+plugin: pulling in the package standalone alongside the running app is enough
+to get the process OOM-killed (exit 137). Test through the running app's own
+API instead.
 
 - The duration/sort/HD filters are NOT honoured on a GET. `?len=long` on the
   search URL renders the UNFILTERED page, the same silent-ignore failure as
