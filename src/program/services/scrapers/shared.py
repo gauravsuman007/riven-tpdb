@@ -423,11 +423,7 @@ def parse_results(
                 stream = Stream(torrent, _reported(torrent.infohash))
                 stream.rank = int(round(evidence.score * 100))
                 stream.filtered = True
-                stream.filter_reason = (
-                    ", ".join(evidence.reasons)
-                    if evidence.reasons
-                    else "no corroborating site, cast or date"
-                )
+                stream.filter_reason = _rejection_reason(evidence)
 
                 torrent_stream_map[infohash] = stream
 
@@ -478,6 +474,44 @@ def _match_evidence(item: MediaItem, torrent: Torrent) -> MatchEvidence:
         aired_at=getattr(item, "aired_at", None),
         is_adult_release=bool(getattr(torrent.data, "adult", False)),
     )
+
+
+def _rejection_reason(evidence: "MatchEvidence") -> str:
+    """Why the matcher turned a release down, in words.
+
+    The raw `reasons` list is what was FOUND ("title:3/3"), not what was
+    missing, so on a rejected release it reads as evidence in favour -- the
+    opposite of the truth. What decides a rejection is almost always the
+    absence of a second independent signal, and that has to be said out loud
+    or the list is no more use than the empty one it replaced.
+    """
+
+    if evidence.episodic:
+        return "names an episode, so it belongs to a mainstream series"
+
+    if evidence.volume_conflict:
+        return "names a different instalment of the same series"
+
+    if evidence.year_conflict and not evidence.site and not evidence.performers:
+        return "names a different year, and nothing else identifies it"
+
+    found = []
+
+    if evidence.site:
+        found.append("site")
+    if evidence.date:
+        found.append("date")
+    if evidence.performers:
+        found.append(f"{evidence.performers} performer(s)")
+    if evidence.title_ratio:
+        found.append(f"title {evidence.title_ratio:.0%}")
+
+    if not found:
+        return "nothing in the name matches this title"
+
+    # Every accepting branch needs two independent signals; saying which one
+    # was present is what tells a near miss from a coincidence.
+    return f"only {' + '.join(found)}; needs a second, independent signal"
 
 
 def _rejected_evidence(item: MediaItem, torrent: Torrent) -> MatchEvidence:
