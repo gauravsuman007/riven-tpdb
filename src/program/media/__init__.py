@@ -1,6 +1,7 @@
 from .item import Episode, MediaItem, Movie, Season, Show
 from .collection import Collection, CollectionEntry
 from .studio import Studio, StudioRowEntry
+from .onlyfans import OnlyFansAccount, OnlyFansAccountSource
 from .state import States
 from .filesystem_entry import FilesystemEntry
 from .local_copy import LocalCopy, LocalCopyState
@@ -18,6 +19,8 @@ __all__ = [
     "CollectionEntry",
     "Studio",
     "StudioRowEntry",
+    "OnlyFansAccount",
+    "OnlyFansAccountSource",
     "Episode",
     "MediaItem",
     "Movie",

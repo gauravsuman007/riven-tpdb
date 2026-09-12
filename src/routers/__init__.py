@@ -12,6 +12,7 @@ from routers.secure.direct import router as direct_router
 from routers.secure.explore import router as explore_router
 from routers.secure.default import router as default_router
 from routers.secure.items import router as items_router
+from routers.secure.onlyfans import router as onlyfans_router
 from routers.secure.keep import router as keep_router
 from routers.secure.scrape import router as scrape_router
 from routers.secure.settings import router as settings_router
@@ -40,6 +41,7 @@ app_router.include_router(default_router, dependencies=[Depends(resolve_api_key)
 app_router.include_router(direct_router, dependencies=[Depends(resolve_api_key)])
 app_router.include_router(explore_router, dependencies=[Depends(resolve_api_key)])
 app_router.include_router(items_router, dependencies=[Depends(resolve_api_key)])
+app_router.include_router(onlyfans_router, dependencies=[Depends(resolve_api_key)])
 app_router.include_router(keep_router, dependencies=[Depends(resolve_api_key)])
 app_router.include_router(scrape_router, dependencies=[Depends(resolve_api_key)])
 app_router.include_router(settings_router, dependencies=[Depends(resolve_api_key)])

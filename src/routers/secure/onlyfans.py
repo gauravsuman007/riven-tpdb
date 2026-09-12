@@ -1,0 +1,517 @@
+"""The OnlyFans performer index, and live content for one performer.
+
+Two different kinds of data behind one prefix, and as with the studio
+directory the difference is the design:
+
+    * Accounts are mirrored locally and served from the database. Building the
+      list means crawling five sites' model indexes, so it happens weekly and
+      the page reads the result.
+    * An account's *content* is read live from the sites on every request.
+      Videos and galleries are paged straight out of the site, never stored.
+      A performer's feed changes constantly and a copy taken last Sunday is
+      not the feed.
+
+Content requests deliberately bypass `DirectScraperService.search`. That path
+exists to find one known title across many sites and filters everything it
+gets through `best_matches()`, which scores title relevance against a
+`MatchTarget`. An account browse has no target -- the question is "what does
+this site hold for this person", not "which of these is the film I named" --
+so routing it through the ranker would discard almost every result and look
+like five broken scrapers.
+
+Images are addressed by position rather than by URL. Accepting a URL to proxy
+would make this an open proxy for anything on the internet, and signing them
+only moves the problem; resolving the gallery and taking the Nth image cannot
+be pointed at a host this app did not choose.
+"""
+
+import time
+from typing import Annotated
+
+import httpx
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from loguru import logger
+from pydantic import BaseModel
+from sqlalchemy import func, or_, select
+
+from program.db.db import db_session
+from program.media.onlyfans import OnlyFansAccount, OnlyFansAccountSource
+from program.services.directscrapers import service as direct_service
+from program.services.onlyfans import OnlyFansService, normalise_handle
+from program.services.vpn import STREAMING, VpnUnavailable, vpn
+from program.utils.time import utcnow
+
+
+router = APIRouter(prefix="/onlyfans", tags=["onlyfans"])
+
+
+_service: "OnlyFansService | None" = None
+
+
+def service() -> OnlyFansService:
+    """The shared index service, or a 503 if the feature is switched off."""
+
+    global _service
+
+    if _service is None or not _service.initialized:
+        _service = OnlyFansService()
+
+    if not _service.initialized:
+        raise HTTPException(
+            status_code=503,
+            detail="The OnlyFans performer index is not enabled",
+        )
+
+    return _service
+
+
+# --- Response models --------------------------------------------------------
+
+
+class AccountSourceResponse(BaseModel):
+    site: str
+    site_handle: str
+    page_url: str
+    video_count: int | None
+    image_count: int | None
+
+
+class AccountResponse(BaseModel):
+    handle: str
+    display_name: str
+    avatar_url: str | None
+    bio: str | None
+    source_count: int
+    saved: bool
+    sites: list[str]
+
+
+class AccountDetailResponse(AccountResponse):
+    sources: list[AccountSourceResponse]
+
+
+class AccountPage(BaseModel):
+    """A page of accounts plus the total, so the grid can stop asking.
+
+    `total` is the count *matching the filter*, not the table size -- an
+    infinite scroll that keeps requesting because it compared against the
+    unfiltered count would never terminate on a search.
+    """
+
+    items: list[AccountResponse]
+    total: int
+    offset: int
+    limit: int
+
+
+class VideoResponse(BaseModel):
+    site: str
+    video_id: str
+    title: str
+    page_url: str
+    thumbnail: str | None
+    duration: int | None
+    resolution: str | None
+    views: int | None
+    hd: bool
+
+
+class GalleryResponse(BaseModel):
+    site: str
+    gallery_id: str
+    title: str
+    page_url: str
+    cover: str | None
+    image_count: int | None
+    posted: str | None
+
+
+class GalleryImageResponse(BaseModel):
+    """One image, addressed by position rather than by URL.
+
+    `index` is what `/image` takes. The URL itself is not handed to the
+    browser: it carries a short-lived token and these hosts check Referer, so
+    a raw `<img src>` would 403 or expire.
+    """
+
+    index: int
+    width: int | None
+    height: int | None
+
+
+def _account_response(account: OnlyFansAccount) -> AccountResponse:
+    return AccountResponse(
+        handle=account.handle,
+        display_name=account.display_name,
+        avatar_url=account.avatar_url,
+        bio=account.bio,
+        source_count=account.source_count,
+        saved=account.saved,
+        sites=[source.site for source in account.sources],
+    )
+
+
+# --- The index --------------------------------------------------------------
+
+
+@router.get("/accounts", operation_id="list_onlyfans_accounts")
+def list_accounts(
+    search: Annotated[str | None, Query()] = None,
+    saved: Annotated[bool | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 60,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> AccountPage:
+    """A page of the performer index.
+
+    Real offset paging rather than the studio directory's bare `limit`: that
+    list is ~1,200 rows and can be sent whole, this one runs to tens of
+    thousands across five sites.
+
+    The search matches the *collapsed* handle as well as the display name, so
+    typing "sophie rain", "sophierain" or "Sophie-Rain" all find the same
+    account -- which is the whole reason the collapsed form is stored.
+    """
+
+    with db_session() as session:
+        query = select(OnlyFansAccount)
+
+        if saved is not None:
+            query = query.where(OnlyFansAccount.saved.is_(saved))
+
+        if search and search.strip():
+            collapsed = normalise_handle(search)
+            query = query.where(
+                or_(
+                    OnlyFansAccount.handle.like(f"%{collapsed}%"),
+                    OnlyFansAccount.display_name.ilike(f"%{search.strip()}%"),
+                )
+            )
+
+        total = session.execute(
+            select(func.count()).select_from(query.subquery())
+        ).scalar_one()
+
+        accounts = (
+            session.execute(
+                # Accounts several sites agree on first: one that three
+                # independent archives indexed is likelier to be a real,
+                # findable performer than one that appears once.
+                query.order_by(
+                    OnlyFansAccount.source_count.desc(),
+                    OnlyFansAccount.display_name.asc(),
+                )
+                .offset(offset)
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+
+        return AccountPage(
+            items=[_account_response(account) for account in accounts],
+            total=total,
+            offset=offset,
+            limit=limit,
+        )
+
+
+@router.get("/accounts/{handle}", operation_id="get_onlyfans_account")
+def get_account(handle: str) -> AccountDetailResponse:
+    """One account and every site that carries it.
+
+    The sources are what the detail page's per-site buttons are built from:
+    each one names the scraper key to ask and the slug to ask it for.
+    """
+
+    with db_session() as session:
+        account = _lookup(session, handle)
+
+        return AccountDetailResponse(
+            **_account_response(account).model_dump(),
+            sources=[
+                AccountSourceResponse(
+                    site=source.site,
+                    site_handle=source.site_handle,
+                    page_url=source.page_url,
+                    video_count=source.video_count,
+                    image_count=source.image_count,
+                )
+                for source in account.sources
+            ],
+        )
+
+
+@router.post("/accounts/{handle}/save", operation_id="save_onlyfans_account")
+def save_account(handle: str) -> AccountResponse:
+    return _set_saved(handle, True)
+
+
+@router.delete("/accounts/{handle}/save", operation_id="unsave_onlyfans_account")
+def unsave_account(handle: str) -> AccountResponse:
+    return _set_saved(handle, False)
+
+
+def _set_saved(handle: str, saved: bool) -> AccountResponse:
+    with db_session() as session:
+        account = _lookup(session, handle)
+        account.saved = saved
+        account.saved_at = utcnow() if saved else None
+        session.commit()
+        return _account_response(account)
+
+
+def _lookup(session, handle: str) -> OnlyFansAccount:
+    """An account by handle, collapsed on the way in.
+
+    Collapsing means a link built from a display name still resolves, rather
+    than 404ing on the difference between "Sophie Rain" and "sophierain".
+    """
+
+    account = session.execute(
+        select(OnlyFansAccount).where(
+            OnlyFansAccount.handle == normalise_handle(handle)
+        )
+    ).scalar_one_or_none()
+
+    if account is None:
+        raise HTTPException(status_code=404, detail="No such account")
+
+    return account
+
+
+# --- Live content -----------------------------------------------------------
+
+
+def _scraper_for(handle: str, site: str):
+    """The plugin for `site`, and this account's slug on it.
+
+    Both halves matter: the slug is the site's own and is not derivable from
+    the collapsed handle, so an account known to this site under a different
+    spelling would otherwise 404 on a URL built from the wrong one.
+    """
+
+    with db_session() as session:
+        account = _lookup(session, handle)
+        source = next(
+            (item for item in account.sources if item.site == site), None
+        )
+
+        if source is None:
+            raise HTTPException(
+                status_code=404, detail=f"{site} does not carry this account"
+            )
+        site_handle = source.site_handle
+
+    scraper = direct_service().services.get(site)
+
+    if scraper is None:
+        raise HTTPException(
+            status_code=404, detail=f"No scraper named {site} is installed"
+        )
+
+    return scraper, site_handle
+
+
+@router.get("/accounts/{handle}/videos", operation_id="get_onlyfans_account_videos")
+def account_videos(
+    handle: str,
+    site: Annotated[str, Query()],
+    page: Annotated[int, Query(ge=1)] = 1,
+) -> list[VideoResponse]:
+    """One page of an account's videos on one site, newest first.
+
+    An empty list is a valid answer and means the site has no more, which is
+    how the infinite scroll knows to stop. A site that is down raises 502 so
+    the page can say so rather than showing the same empty grid.
+    """
+
+    scraper, site_handle = _scraper_for(handle, site)
+
+    try:
+        videos = scraper.account_videos(site_handle, page)
+    except Exception as exc:
+        logger.warning(f"OnlyFans: {site} videos failed for {handle}: {exc}")
+        raise HTTPException(
+            status_code=502, detail=f"{site} could not be read"
+        ) from exc
+
+    return [
+        VideoResponse(
+            site=video.site,
+            video_id=video.video_id,
+            title=video.title,
+            page_url=video.page_url,
+            thumbnail=video.thumbnail,
+            duration=video.duration,
+            resolution=video.resolution,
+            views=video.views,
+            hd=video.hd,
+        )
+        for video in videos
+    ]
+
+
+@router.get(
+    "/accounts/{handle}/galleries", operation_id="get_onlyfans_account_galleries"
+)
+def account_galleries(
+    handle: str,
+    site: Annotated[str, Query()],
+    page: Annotated[int, Query(ge=1)] = 1,
+) -> list[GalleryResponse]:
+    """One page of an account's image galleries on one site.
+
+    Most of this family returns nothing here, and that is the site's answer
+    rather than a failure: only one of the five attributes galleries to a
+    performer at all. See each scraper's module docstring.
+    """
+
+    scraper, site_handle = _scraper_for(handle, site)
+
+    try:
+        galleries = scraper.account_galleries(site_handle, page)
+    except Exception as exc:
+        logger.warning(f"OnlyFans: {site} galleries failed for {handle}: {exc}")
+        raise HTTPException(
+            status_code=502, detail=f"{site} could not be read"
+        ) from exc
+
+    return [
+        GalleryResponse(
+            site=gallery.site,
+            gallery_id=gallery.gallery_id,
+            title=gallery.title,
+            page_url=gallery.page_url,
+            cover=gallery.cover,
+            image_count=gallery.image_count,
+            posted=gallery.posted,
+        )
+        for gallery in galleries
+    ]
+
+
+#: Resolved galleries, keyed on (site, gallery_id). A lightbox opens N images
+#: from one gallery and each `/image` call would otherwise re-fetch and
+#: re-parse the album page. Short-lived because the image URLs carry tokens
+#: that expire -- caching them for longer would serve 403s from memory.
+_GALLERY_TTL = 120.0
+_gallery_cache: dict[tuple[str, str], tuple[float, list]] = {}
+
+
+def _gallery_images(site: str, gallery_id: str) -> list:
+    cached = _gallery_cache.get((site, gallery_id))
+
+    if cached and (time.monotonic() - cached[0]) < _GALLERY_TTL:
+        return cached[1]
+
+    scraper = direct_service().services.get(site)
+
+    if scraper is None:
+        raise HTTPException(
+            status_code=404, detail=f"No scraper named {site} is installed"
+        )
+
+    try:
+        images = scraper.gallery_images(gallery_id)
+    except Exception as exc:
+        logger.warning(f"OnlyFans: {site} gallery {gallery_id} failed: {exc}")
+        raise HTTPException(
+            status_code=502, detail=f"{site} could not be read"
+        ) from exc
+
+    _gallery_cache[(site, gallery_id)] = (time.monotonic(), images)
+    return images
+
+
+@router.get("/galleries/{site}/{gallery_id}", operation_id="get_onlyfans_gallery")
+def gallery(site: str, gallery_id: str) -> list[GalleryImageResponse]:
+    """Every image in one gallery, by position.
+
+    Positions, not URLs -- see the module docstring. The count returned here
+    can be well short of the gallery's advertised size: these sites show a
+    signed-out visitor a handful of images from an album and gate the rest.
+    """
+
+    images = _gallery_images(site, gallery_id)
+
+    return [
+        GalleryImageResponse(index=index, width=image.width, height=image.height)
+        for index, image in enumerate(images)
+    ]
+
+
+@router.get("/image", operation_id="get_onlyfans_image")
+async def image(
+    site: Annotated[str, Query()],
+    gallery_id: Annotated[str, Query()],
+    index: Annotated[int, Query(ge=0)] = 0,
+) -> StreamingResponse:
+    """Proxy one image out of a gallery.
+
+    Proxied rather than linked for the same reason `/direct/stream` proxies
+    video: the URL carries a short-lived token and the host checks Referer, so
+    a browser asked to load it directly gets a 403 or an expired link.
+    """
+
+    images = _gallery_images(site, gallery_id)
+
+    if index >= len(images):
+        raise HTTPException(status_code=404, detail="No such image")
+
+    source = images[index]
+
+    try:
+        proxy = vpn().proxy_for(STREAMING)
+    except VpnUnavailable as exc:
+        # Not falling back to a direct connection, for the same reason
+        # `/direct/stream` does not: someone routing playback is controlling
+        # where it appears to come from, and quietly using the host's own
+        # address would defeat the setting invisibly.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    client = httpx.AsyncClient(follow_redirects=True, timeout=30.0, proxy=proxy)
+
+    try:
+        upstream = await client.send(
+            client.build_request("GET", source.url, headers=dict(source.headers)),
+            stream=True,
+        )
+    except Exception as exc:
+        await client.aclose()
+        logger.error(f"OnlyFans image upstream failed for {site}:{gallery_id}: {exc}")
+        raise HTTPException(status_code=502, detail="Upstream connection failed")
+
+    if upstream.status_code >= 400:
+        status_code = upstream.status_code
+        await upstream.aclose()
+        await client.aclose()
+        raise HTTPException(status_code=502, detail=f"Upstream returned {status_code}")
+
+    headers = {
+        key: upstream.headers[key]
+        for key in ("content-type", "content-length")
+        if key in upstream.headers
+    }
+    # These are immutable once published and the token in the URL is what
+    # expires, not the bytes, so the browser may keep them for the session.
+    headers["cache-control"] = "private, max-age=3600"
+
+    async def body():
+        try:
+            async for chunk in upstream.aiter_bytes():
+                yield chunk
+        except Exception as exc:
+            logger.debug(f"OnlyFans image interrupted for {site}:{gallery_id}: {exc}")
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    return StreamingResponse(body(), status_code=upstream.status_code, headers=headers)
+
+
+@router.post("/sync", operation_id="sync_onlyfans_accounts")
+def sync() -> dict[str, int]:
+    """Rebuild the index now, rather than waiting for the weekly job."""
+
+    return {"accounts": service().sync()}

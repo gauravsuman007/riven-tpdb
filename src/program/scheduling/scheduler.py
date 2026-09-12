@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from program.program import Program
     from program.services.awards.service import AwardsService
     from program.services.recommendations.brochure import BrochureService
+    from program.services.onlyfans import OnlyFansService
     from program.services.recommendations.studios import StudioService
     from program.services.recommendations.enrichment import TpdbEnricher
 
@@ -69,6 +70,7 @@ class ProgramScheduler:
         self._awards: "AwardsService | None" = None
         self._brochure: "BrochureService | None" = None
         self._studios: "StudioService | None" = None
+        self._onlyfans: "OnlyFansService | None" = None
         self._tpdb_enricher: "TpdbEnricher | None" = None
 
     def start(self) -> None:
@@ -81,6 +83,7 @@ class ProgramScheduler:
         # directory empty until its first firing.
         self._kickoff_studios_if_empty()
         self._kickoff_studio_rows_if_needed()
+        self._kickoff_onlyfans_if_empty()
         self.scheduler.start()
 
     def stop(self) -> None:
@@ -169,6 +172,26 @@ class ProgramScheduler:
                 scheduled_functions[self._enrich_studios] = {
                     "interval": brochure.enrich_interval
                 }
+
+        onlyfans = settings_manager.settings.content.onlyfans
+
+        if onlyfans.enabled:
+            # Weekly and overnight, for the same reason as the studio
+            # directory: this is a crawl of five sites' model indexes, and new
+            # performer accounts appear steadily but never urgently.
+            scheduled_functions[self._sync_onlyfans] = {
+                "cron": {
+                    "day_of_week": onlyfans.sync_day,
+                    "hour": onlyfans.sync_hour,
+                    "minute": 0,
+                }
+            }
+            # Avatars and bios are one request per account, and they are what
+            # makes the account grid look like anything, so they fill in on
+            # the ordinary batch cadence rather than waiting a week.
+            scheduled_functions[self._enrich_onlyfans] = {
+                "interval": onlyfans.enrich_interval
+            }
 
         if settings_manager.settings.adultempire_metadata.enabled:
             # Weekly and overnight, for the same reason as the studio
@@ -307,6 +330,11 @@ class ProgramScheduler:
             if brochure.studios_enabled:
                 wanted[self._enrich_studios] = brochure.enrich_interval
 
+        onlyfans = settings_manager.settings.content.onlyfans
+
+        if onlyfans.enabled:
+            wanted[self._enrich_onlyfans] = onlyfans.enrich_interval
+
         # Cron rather than interval, and therefore kept apart from `wanted`:
         # the studio directory is a several-minute crawl that belongs at its
         # hour, not N seconds after whenever the process last restarted.
@@ -316,6 +344,13 @@ class ProgramScheduler:
             cron_wanted[self._sync_studios] = {
                 "day_of_week": brochure.studio_sync_day,
                 "hour": brochure.studio_sync_hour,
+                "minute": 0,
+            }
+
+        if onlyfans.enabled:
+            cron_wanted[self._sync_onlyfans] = {
+                "day_of_week": onlyfans.sync_day,
+                "hour": onlyfans.sync_hour,
                 "minute": 0,
             }
             cron_wanted[self._sync_studio_rows] = {
@@ -355,7 +390,7 @@ class ProgramScheduler:
                 self.scheduler.remove_job(job_id)
                 logger.debug(f"Removed scheduled job {job_id}")
 
-        for func in (self._sync_studios, self._sync_studio_rows):
+        for func in (self._sync_studios, self._sync_studio_rows, self._sync_onlyfans):
             job_id = func.__name__
 
             if func in cron_wanted:
@@ -378,6 +413,7 @@ class ProgramScheduler:
                 # directory is already populated and nothing is re-crawled.
                 self._kickoff_studios_if_empty()
                 self._kickoff_studio_rows_if_needed()
+                self._kickoff_onlyfans_if_empty()
             elif self.scheduler.get_job(job_id) is not None:
                 self.scheduler.remove_job(job_id)
                 logger.debug(f"Removed scheduled job {job_id}")
@@ -387,6 +423,7 @@ class ProgramScheduler:
         self._awards = None
         self._brochure = None
         self._studios = None
+        self._onlyfans = None
         self._tpdb_enricher = None
 
     def _awards_service(self):
@@ -575,6 +612,86 @@ class ProgramScheduler:
         except SQLAlchemyError as exc:
             logger.debug(f"Could not check the studio directory: {exc}")
             return False
+
+    def _kickoff_onlyfans_if_empty(self) -> None:
+        """Build the performer index once, now, if there is nothing in it.
+
+        Same reasoning as `_kickoff_studios_if_empty`: the weekly cron exists
+        to run at its hour, so without this the OnlyFans page would stay empty
+        from the moment the feature is enabled until the next Sunday. Once the
+        index has anything in it this does nothing, so restarts do not
+        re-crawl five sites.
+        """
+
+        if not settings_manager.settings.content.onlyfans.enabled:
+            return
+
+        if not self._onlyfans_index_is_empty():
+            return
+
+        self.scheduler.add_job(
+            self._sync_onlyfans,
+            "date",
+            run_date=datetime.now(),
+            id="_sync_onlyfans_once",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.debug("Scheduled a one-off OnlyFans account index sync")
+
+    def _onlyfans_index_is_empty(self) -> bool:
+        """Whether the account index has nothing in it.
+
+        A failure to check counts as "not empty", so a database hiccup cannot
+        trigger a five-site crawl -- the same way the studio check treats it.
+        """
+
+        from program.media.onlyfans import OnlyFansAccount
+
+        try:
+            with db_session() as session:
+                return (
+                    session.execute(select(OnlyFansAccount).limit(1)).first() is None
+                )
+        except SQLAlchemyError as exc:
+            logger.debug(f"Could not check the OnlyFans account index: {exc}")
+            return False
+
+    def _onlyfans_service(self):
+        """The OnlyFans index service, built lazily like the rest."""
+
+        from program.services.onlyfans import OnlyFansService
+
+        if self._onlyfans is None:
+            self._onlyfans = OnlyFansService()
+
+        return self._onlyfans
+
+    def _sync_onlyfans(self) -> None:
+        """Rebuild the performer index from the archive sites. Weekly."""
+
+        service = self._onlyfans_service()
+
+        if not service.initialized:
+            return
+
+        try:
+            service.sync()
+        except Exception as exc:
+            logger.error(f"OnlyFans account index sync failed: {exc}")
+
+    def _enrich_onlyfans(self) -> None:
+        """Attach avatars and bios to accounts that lack them."""
+
+        service = self._onlyfans_service()
+
+        if not service.initialized:
+            return
+
+        try:
+            service.enrich_batch()
+        except Exception as exc:
+            logger.error(f"OnlyFans account enrichment failed: {exc}")
 
     def _studio_service(self):
         """The studio directory service, built lazily like the rest."""

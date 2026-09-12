@@ -5,7 +5,13 @@ from abc import ABC, abstractmethod
 
 import requests
 
-from program.services.directscrapers.models import DirectSource, DirectVideo
+from program.services.directscrapers.models import (
+    DirectAccount,
+    DirectGallery,
+    DirectImage,
+    DirectSource,
+    DirectVideo,
+)
 
 
 # These sites serve different markup to anything that looks automated, so the
@@ -75,6 +81,55 @@ class DirectScraper(ABC):
     @abstractmethod
     def resolve(self, video_id: str) -> list[DirectSource]:
         """Return playable renditions for one video, highest quality first."""
+
+    # --- Performer accounts -------------------------------------------------
+    #
+    # Everything below is OPTIONAL and must stay that way. Making any of it
+    # abstract would put every existing plugin into `DiscoveryResult.errors` at
+    # construction time -- twenty scrapers would vanish at once, and the Plugins
+    # tab would report twenty broken files rather than one changed contract.
+    #
+    # The default is to return nothing, which is the honest answer for a site
+    # that has no model index: "I do not carry accounts", not an error and not
+    # an empty result that needs explaining.
+
+    #: Whether `list_accounts` returns anything. Lets the account index pick
+    #: its sources without constructing a request per plugin to find out.
+    indexes_accounts: bool = False
+
+    def list_accounts(self, page: int = 1) -> list[DirectAccount]:
+        """One page of the site's performer index.
+
+        Paging is 1-based and the caller stops when a page repeats or empties,
+        so a site with a fixed page size needs no count endpoint.
+        """
+
+        return []
+
+    def account_profile(self, handle: str) -> DirectAccount | None:
+        """The account's own page -- avatar and bio, where the index had neither."""
+
+        return None
+
+    def account_videos(self, handle: str, page: int = 1) -> list[DirectVideo]:
+        """One page of an account's videos, newest first.
+
+        Newest-first is the contract rather than the site's default, because a
+        feed the user reads as chronological must not silently be ordered by
+        popularity on one site out of six.
+        """
+
+        return []
+
+    def account_galleries(self, handle: str, page: int = 1) -> list[DirectGallery]:
+        """One page of an account's image galleries, newest first."""
+
+        return []
+
+    def gallery_images(self, gallery_id: str) -> list[DirectImage]:
+        """Every image in one gallery, in the order the site presents them."""
+
+        return []
 
     def _get(self, url: str, **kwargs) -> requests.Response:
         kwargs.setdefault("timeout", 20)
@@ -169,6 +224,9 @@ def resolution_from_dimensions(dimensions: str | None) -> str | None:
 
 __all__ = [
     "BROWSER_HEADERS",
+    "DirectAccount",
+    "DirectGallery",
+    "DirectImage",
     "DirectScraper",
     "DirectSource",
     "DirectVideo",

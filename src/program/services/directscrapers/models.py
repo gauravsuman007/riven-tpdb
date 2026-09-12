@@ -65,3 +65,62 @@ class DirectSource:
     """Headers the upstream requires -- Referer, mostly. Several of these CDNs
     return 403 without one, so the value travels with the URL rather than being
     reconstructed by whoever fetches it."""
+
+
+@dataclass(frozen=True, slots=True)
+class DirectAccount:
+    """One performer account as a site's model index described it.
+
+    ``handle`` is the site's own slug, which is *not* an identity across sites:
+    the same person is ``sophie-rain`` on one and ``sophierain`` on another.
+    Collapsing the two is the index's job, not this dataclass's -- here the
+    slug is kept verbatim because it is what the site's URLs are built from.
+    """
+
+    site: str
+    handle: str
+    display_name: str
+    page_url: str
+    avatar: str | None = None
+    bio: str | None = None
+    video_count: int | None = None
+    """``None`` when the site did not say, never zero -- an account shown as
+    holding 0 videos reads as empty rather than uncounted."""
+    image_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DirectGallery:
+    """A set of images, as a site's album listing described it.
+
+    The video/source split applies here too, and for the same reason: a listing
+    is cheap and safe to show in bulk, while the image URLs inside a gallery
+    are many and often carry the same short-lived tokens a media URL does. A
+    gallery is therefore a cover and a count until someone opens it.
+    """
+
+    site: str
+    gallery_id: str
+    title: str
+    page_url: str
+    cover: str | None = None
+    image_count: int | None = None
+    posted: str | None = None
+    """The site's own date string, unparsed. Sites disagree on format and the
+    only use here is display, so parsing would add a failure mode for nothing."""
+
+    def key(self) -> str:
+        return f"{self.site}:{self.gallery_id}"
+
+
+@dataclass(frozen=True, slots=True)
+class DirectImage:
+    """One image inside a gallery."""
+
+    url: str
+    width: int | None = None
+    height: int | None = None
+    headers: dict[str, str] = field(default_factory=dict)
+    """Same contract as :class:`DirectSource.headers`. These CDNs 403 without a
+    Referer, so an image URL cannot be dropped into an ``<img src>`` either --
+    it has to be fetched by something that can set the header."""
