@@ -60,7 +60,6 @@ class OnlyFansService:
     """The performer index: who exists, and which sites carry them."""
 
     def __init__(self) -> None:
-        self.settings = settings_manager.settings.onlyfans
         self.initialized = False
 
         if not self.settings.enabled:
@@ -68,6 +67,21 @@ class OnlyFansService:
 
         self.initialized = True
         logger.success("OnlyFans performer index initialized!")
+
+    @property
+    def settings(self):
+        """Read through to the live settings, never a snapshot.
+
+        Binding these in `__init__` looks harmless and is not: a save replaces
+        the settings object, so a long-lived service goes on reading the
+        values it was constructed with. That is how enabling the profile
+        lookup did nothing at all -- the switch was saved, read back as true,
+        and the service kept consulting its copy until the next restart. It
+        is the same shape as the scheduler bug that made every editable
+        interval a no-op, and the same fix: do not keep a copy.
+        """
+
+        return settings_manager.settings.onlyfans
 
     # --- Building the index -------------------------------------------------
 

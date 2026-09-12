@@ -1089,13 +1089,40 @@ same reason.
 - **Only two of five sites carry an avatar at all**; the rest render "no
   image" in the index AND on the model's own page. All five carry video
   thumbnails, so enrichment falls back to the newest video's still.
-- **`onlyfans.com` public profiles are useless and dangerous to "fix".**
+- **Scraping `onlyfans.com/<handle>` is useless and dangerous to "fix".**
   Every handle answers 200 with the same 17,669-byte app shell; its
   `og:image` is the OnlyFans logo and its `og:description` the site's
   marketing copy. Two real handles returned byte-identical pages. It wrote
   nothing only because the patterns expected quoted attributes and the shell
   emits them bare -- making the regex "work" would have stamped one logo on
-  every account. There is now an explicit refusal; the setting defaults off.
+  every account. Removed; `services/onlyfans/profile.py` replaces it.
+- **The profile data comes from the platform's own guest API.** The shell
+  above fetches `/api2/v2/users/<name>` for itself, and that endpoint answers
+  a guest -- no account, no login -- if the request is signed: a `sess`
+  cookie from `/api2/v2/init`, then `sha1` over
+  `static_param\ntime_ms\npath\nuser_id` plus a checksum summed from fixed
+  digest positions. `user-id` must be `"0"` in the header AND in the signed
+  message; they have to agree. The constants rotate on every OnlyFans
+  redeploy, so they are pulled from a published rules feed at runtime with a
+  vendored copy as the floor. Measured 2026-09-12: real per-account avatar,
+  header and bio, and a **404 for a handle that is not an account** -- which
+  is the part the HTML shell could never give and the only reason this is
+  trusted to write to the index.
+- **`handle` is the wrong string to ask OnlyFans for.** It has been stripped
+  to alphanumerics so three sites' spellings dedupe to one identity, so it
+  404s for anyone whose username has a dot or an underscore. Up to four
+  candidates are tried per account, the sites' own slugs first (a hyphenated
+  slug is the site's spelling, not a username -- OnlyFans forbids hyphens).
+- **A 404 is remembered; a failure is not.** `of_checked_at` means "asked and
+  answered". Stamping an error would look identical to a rate limit and would
+  permanently write off every account the pass happened to reach during an
+  outage. A 429 pauses the whole batch for 15 minutes rather than the one
+  account.
+- **`avatar_from_site` exists because `avatar_url or ...` cannot upgrade.**
+  Most pictures are borrowed -- an archive site's thumbnail, or a still from
+  the performer's newest video -- and once the column is full, the
+  performer's own profile picture could never replace it without knowing the
+  one there was borrowed.
 - **A settings save now reconciles the scheduler.** `refresh_content_jobs()`
   was only called from the collections toggle, so editing any interval
   through the settings form read back as the new value and went on running at
