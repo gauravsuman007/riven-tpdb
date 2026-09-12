@@ -70,14 +70,13 @@ HIDDEN_SECTIONS: dict[str, frozenset[str]] = {
     # Rendering it in the generic form too would repeat the exact
     # two-write-paths trap `tailscale.auth_key` caused above -- a raw list-of-
     # strings editor saved through the generic form and the toggle's
-    # `/settings/set/direct_scraping.disabled` both writing the same key with
+    # `/settings/set/<section>.disabled` both writing the same key with
     # no way to tell which one is current.
     # `site_order` joins `disabled` here for the identical reason: the
     # Plugins tab's reorder controls own it, and a raw list-of-strings editor
     # in the generic form would be a second write path to the same value.
     # `results_per_site` is deliberately NOT hidden -- it has no other write
     # path, so hiding it would leave no way to set it at all.
-    "direct_scraping": frozenset({"disabled", "site_order"}),
     # `disabled` has a dedicated write path for the same reason
 }
 

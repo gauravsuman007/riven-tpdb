@@ -84,6 +84,23 @@ class AddonManifest:
     version: str = "0.0.0"
     host_api: int = HOST_API_VERSION
     nav: AddonNav | None = None
+    #: Named places in the HOST's own pages this add-on contributes a section
+    #: to, e.g. ``("details",)``. A page is the right shape for a feature that
+    #: owns its own screen; a slot is the right shape for one that belongs
+    #: *inside* something the host already renders -- a panel on a title's
+    #: page cannot be a route without tearing the page in half.
+    #:
+    #: The VOCABULARY IS THE HOST'S, not the add-on's. An add-on naming a slot
+    #: the host does not offer contributes nothing and is not an error: the
+    #: host is free to retire a slot, and an add-on built against an older
+    #: host must degrade to "that section does not appear" rather than to a
+    #: broken page.
+    #:
+    #: Filled the same way a page is -- from the add-on's ``ui/addon.js`` --
+    #: except that the bundle exports a ``slots`` object keyed by slot name
+    #: rather than a default mount function. Nothing is fetched unless a page
+    #: with that slot is actually rendered.
+    slots: tuple[str, ...] = ()
 
 
 class Addon:

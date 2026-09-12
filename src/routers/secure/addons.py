@@ -51,6 +51,10 @@ class AddonResponse(BaseModel):
     #: as "up to date", which is a different claim.
     update_available: bool | None = None
     nav: dict[str, Any] | None = None
+    #: Host page slots this add-on fills, e.g. ["details"]. The frontend
+    #: renders a slot only when some loaded add-on claims it, so an
+    #: absent or disabled add-on leaves no empty section behind.
+    slots: list[str] = []
     #: The add-on's settings as JSON Schema, which is all the settings page
     #: needs to render its tab.
     settings_schema: dict[str, Any] | None = None
@@ -95,6 +99,7 @@ def _describe(key: str) -> AddonResponse:
         revision=record.revision,
         update_available=record.update_available,
         nav=record.nav,
+        slots=record.slots,
         settings_schema=record.settings_schema,
         settings=settings_manager.settings.addons.get(key),
         tables=size["tables"],
@@ -328,10 +333,3 @@ def _reconcile() -> None:
         # nothing to do -- and a debug line nobody sees is how that stays
         # indistinguishable.
         logger.warning(f"Addons: could not refresh scheduled jobs: {exc}")
-
-    try:
-        from program.services.directscrapers import reset as reset_direct
-
-        reset_direct()
-    except Exception as exc:
-        logger.debug(f"Addons: could not reset the scraper registry: {exc}")

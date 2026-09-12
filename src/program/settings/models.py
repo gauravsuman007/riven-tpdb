@@ -1659,58 +1659,6 @@ class VpnModel(Observable):
     )
 
 
-class DirectScrapingModel(Observable):
-    """Which direct-site scrapers run.
-
-    A scraper is just a Python file defining a `DirectScraper` subclass --
-    see the Plugins tab and README for the interface. None ship with the
-    image; every site scraper is a plugin, discovered from `plugin_dir` at
-    startup and rescan. See the `riven-tpdb-scrapers` repo for the maintained
-    set -- drop any of its files in to enable that site.
-    """
-
-    plugin_dir: str = Field(
-        default="/riven/plugins",
-        description=(
-            "Where to look for user-supplied scraper plugins, mapped from a "
-            "host folder in docker-compose.yml. Changing this without "
-            "changing the compose mount points at a path nothing is shared "
-            "into."
-        ),
-    )
-    disabled: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Scraper keys switched off. Written by the Plugins tab's toggle, "
-            "not meant to be "
-            "edited here directly."
-        ),
-    )
-    site_order: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Scraper keys in the order their results should appear. A site "
-            "listed earlier always outranks a later one, whatever the two "
-            "results' relevance scores say -- this is a stated preference, "
-            "not a measurement. Anything not listed sorts after everything "
-            "that is. Written by the Plugins tab's reorder controls, not "
-            "meant to be edited here directly."
-        ),
-    )
-    results_per_site: int = Field(
-        default=3,
-        ge=1,
-        le=20,
-        description=(
-            "How many results to keep per site, after ranking, when no "
-            "explicit limit is given in the search request. The Riven UI's "
-            "own direct-search box always uses this value; the raw API "
-            "still accepts a one-off `limit` query param that overrides it "
-            "for a single call."
-        ),
-    )
-
-
 class AppModel(Observable):
     version: str = Field(default_factory=get_version, description="Application version")
     api_key: str = Field(default="", description="API key for Riven API access")
@@ -1740,10 +1688,6 @@ class AppModel(Observable):
     vpn: VpnModel = Field(
         default_factory=lambda: VpnModel(),
         description="Route scraper and streaming traffic through a VPN",
-    )
-    direct_scraping: DirectScrapingModel = Field(
-        default_factory=lambda: DirectScrapingModel(),
-        description="Direct streaming-site scrapers, all loaded as plugins",
     )
     # --- Add-ons ------------------------------------------------------------
     # Deliberately an untyped subtree rather than a field per add-on. This

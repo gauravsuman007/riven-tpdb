@@ -981,56 +981,25 @@ The picker now searches BOTH collections: `IndexerService` resolves a tpdb_id
 by trying `get_scene` then `get_movie`, so either kind of record is a valid
 answer, and a library title that is really a scene was otherwise unmatchable.
 
-## The direct-scraper plugins
-The direct-scraper plugins are their own repo,
-`gauravsuman007/riven-tpdb-scrapers` (`../riven-tpdb-scrapers`, files under
-`scrapers/`). `plugins/` in THIS repo holds only `.gitkeep`; the deployment
-copies live at `/home/hellonfire/Server/riven-tpdb/plugins` on the server,
-bind-mounted read-only. There is deliberately no CI and no build: a plugin
-only imports successfully inside a running container. So a change is three
-steps -- commit to the scrapers repo, `scp` the file to that server path, then
-`POST /api/v1/direct/plugins/rescan` (Settings -> Plugins -> Rescan folder).
-No rebuild, no restart. Check all three copies agree before assuming a fix is
-live; the server copy is the one that runs.
+## The tube-site scrapers are an add-on now
 
-Twenty scrapers are deployed as of 2026-09-11. Ten were added in one batch
-(porntrex, watchporn, whoreshub, xxxtube, pornwex, yespornvip, inxxx,
-saintporn, xxxfiles, pornone), and the useful fact for anyone adding more is
-that **most tube sites are the same CMS**, Kernel Video Sharing: eight of the
-ten are, and one template covers them. Some KVS deployments scramble the
-media URL behind a `function/0/` prefix that decodes with the page's own
-`license_code` -- the scrapers repo's AGENTS.md documents it in full.
+They were `program/services/directscrapers/`, `routers/secure/direct.py`,
+`settings.direct_scraping` and a separate `riven-tpdb-scrapers` repo of plugin
+files. All of it is now
+[riven-addon-tubescraper](https://github.com/gauravsuman007/riven-addon-tubescraper),
+including the twenty scrapers, which ship in that repo's `scrapers/` folder --
+so there is no `plugins/` bind mount to keep in sync any more. Its traps, the
+KVS decoder and the scraper contract live in that repo's own docs.
 
-**A scraper returning nothing is usually not a bug in the scraper.**
-`DirectScraperService.search` filters each site's results centrally through
-`best_matches()` against the library entry, so a plugin can hand back thirty
-rows and `/direct/search` still answers with none, and `errors: {}` alongside
-an empty `results` means exactly that -- the plugin ran fine and the ranker
-discarded everything. Exercise `search()` directly before hunting a parsing
-bug; a whole debugging session was spent on this.
+What stayed here, and why: the frontend's `direct-play/[token]/[file]` route
+and `lib/server/bookmarks.ts` are the HOST's player infrastructure -- minting a
+URL an external app can open, and filling in the overlay's description. They
+call the add-on through `TUBE_API` in `lib/addons.ts`, which is the single
+place that knows the add-on's key.
 
-Do not try to import `program.*` in a throwaway script on this host to test a
-plugin: pulling in the package standalone alongside the running app is enough
-to get the process OOM-killed (exit 137). Test through the running app's own
-API instead.
-
-- The duration/sort/HD filters are NOT honoured on a GET. `?len=long` on the
-  search URL renders the UNFILTERED page, the same silent-ignore failure as
-  `/home?story=`. The site's own control writes the filters into
-  `location.search` and then POSTs them back to the URL it just wrote, so a
-  filtered search is: GET once for the CSRF token and cookies, then POST
-  `len`/`p` to `<search url>?len=long&p=N`, which answers with an HTML
-  fragment of the same `<div class="item">` markup. Measured: shortest result
-  went from 2:41 to 10:18 and nothing under ten minutes survived.
-- Pagination is that same POST with `p=0,1,2...`, 24 items a page, which is
-  the only way to satisfy a `limit` above 24.
-- Attribute values are HTML-ESCAPED. About one thumbnail in five is on
-  `img.pvvstream.pro` and carries a query string, so an un-unescaped `data-src`
-  requests `&amp;idx=14` and the CDN answers 403 -- the whole of the "some
-  thumbnails never load" bug. Nothing was missing from the markup and nothing
-  failed to parse; the URLs were simply wrong. `cdn2.pvvstream.pro` has no
-  query string, which is why most were fine and the breakage looked random.
-  Verified after the fix: 72 of 72 thumbnails across three queries return 200.
+If it is not installed, its API answers 404 and those paths degrade the way
+they already do for an unreachable backend. **The section on a title's page
+does not appear at all** -- see the slots note below.
 
 ## Add-ons
 
@@ -1115,6 +1084,50 @@ repo's AGENTS.md.
   `settings.<key>` to `settings.addons.<key>`, and the old one is dropped by
   `AppModel` validation on the first save. Re-set anything that was not a
   default -- `onlyfans.enabled` came back false and the index quietly stopped.
+
+### Slots: an add-on inside the host's own page
+
+A page is the right shape for an add-on that owns a screen. It is the wrong
+shape for one whose whole interface belongs *inside* something the host
+already renders -- a panel on a title's page cannot be a route without tearing
+the page in half. `AddonManifest.slots` is that second shape.
+
+- **The vocabulary is the HOST's.** Two slots exist: `details` (a section on a
+  title's page) and `settings` (beside the generated form in that add-on's own
+  settings tab). An add-on naming a slot the host does not offer contributes
+  nothing and is NOT an error -- the host must be free to retire a slot, and an
+  add-on built against an older host has to degrade to "that section does not
+  appear" rather than to a broken page.
+- **The bundle exports `slots`, keyed by name**, rather than a default mount
+  function. One bundle can therefore serve a page and several slots without the
+  host guessing which it was handed.
+- **Nothing is fetched unless a page with that slot renders**, and
+  `$lib/addon-slots.ts` memoises the add-on list as the in-flight PROMISE, so
+  several slots on one page share one request rather than racing.
+- **A failed lookup is not cached.** Caching "there are no add-ons" because the
+  backend was briefly unreachable would hide a working add-on's section until a
+  full reload.
+- **`AddonSlot` renders no wrapper until something mounts** -- `display: none`,
+  not an empty div. A zero-height element still occupies a grid cell and still
+  collects the surrounding layout's gap, which is how "the section does not show
+  up" quietly becomes "the section is invisible and the page has a hole in it".
+- **The settings slot is scoped with `only={key}`.** Without it every add-on's
+  settings panel would render in every add-on's tab, since that tab is rendered
+  once per add-on and the slot is otherwise filled by all of them.
+- **`apply()` in `addon-control.svelte` calls `resetAddonSlots()`.** It is the
+  one choke point every mutation passes through; without it, disabling an
+  add-on leaves its section on every title's page until a reload, which reads
+  as "the toggle did nothing".
+- **The host bridge is one function, `host.play()`**, and should stay that way.
+  Anything reachable over HTTP the add-on fetches itself. The player is the
+  exception because it is in-page state owned by this app's Svelte runtime and
+  the add-on's bundle carries a different one.
+- TRAP: the generic add-on passthrough had to learn `x-accel-buffering` and
+  `connection`. The tube scraper's search is server-sent events, and the
+  dedicated proxy it replaced set both explicitly. Without them a buffering
+  reverse proxy added later would hold every frame and deliver them together at
+  the end -- which is exactly what streaming existed to avoid, and looks like a
+  slow backend rather than a dropped header.
 
 ### The frontend side
 
@@ -1397,105 +1410,26 @@ Consequences worth remembering:
   media they now own. The `CollectionEntry` always survives -- it is a catalogue
   row, so the title stays browsable and re-requestable.
 
-## Direct-scrape matching (tube sites)
-- `services/directscrapers/ranking.py` scores results from the streaming-site
-  scrapers, not just titles: `MatchTarget` carries performers/studio/series,
-  and a bare performer-name match with no title agreement is deliberately
-  NOT enough (these actresses appear in hundreds of unrelated scenes).
-- TRAP, the SAME bug as the "Pirates" containment bug in
-  `services/awards/matching.py`, reapplied here: a query's tokens being
-  *contained* in a result said nothing about how much of the result was
-  unaccounted for. A one- or two-word title ("Unfolding", "Disciplinary
-  Action") cleared a perfect score against any sentence that happened to
-  contain the word, because the +0.25 "whole title as one run" bonus never
-  checked how much surrounding, unrelated text that run sat inside. Measured
-  live against a 50-title/6,700-result study: 80% of "confident" (score 1.0)
-  matches carried no performer/studio corroboration, and reading a sample of
-  those showed most were wrong. (`docs/` is gitignored, so the full study
-  writeup with the sample data lives only on whichever machine produced it --
-  the summary here is the durable copy; re-run the study rather than looking
-  for that file elsewhere.)
-- Fixed two ways: `_COMMON` was missing this vertical's own genre/tag
-  vocabulary ("anal", "milf", "feels", "good", "affair", ...) -- these were
-  scored as fully distinctive, which is why even 3+ word titles built from
-  generic descriptors collided constantly. Adding them alone fixed most
-  cases via the existing "nothing distinctive matched -> 0" rule. What is
-  left (a title with 0-1 distinctive tokens even after that) gets a
-  containment/bloat gate: if the video title carries 2+ distinctive tokens
-  that neither the target's words nor its known performers/studio explain,
-  the score is capped well under `MIN_RELEVANCE`.
-- TRAP: the bloat gate only fires when `target.performers or target.studio`
-  is non-empty. A bare custom search (the "Watch from a site" free-text
-  field) has no performer/studio data to tell an appended name apart from an
-  unrelated sentence, so it is left ungated -- a real limit of that path
-  (there is nothing to corroborate against), not an inconsistency.
-- Duration was the presumed strong corroborator going in and measured out
-  weak: only 5% of even the most confident matches had a duration close to
-  the target's runtime, because these sites overwhelmingly host individual
-  scenes cut from a feature, not the feature itself. Kept as a minor ordering
-  signal only (`sort_key`), not load-bearing.
-- Conclusion, and why this is rules rather than a model: 50 titles is a
-  validation set, nowhere near enough to train anything, and a wrong match
-  that looks confident is the worst failure mode in this codebase. Rules fail
-  with a traceable reason; a model fails silently at high confidence.
+## Direct-scrape matching and scraper plugins: moved
 
-## Direct-scrape scraper plugins
-- `services/directscrapers/plugins.py` discovers `DirectScraper` subclasses
-  dropped into `settings.direct_scraping.plugin_dir` (default
-  `/riven/plugins`, mapped from a `./plugins` host folder in
-  `docker-compose.yml`, `:ro` -- the container only ever reads plugin files).
-  There is ONE registry, not a built-in path and a separate plugin path: the
-  eight bundled scrapers (`BUILTIN` on `DirectScraperService`) and anything
-  discovered from disk both end up as ordinary `DirectScraper` instances in
-  `service.services`, and `search`/`resolve` never ask which kind a scraper
-  is. README.md documents the plugin interface for anyone adding a site.
-- TRAP averted, not hit: a plugin key CANNOT shadow a built-in
-  (`tnaflix`/`eporner`/etc are reserved). Without that check, a plugin file
-  claiming an existing key would silently replace a tested, maintained
-  scraper with an unreviewed one on the next rescan -- reported as a load
-  error instead, visible in Settings -> Plugins.
-- A broken plugin (syntax error, missing class, a constructor that raises)
-  degrades to a per-file error the same way a VPN provider degrades to
-  "unavailable" -- never raises into the service, never takes the other
-  scrapers down with it. `discover_plugins` is the one place that boundary
-  lives; do not let a plugin's exception propagate past it.
-- Settings: `direct_scraping.disabled` (list of scraper keys, builtin or
-  plugin) is the single source of truth for on/off, written ONLY via
-  `POST /direct/plugins/{key}/enabled`, never through the generic settings
-  form -- `disabled` is in `HIDDEN_SECTIONS` for exactly the reason
-  `tailscale.auth_key` was: two write paths to the same value is how the
-  "two auth key fields" bug happened the first time.
-- `DirectScraperService` (and thus `describe_scrapers()`, which the Plugins
-  tab polls) reads settings AND re-scans the plugin folder on every call --
-  deliberately no caching of the file list itself, since "did my dropped-in
-  file show up" needs to be true within one click, not after some unrelated
-  settings change invalidates a cache. The registry actually used by
-  `/direct/search` IS cached (`services/directscrapers` module-level
-  `service()`/`reset()`, same singleton-plus-observer pattern as VPN) and is
-  invalidated by the enable/disable endpoint and by `/direct/plugins/rescan`.
-- `program/services/directscrapers/__init__.py` imports `settings_manager`
-  lazily, inside the methods that need it, not at module scope. Importing it
-  at the top would pull RTN and the DB models into `test_direct_scrapers.py`,
-  which is otherwise self-contained and runs without a real settings module.
-- **The stream proxy must send a browser User-Agent.** `BROWSER_HEADERS` is on
-  the scraper's session, not on `/direct/stream`'s httpx client, and these
-  sites gate their MEDIA handler the same way they gate their markup. Measured
-  on x-x-x.tube: the identical resolved URL answers **500 to httpx's default
-  agent and 206 to a browser's**. The failure is maximally confusing because
-  `/direct/sources` succeeds -- resolving went over the scraper's session --
-  so the site looks reachable and only playback fails. Same for
-  `/onlyfans/stream` and `/onlyfans/image`.
-- **A site can advertise a rendition its CDN does not hold.** xxxfiles lists a
-  720p download link WITH ITS SIZE ("83.64 Mb") beside a 480p that works, and
-  the 720p answers `404 No such file`. `/direct/stream` therefore falls
-  through to the remaining renditions in order rather than reporting the
-  site's gap as a failure; the fallback is logged, so "played, but not at the
-  quality asked for" stays visible.
-- **PornTrex is the one KVS deployment whose id is not enough.** Its
-  `video_id` carries `"<id>/<slug>"`. The site fails three ways and none is
-  loud: exact slug without a trailing slash serves the player, WITH a trailing
-  slash the same page comes back missing `video_url`/`license_code`, and the
-  bare id answers **200 with an empty body**.
+`ranking.py` (why a bare performer-name match is deliberately not enough, and
+the containment/bloat gate that fixed 80% of falsely-confident matches) and
+`plugins.py` (per-file error isolation, key collisions) went to
+riven-addon-tubescraper with the rest. Both sections, including the measured
+50-title study they came from, are in that repo's `AGENTS.md` and `README.md`.
+
+Two findings from them that are about THIS repo and so stay here:
+
+- **The stream proxy must send a browser User-Agent.** These sites gate their
+  MEDIA handler the same way they gate their markup. Measured on x-x-x.tube:
+  the identical resolved URL answers **500 to httpx's default agent and 206 to
+  a browser's**. Maximally confusing because resolving succeeds -- it goes over
+  the scraper's own session -- so the site looks reachable and only playback
+  fails. The same applies to the OnlyFans add-on's `/stream` and `/image`.
+- **`settings.direct_scraping` is gone from `AppModel`.** Extracting a feature
+  moves its subtree to `settings.addons.<key>`, and the old one is dropped by
+  validation on the first save. Anything that was not a default has to be
+  re-set -- see the add-ons trap about `onlyfans.enabled` coming back false.
 
 ## TPDB search ordering
 TPDB's `q` search returns matches in no useful order, ignores every ordering

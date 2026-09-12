@@ -55,6 +55,10 @@ class LoadedAddon:
     update_available: bool | None = None
     settings_schema: dict[str, Any] | None = None
     nav: dict[str, Any] | None = None
+    #: Host page slots this add-on fills. Read straight from the
+    #: manifest and passed through to the frontend, which decides whether
+    #: any of them are places it actually offers.
+    slots: list[str] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
     #: Every module name this add-on put into `sys.modules`, so unloading can
     #: take them back out again. Recorded rather than guessed from the key --
@@ -165,6 +169,8 @@ class AddonRegistry:
             record.error = f"{key!r} is not usable as a schema name"
             logger.error(f"Addon {key}: {record.error}")
             return record
+
+        record.slots = list(manifest.slots)
 
         if manifest.nav is not None:
             record.nav = {
