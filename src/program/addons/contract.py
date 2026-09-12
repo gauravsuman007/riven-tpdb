@@ -75,6 +75,48 @@ class AddonNav:
 
 
 @dataclass(slots=True)
+class AddonTv:
+    """What this add-on offers the TELEVISION, as data rather than as a page.
+
+    `riven-tv` is a second, JavaScript-free renderer for televisions running
+    engines from about 2016 -- it cannot run an add-on's ``ui/addon.js`` any
+    more than it can run the frontend's own bundle. So an add-on reaches that
+    surface the only way anything does there: by answering plain JSON that a
+    generic renderer draws.
+
+    Each flag is a promise that this add-on's router answers the matching
+    endpoint, relative to its own mount (``/api/v1/x/<key>/``). They are
+    separate because they are genuinely separate features -- the tube scraper
+    has nothing to browse but belongs on a title's page; an add-on that owns a
+    catalogue is the other way round -- and an add-on may of course offer both
+    or neither.
+
+    ``tv/browse``  -> a screen of its own, reached from the television's nav
+    ``tv/detail``  -> what one card on that screen opens
+    ``tv/play``    -> where the bytes for one video are
+    ``tv/title``   -> a section inside the television's own title page
+
+    THE SHAPES ARE DELIBERATELY SMALL, and documented in ``docs/tv.md`` in each
+    add-on repo. A card is an id, a title, a picture and what it does. That is
+    everything a panel across a room can show and everything a directional pad
+    can operate, and holding the contract to it is what lets ONE renderer draw
+    an add-on nobody had written when it was built.
+
+    A FLAG IS NOT A GUARANTEE THE ENDPOINT WORKS. The television treats a
+    missing or malformed answer as "that section does not appear", never as an
+    error page -- the same way the host treats a slot an add-on names but does
+    not fill. An add-on is free to be newer than the television.
+    """
+
+    #: Its own screen: ``tv/browse``, ``tv/detail`` and ``tv/play``. Implies a
+    #: nav entry, so ``AddonNav.tv`` is ignored unless this is set -- one flag
+    #: meaning "appears on the TV" is one fewer way to be half-configured.
+    browse: bool = False
+    #: A section on the television's title page: ``tv/title``.
+    title: bool = False
+
+
+@dataclass(slots=True)
 class AddonManifest:
     """The add-on's own description of itself."""
 
@@ -84,6 +126,10 @@ class AddonManifest:
     version: str = "0.0.0"
     host_api: int = HOST_API_VERSION
     nav: AddonNav | None = None
+    #: What the television surface can draw for this add-on. ``None`` means it
+    #: has no presence there at all, which is the correct default: a TV screen
+    #: is a second renderer to keep working, and most add-ons do not want one.
+    tv: AddonTv | None = None
     #: Named places in the HOST's own pages this add-on contributes a section
     #: to, e.g. ``("details",)``. A page is the right shape for a feature that
     #: owns its own screen; a slot is the right shape for one that belongs

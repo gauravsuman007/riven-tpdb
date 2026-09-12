@@ -55,6 +55,10 @@ class LoadedAddon:
     update_available: bool | None = None
     settings_schema: dict[str, Any] | None = None
     nav: dict[str, Any] | None = None
+    #: What the television surface may draw for this add-on, or None. Read
+    #: straight from the manifest; the frontend's `/api/tv/shell` decides
+    #: which of it `riven-tv` is actually offered.
+    tv: dict[str, Any] | None = None
     #: Host page slots this add-on fills. Read straight from the
     #: manifest and passed through to the frontend, which decides whether
     #: any of them are places it actually offers.
@@ -179,6 +183,9 @@ class AddonRegistry:
                 "href": f"/x/{key}",
                 "tv": manifest.nav.tv,
             }
+
+        if manifest.tv is not None:
+            record.tv = {"browse": manifest.tv.browse, "title": manifest.tv.title}
 
         try:
             self._apply_settings(record, addon)

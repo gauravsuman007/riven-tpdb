@@ -51,6 +51,9 @@ class AddonResponse(BaseModel):
     #: as "up to date", which is a different claim.
     update_available: bool | None = None
     nav: dict[str, Any] | None = None
+    #: What the television can draw for this add-on: {"browse": bool,
+    #: "title": bool}, or None for no presence there. See `AddonTv`.
+    tv: dict[str, Any] | None = None
     #: Host page slots this add-on fills, e.g. ["details"]. The frontend
     #: renders a slot only when some loaded add-on claims it, so an
     #: absent or disabled add-on leaves no empty section behind.
@@ -99,6 +102,7 @@ def _describe(key: str) -> AddonResponse:
         revision=record.revision,
         update_available=record.update_available,
         nav=record.nav,
+        tv=record.tv,
         slots=record.slots,
         settings_schema=record.settings_schema,
         settings=settings_manager.settings.addons.get(key),
