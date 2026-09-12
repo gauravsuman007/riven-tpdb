@@ -74,11 +74,6 @@ services:
             # Harmless when the tailscale service is not running -- the socket
             # is simply absent and the VPN reports itself unreachable.
             - tailscale-sock:/var/run/tailscale
-            # Drop a scraper plugin .py file here and click "Rescan folder"
-            # on Settings -> Plugins to pick it up -- see README.md for the
-            # interface it needs to implement. Read-only: this container only
-            # ever reads plugin files, never writes to the folder.
-            - ./plugins:/riven/plugins:ro
             # Add-ons: self-contained features with their own pages, settings,
             # scheduled jobs and database schema, each in its own repository.
             # One folder per add-on, named for the add-on -- the folder name is
@@ -86,8 +81,15 @@ services:
             # prefix. Managed from Settings -> Plugins -> Add-ons, which can
             # install one straight from a git URL.
             #
-            # NOT read-only, unlike ./plugins: installing, updating and
-            # removing an add-on all write here.
+            # NOT read-only: installing, updating and removing an add-on all
+            # write here.
+            #
+            # There is deliberately no separate `./plugins` mount any more.
+            # Site scrapers used to live in one, which meant a scraper change
+            # was a commit to one repo, an scp to this folder and a rescan --
+            # three places to get out of step. They now ship inside the add-on
+            # that loads them, so installing the add-on installs them and
+            # updating it refreshes them.
             - ./addons:/riven/addons
         depends_on:
             riven_postgres:

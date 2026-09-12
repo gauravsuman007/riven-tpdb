@@ -987,8 +987,21 @@ They were `program/services/directscrapers/`, `routers/secure/direct.py`,
 `settings.direct_scraping` and a separate `riven-tpdb-scrapers` repo of plugin
 files. The feature is now
 [riven-addon-tubescraper](https://github.com/gauravsuman007/riven-addon-tubescraper),
-including the twenty scrapers, which ship in that repo's `scrapers/` folder --
-so there is no `plugins/` bind mount to keep in sync any more.
+including the twenty scrapers, which ship in that repo's `scrapers/` folder.
+**The `./plugins` bind mount is gone from docker-compose.yml**: a scraper
+change used to be a commit, an `scp` to that folder and a rescan -- three
+places to get out of step -- and is now a commit plus Update in the add-ons
+page. On the server the old folder is `plugins.superseded-by-tubescraper-addon`
+(verified byte-identical to the archived repo before it was set aside).
+
+TRAP, hit during the migration: **`settings.direct_scraping` did not survive.**
+Extracting a feature moves its subtree to `settings.addons.<key>` and the old
+one is dropped by `AppModel` validation on the first save, so any scraper that
+had been disabled and any custom site order came back at their defaults, with
+nothing reporting it. Exactly what happened to `onlyfans.enabled`. Check and
+re-set anything that was not a default before extracting a feature, because
+afterwards the old values are unrecoverable -- the only backup on the server
+predated the feature entirely.
 
 ### What stayed, and the mistake that showed why
 
