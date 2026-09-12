@@ -1759,6 +1759,14 @@ class AppModel(Observable):
         default="/riven/addons",
         description="Folder the host loads add-ons from",
     )
+    addons_git_token: str = Field(
+        default="",
+        description=(
+            "Personal access token used to install add-ons from private git "
+            "repositories. Sent as a per-command header, never written into "
+            "the add-on's git remote."
+        ),
+    )
     # Kept beside the config rather than inside it: a disabled add-on is not
     # loaded at all, so it has nowhere of its own to record that it is off.
     addons_disabled: list[str] = Field(

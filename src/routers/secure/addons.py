@@ -121,6 +121,10 @@ class InstallRequest(BaseModel):
     url: str
     #: Branch or tag. Omitted takes the repository's default branch.
     ref: str | None = None
+    #: For a private repository. Falls back to `settings.addons_git_token`, so
+    #: the usual case is to set it once rather than paste it per install. Never
+    #: stored here and never returned by any endpoint in this router.
+    token: str | None = None
 
 
 @router.post("/install", operation_id="install_addon")
@@ -134,7 +138,12 @@ def install_addon(body: Annotated[InstallRequest, Body()]) -> AddonsResponse:
     """
 
     try:
-        key = install(body.url, registry().directory, ref=body.ref)
+        key = install(
+            body.url,
+            registry().directory,
+            ref=body.ref,
+            token=body.token or settings_manager.settings.addons_git_token or None,
+        )
     except InstallError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -162,7 +171,10 @@ def update_addon(key: str) -> AddonsResponse:
         raise HTTPException(status_code=404, detail=f"No add-on named {key}")
 
     try:
-        update(record.path)
+        update(
+            record.path,
+            token=settings_manager.settings.addons_git_token or None,
+        )
     except InstallError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

@@ -13,6 +13,7 @@ of those are checked in a temporary clone, before anything is put where the
 loader would find it -- so a bad install leaves nothing behind to explain.
 """
 
+import base64
 import os
 import re
 import shutil
@@ -39,9 +40,30 @@ class InstallError(Exception):
     """Anything that should be shown to the user as a reason, not a traceback."""
 
 
-def _git(*args: str, cwd: Path | None = None) -> str:
+def _auth_args(token: str | None) -> list[str]:
+    """Per-invocation credentials for a private repository.
+
+    Passed as `-c http.extraHeader`, never baked into the remote URL. A token
+    in the URL is written into `.git/config` by clone, which puts it on disk in
+    the add-ons volume AND makes it come back out of `remote get-url` -- which
+    the loader reports to the management API, so the token would be rendered
+    on the settings page for anyone who could see it.
+    """
+
+    if not token:
+        return []
+
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    return ["-c", f"http.extraHeader=Authorization: Basic {basic}"]
+
+
+def _redact(message: str, token: str | None) -> str:
+    return message.replace(token, "***") if token else message
+
+
+def _git(*args: str, cwd: Path | None = None, token: str | None = None) -> str:
     result = subprocess.run(
-        ["git", *args],
+        ["git", *_auth_args(token), *args],
         capture_output=True,
         text=True,
         timeout=TIMEOUT,
@@ -56,7 +78,7 @@ def _git(*args: str, cwd: Path | None = None) -> str:
         # stderr, trimmed: git is wordy and the last line is nearly always the
         # one that says what went wrong.
         detail = (result.stderr or result.stdout).strip().splitlines()
-        raise InstallError(detail[-1] if detail else "git failed")
+        raise InstallError(_redact(detail[-1] if detail else "git failed", token))
 
     return result.stdout.strip()
 
@@ -93,7 +115,9 @@ def _read_key(path: Path) -> str:
     raise InstallError("Could not find the add-on's key in its manifest")
 
 
-def install(url: str, directory: Path, *, ref: str | None = None) -> str:
+def install(
+    url: str, directory: Path, *, ref: str | None = None, token: str | None = None
+) -> str:
     """Clone an add-on into the add-ons directory. Returns its key."""
 
     url = (url or "").strip()
@@ -115,7 +139,7 @@ def install(url: str, directory: Path, *, ref: str | None = None) -> str:
             args += ["--branch", ref]
 
         logger.info(f"Addons: cloning {url}")
-        _git(*args, url, str(checkout))
+        _git(*args, url, str(checkout), token=token)
 
         key = _read_key(checkout)
 
@@ -140,13 +164,13 @@ def install(url: str, directory: Path, *, ref: str | None = None) -> str:
     return key
 
 
-def update(path: Path) -> str:
+def update(path: Path, *, token: str | None = None) -> str:
     """Fast-forward an installed add-on to its remote's current head."""
 
     if not (path / ".git").exists():
         raise InstallError("That add-on was not installed from git")
 
-    _git("fetch", "--depth", "1", "origin", cwd=path)
+    _git("fetch", "--depth", "1", "origin", cwd=path, token=token)
     branch = _git("rev-parse", "--abbrev-ref", "HEAD", cwd=path)
 
     # Hard reset rather than pull: the working tree is not somewhere anyone
