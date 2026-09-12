@@ -286,7 +286,11 @@ def _reconcile() -> None:
 
         di[Program].scheduler_manager.refresh_content_jobs()
     except Exception as exc:
-        logger.debug(f"Addons: could not refresh scheduled jobs: {exc}")
+        # Warning, not debug. This failing means an add-on's scheduled work
+        # never starts, which is indistinguishable from it running and having
+        # nothing to do -- and a debug line nobody sees is how that stays
+        # indistinguishable.
+        logger.warning(f"Addons: could not refresh scheduled jobs: {exc}")
 
     try:
         from program.services.directscrapers import reset as reset_direct

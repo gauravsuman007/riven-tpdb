@@ -401,12 +401,20 @@ class ProgramScheduler:
         of the same name cannot silently replace each other's jobs.
         """
 
-        if self.scheduler is None or not self.scheduler.running:
+        # Only that it EXISTS, deliberately not that it is running. This is
+        # called at the end of `_schedule_functions`, which runs before
+        # `scheduler.start()` -- the same point at which every host job is
+        # registered. A `running` check here looked like ordinary caution and
+        # silently skipped every add-on job on every startup, leaving jobs that
+        # only ever appeared if something later happened to save settings.
+        if self.scheduler is None:
+            logger.debug("Addon jobs: no scheduler yet")
             return
 
         try:
             from program.addons import registry
-        except Exception:
+        except Exception as exc:
+            logger.warning(f"Addon jobs: registry unavailable: {exc}")
             return
 
         wanted: dict[str, tuple[Callable[..., None], dict[str, Any]]] = {}
@@ -453,7 +461,11 @@ class ProgramScheduler:
                         misfire_grace_time=30,
                     )
 
-                logger.debug(f"Scheduled {job_id} ({config})")
+                # INFO, not debug: an add-on whose jobs silently fail to
+                # register looks exactly like an add-on whose jobs are running
+                # and finding nothing to do, and the two are hours apart to
+                # tell apart any other way.
+                logger.info(f"Scheduled {job_id} ({config})")
             except Exception as exc:
                 # One malformed job config must not cost the others theirs.
                 logger.error(f"Could not schedule {job_id}: {exc}")
