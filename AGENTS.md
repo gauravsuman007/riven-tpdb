@@ -985,21 +985,45 @@ answer, and a library title that is really a scene was otherwise unmatchable.
 
 They were `program/services/directscrapers/`, `routers/secure/direct.py`,
 `settings.direct_scraping` and a separate `riven-tpdb-scrapers` repo of plugin
-files. All of it is now
+files. The feature is now
 [riven-addon-tubescraper](https://github.com/gauravsuman007/riven-addon-tubescraper),
 including the twenty scrapers, which ship in that repo's `scrapers/` folder --
-so there is no `plugins/` bind mount to keep in sync any more. Its traps, the
-KVS decoder and the scraper contract live in that repo's own docs.
+so there is no `plugins/` bind mount to keep in sync any more.
 
-What stayed here, and why: the frontend's `direct-play/[token]/[file]` route
-and `lib/server/bookmarks.ts` are the HOST's player infrastructure -- minting a
-URL an external app can open, and filling in the overlay's description. They
-call the add-on through `TUBE_API` in `lib/addons.ts`, which is the single
-place that knows the add-on's key.
+### What stayed, and the mistake that showed why
 
-If it is not installed, its API answers 404 and those paths degrade the way
-they already do for an unreachable backend. **The section on a title's page
-does not appear at all** -- see the slots note below.
+`program/services/scraper_plugins/` -- `base.py` (the `DirectScraper`
+contract and the VPN-routed session), `models.py`, `plugins.py` (discovery).
+This is the scraper plugin **ABI**, not a feature, and it belongs to the host
+the way `program/addons/contract.py` does.
+
+The first attempt moved it into the add-on with everything else. That broke
+the OnlyFans add-on on the next start -- `Addon onlyfans: failed to import: No
+module named 'program.services.directscrapers'` -- because **two add-ons write
+scrapers against this contract**, and neither may own what the other depends
+on. An add-on may depend on the host; an add-on must not depend on another
+add-on, which can be disabled or removed underneath it.
+
+Vendoring a copy into each add-on was the alternative, and is worse: it puts
+two copies of `_RoutedSession` in the tree, and that class is where the VPN
+proxy is applied. A divergence between them breaks nothing visible -- it just
+sends one add-on's scraper traffic out of the wrong address. One copy, one
+test (`test_vpn.py`) guarding it.
+
+What went with the feature: ranking (which of a site's results actually match
+the title asked for), the registry that merges several sites, the API, and the
+scrapers.
+
+### The host's half of playback
+
+The frontend's `direct-play/[token]/[file]` route and `lib/server/bookmarks.ts`
+stayed: they are the HOST's player infrastructure -- minting a URL an external
+app can open, and filling in the overlay's description. They call the add-on
+through `TUBE_API` in `lib/addons.ts`, the single place that knows its key.
+
+If the add-on is not installed its API answers 404 and those paths degrade the
+way they already do for an unreachable backend, and **the section on a title's
+page does not appear at all** -- see the slots note below.
 
 ## Add-ons
 

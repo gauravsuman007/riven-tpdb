@@ -224,26 +224,28 @@ def test_requests_shaped_proxies_cover_both_schemes():
 # ------------------------------------------------------- leak-proofing
 
 
-def test_the_routed_session_guard_moved_with_the_scrapers():
-    """The session-level hook is still guarded -- in the add-on that now owns it.
+def test_every_scraper_request_goes_through_the_routed_session():
+    """Guard the session-level hook.
 
-    The rule it protects has not changed: applying the proxy in the scrapers'
-    `_get` helper looks equivalent and is not, because iporntv calls
-    `self.session.head` directly to probe a rendition, and that request would
-    go out around the tunnel while everything else went through it. The
-    scraper still works and the video still plays, so nothing looks wrong --
-    only the exit address is.
+    Applying the proxy in the scrapers' `_get` helper looks equivalent and is
+    not: iporntv calls `self.session.head` directly to probe a rendition, and
+    that request would go out around the tunnel while everything else went
+    through it. The scraper still works and the video still plays, so nothing
+    looks wrong -- only the exit address is.
 
-    `base.py` moved to the riven-addon-tubescraper repository, so the
-    assertion moved to that repo's own suite (`tests/test_tube_scrapers.py`,
-    the same-named test). This placeholder exists rather than a deletion
-    because a guard that simply vanishes during a migration is exactly how a
-    trap this quiet comes back.
+    This guards `program/services/scraper_plugins/base.py`, which is the ONE
+    copy of the routed session. Both scraper-writing add-ons import it from
+    here rather than vendoring their own, precisely so that this test covers
+    all of them: two copies would diverge silently, and the symptom of a
+    divergence is not a failure, it is traffic leaving from the wrong address.
     """
 
-    assert not (SRC / "program/services/directscrapers").exists(), (
-        "the direct scrapers are back in the host; the routed-session guard "
-        "belongs here again, not only in the add-on"
+    text = (SRC / "program/services/scraper_plugins/base.py").read_text()
+
+    assert "class _RoutedSession(requests.Session)" in text
+    assert "def request(self, method, url, **kwargs)" in text
+    assert "self.session = _RoutedSession()" in text, (
+        "scrapers build a plain requests.Session, so routing is bypassed"
     )
 
 
