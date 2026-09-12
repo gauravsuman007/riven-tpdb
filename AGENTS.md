@@ -1184,6 +1184,32 @@ the page in half. `AddonManifest.slots` is that second shape.
   Only the icon is resolved locally, since an icon is a component.
 
 
+### An add-on can reach the television, as data
+
+`riven-tv` is a second, JavaScript-free renderer for sets running engines from
+about 2016. It **cannot run an add-on's `ui/addon.js`** any more than it can
+run the frontend's own bundle — dynamic `import()` is Chromium 63 and that
+target is 53 — so there is no version of "run the add-on's UI" on that
+surface, now or later.
+
+`AddonTv` on the manifest is how an add-on says what a television may draw
+for it instead: `browse` for a screen of its own (`tv/browse`, `tv/detail`,
+`tv/play`), `title` for a section inside the television's own title page
+(`tv/title`). Both default off, because a TV screen is a second renderer to
+keep working and most add-ons do not want one. The shapes are documented in
+`docs/tv.md` in each add-on repository.
+
+The host's part is only to carry the declaration: `loader.py` reads it,
+`/api/v1/addons` reports it, and the frontend's `/api/tv/shell` filters it
+down to what is installed, enabled and loaded before the television sees it.
+**The host owns none of the shapes** — it neither validates nor renders them,
+which is the same boundary it keeps around a slot an add-on names but does not
+fill.
+
+A flag is not a guarantee the endpoint works. `riven-tv` treats a missing or
+malformed answer as "that section does not appear", never as an error, so an
+add-on is free to be newer than the television it lands on.
+
 ## Keep on disk
 - `POST /api/v1/keep/{id}` copies a title's active file to
   `filesystem.local_download_path` (bound to `./downloads` on the server) and
