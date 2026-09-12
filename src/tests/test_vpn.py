@@ -224,29 +224,28 @@ def test_requests_shaped_proxies_cover_both_schemes():
 # ------------------------------------------------------- leak-proofing
 
 
-def test_every_scraper_request_goes_through_the_routed_session():
-    """Guard the session-level hook.
+def test_the_host_owns_no_scraper_code():
+    """Scraping belongs entirely to the add-ons, contract included.
 
-    Applying the proxy in the scrapers' `_get` helper looks equivalent and is
-    not: iporntv calls `self.session.head` directly to probe a rendition, and
-    that request would go out around the tunnel while everything else went
-    through it. The scraper still works and the video still plays, so nothing
-    looks wrong -- only the exit address is.
+    The routed-session guard that used to live here moved out with the code
+    it guards. It is now asserted by each add-on that ships a copy of the
+    scraper ABI -- riven-addon-tubescraper and riven-addon-onlyfans -- and
+    those copies are compared against each other on the deployed machine, so
+    neither can drift into sending its traffic out of the wrong address.
 
-    This guards `program/services/scraper_plugins/base.py`, which is the ONE
-    copy of the routed session. Both scraper-writing add-ons import it from
-    here rather than vendoring their own, precisely so that this test covers
-    all of them: two copies would diverge silently, and the symptom of a
-    divergence is not a failure, it is traffic leaving from the wrong address.
+    What is left here is the boundary itself. The host provides the VPN
+    service and nothing else about scraping; a scraper package reappearing
+    under `program/services/` means that split has been undone, and the
+    guards in the add-ons would no longer be covering everything that
+    scrapes.
     """
 
-    text = (SRC / "program/services/scraper_plugins/base.py").read_text()
-
-    assert "class _RoutedSession(requests.Session)" in text
-    assert "def request(self, method, url, **kwargs)" in text
-    assert "self.session = _RoutedSession()" in text, (
-        "scrapers build a plain requests.Session, so routing is bypassed"
-    )
+    for gone in ("directscrapers", "scraper_plugins"):
+        assert not (SRC / "program" / "services" / gone).exists(), (
+            f"program/services/{gone} is back in the host; scraping and its "
+            "contract belong to the add-ons, and the routed-session guard "
+            "lives with each copy"
+        )
 
 
 def test_dns_is_resolved_at_the_exit_node():

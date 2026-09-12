@@ -1003,29 +1003,33 @@ re-set anything that was not a default before extracting a feature, because
 afterwards the old values are unrecoverable -- the only backup on the server
 predated the feature entirely.
 
-### What stayed, and the mistake that showed why
+### The host owns no scraper code at all
 
-`program/services/scraper_plugins/` -- `base.py` (the `DirectScraper`
-contract and the VPN-routed session), `models.py`, `plugins.py` (discovery).
-This is the scraper plugin **ABI**, not a feature, and it belongs to the host
-the way `program/addons/contract.py` does.
+Not the scrapers, not the ranking, not the `DirectScraper` contract. Every
+copy of that contract is an add-on's, vendored as `<package>/scraper_api/`.
 
-The first attempt moved it into the add-on with everything else. That broke
-the OnlyFans add-on on the next start -- `Addon onlyfans: failed to import: No
-module named 'program.services.directscrapers'` -- because **two add-ons write
-scrapers against this contract**, and neither may own what the other depends
-on. An add-on may depend on the host; an add-on must not depend on another
-add-on, which can be disabled or removed underneath it.
+The first attempt kept the contract here as `program/services/scraper_plugins`
+on the grounds that two add-ons share it. That was overruled: it exists only
+to serve add-ons, so it belongs to them. **The intermediate state is also
+instructive** -- moving it out the first time without keeping a copy broke the
+OnlyFans add-on at startup (`No module named 'program.services.directscrapers'`),
+because add-ons cannot import each other; either can be removed underneath the
+other.
 
-Vendoring a copy into each add-on was the alternative, and is worse: it puts
-two copies of `_RoutedSession` in the tree, and that class is where the VPN
-proxy is applied. A divergence between them breaks nothing visible -- it just
-sends one add-on's scraper traffic out of the wrong address. One copy, one
-test (`test_vpn.py`) guarding it.
+So both add-ons carry an identical copy, and **the copies are checked rather
+than trusted**. `scraper_api/drift.py` compares this add-on's copy against
+every other add-on's on the deployed machine, where both are installed side by
+side, normalising only the owning package name. Each add-on's suite calls it,
+and skips when it is installed alone.
 
-What went with the feature: ranking (which of a site's results actually match
-the title asked for), the registry that merges several sites, the API, and the
-scrapers.
+That check is not optional bookkeeping. `_RoutedSession` lives in that package
+and is where the VPN proxy is applied, so two copies that disagree break
+nothing visible -- one add-on's scraper traffic simply starts leaving from the
+wrong address. To change the contract, edit riven-addon-tubescraper (the
+canonical copy) and run `scripts/sync-scraper-api.sh` from the other repo.
+
+`test_vpn.py` now asserts only the boundary: no scraper package under
+`program/services/`. The routed-session assertion itself lives with each copy.
 
 ### The host's half of playback
 
