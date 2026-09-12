@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from program.db.db import db_session
 from program.media.item import MediaItem
 from program.services.directscrapers import MatchTarget, describe_scrapers
+from program.services.directscrapers.base import BROWSER_HEADERS
 from program.services.directscrapers import reset as reset_direct_service
 from program.services.directscrapers import service as direct_service
 from program.services.vpn import SCRAPING, STREAMING, VpnUnavailable, vpn
@@ -442,11 +443,6 @@ async def direct_stream(
 
     if index >= len(sources):
         raise HTTPException(status_code=404, detail="No such source")
-    source = sources[index]
-
-    headers = dict(source.headers)
-    if "range" in request.headers:
-        headers["Range"] = request.headers["range"]
 
     # Routed separately from the search above: streaming is the bandwidth-heavy
     # half, and wanting searches tunnelled but playback direct (or the reverse)
@@ -461,25 +457,62 @@ async def direct_stream(
         logger.warning(f"Direct stream blocked, VPN unavailable: {exc}")
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    client = httpx.AsyncClient(
-        follow_redirects=True, timeout=30.0, proxy=proxy
-    )
-    try:
-        upstream = await client.send(
-            client.build_request("GET", source.url, headers=headers),
-            stream=True,
-        )
-    except Exception as exc:
-        await client.aclose()
-        logger.error(f"Direct stream upstream failed for {site}:{video_id}: {exc}")
-        raise HTTPException(status_code=502, detail="Upstream connection failed")
+    # The one the caller asked for, then every other rendition in the site's
+    # own order. A site can advertise a rendition its CDN does not actually
+    # hold -- xxxfiles lists a 720p download link, sized, next to a 480p that
+    # works, and the 720p answers "No such file" -- and the user has no way to
+    # tell those apart from the source list. Falling through to the next one
+    # plays the video instead of reporting a failure the site caused.
+    order = [index] + [position for position in range(len(sources)) if position != index]
 
-    if upstream.status_code >= 400:
-        status_code = upstream.status_code
-        await upstream.aclose()
+    client = httpx.AsyncClient(follow_redirects=True, timeout=30.0, proxy=proxy)
+    upstream = None
+    source = sources[index]
+    failures: list[str] = []
+
+    for position in order:
+        candidate = sources[position]
+        # The scraper's own session sends a browser's User-Agent because these
+        # sites serve different markup to anything that looks automated -- and
+        # so do their media handlers, which is why resolving could succeed
+        # while playback failed. Measured on x-x-x.tube: the same URL answers
+        # 500 to httpx's default agent and 206 to a browser's. The scraper's
+        # per-source headers go on top, because a Referer it set for one CDN
+        # is more specific than anything general here.
+        headers = {**BROWSER_HEADERS, **candidate.headers}
+        if "range" in request.headers:
+            headers["Range"] = request.headers["range"]
+
+        try:
+            attempt = await client.send(
+                client.build_request("GET", candidate.url, headers=headers),
+                stream=True,
+            )
+        except Exception as exc:
+            failures.append(f"{candidate.label}: {exc}")
+            continue
+
+        if attempt.status_code < 400:
+            upstream = attempt
+            source = candidate
+            if position != index:
+                logger.info(
+                    f"Direct stream for {site}:{video_id} fell back from "
+                    f"{sources[index].label!r} to {candidate.label!r}"
+                )
+            break
+
+        failures.append(f"{candidate.label}: {attempt.status_code}")
+        await attempt.aclose()
+
+    if upstream is None:
         await client.aclose()
+        logger.warning(
+            f"Direct stream failed for {site}:{video_id}; "
+            f"no rendition answered ({'; '.join(failures)})"
+        )
         raise HTTPException(
-            status_code=502, detail=f"Upstream returned {status_code}"
+            status_code=502, detail="No rendition of this video could be fetched"
         )
 
     response_headers = {

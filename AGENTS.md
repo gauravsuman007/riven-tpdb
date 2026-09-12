@@ -1072,8 +1072,10 @@ same reason.
   rather than one changed contract.
 - **A gated rendition is substituted, not withheld.** KVS serves
   `video_alt_url2: 'https://site/?login'` still labelled `"1080p"`. Only
-  `/get_file/` URLs are accepted as playable. NOTE: the eight KVS *tube*
-  scrapers share this helper and do **not** carry the guard -- latent there.
+  `/get_file/` URLs are accepted as playable. This was latent in the KVS
+  *tube* scrapers until 2026-09-12 and is now guarded in all of them; eporner
+  marks the same thing with an `onclick` running its login check instead of a
+  different URL, so it is skipped on that.
 - **Images are addressed by position, never by URL.** Proxying a
   caller-supplied URL would make `/onlyfans/image` an open proxy; signing only
   moves the problem.
@@ -1446,6 +1448,25 @@ Consequences worth remembering:
   lazily, inside the methods that need it, not at module scope. Importing it
   at the top would pull RTN and the DB models into `test_direct_scrapers.py`,
   which is otherwise self-contained and runs without a real settings module.
+- **The stream proxy must send a browser User-Agent.** `BROWSER_HEADERS` is on
+  the scraper's session, not on `/direct/stream`'s httpx client, and these
+  sites gate their MEDIA handler the same way they gate their markup. Measured
+  on x-x-x.tube: the identical resolved URL answers **500 to httpx's default
+  agent and 206 to a browser's**. The failure is maximally confusing because
+  `/direct/sources` succeeds -- resolving went over the scraper's session --
+  so the site looks reachable and only playback fails. Same for
+  `/onlyfans/stream` and `/onlyfans/image`.
+- **A site can advertise a rendition its CDN does not hold.** xxxfiles lists a
+  720p download link WITH ITS SIZE ("83.64 Mb") beside a 480p that works, and
+  the 720p answers `404 No such file`. `/direct/stream` therefore falls
+  through to the remaining renditions in order rather than reporting the
+  site's gap as a failure; the fallback is logged, so "played, but not at the
+  quality asked for" stays visible.
+- **PornTrex is the one KVS deployment whose id is not enough.** Its
+  `video_id` carries `"<id>/<slug>"`. The site fails three ways and none is
+  loud: exact slug without a trailing slash serves the player, WITH a trailing
+  slash the same page comes back missing `video_url`/`license_code`, and the
+  bare id answers **200 with an empty body**.
 
 ## TPDB search ordering
 TPDB's `q` search returns matches in no useful order, ignores every ordering

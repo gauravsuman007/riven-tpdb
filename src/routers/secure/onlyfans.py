@@ -41,6 +41,7 @@ from sqlalchemy import func, or_, select
 
 from program.db.db import db_session
 from program.media.onlyfans import OnlyFansAccount, OnlyFansAccountSource
+from program.services.directscrapers.base import BROWSER_HEADERS
 from program.services.onlyfans import OnlyFansService, normalise_handle
 from program.services.onlyfans import registry as of_registry
 from program.services.onlyfans import reset as reset_of_registry
@@ -480,7 +481,9 @@ async def image(
 
     try:
         upstream = await client.send(
-            client.build_request("GET", source.url, headers=dict(source.headers)),
+            client.build_request(
+                "GET", source.url, headers={**BROWSER_HEADERS, **source.headers}
+            ),
             stream=True,
         )
     except Exception as exc:
@@ -661,7 +664,11 @@ async def stream(
         raise HTTPException(status_code=404, detail="No such source")
 
     source = resolved[index]
-    headers = dict(source.headers)
+    # A browser's User-Agent underneath, for the same reason `/direct/stream`
+    # sends one: these hosts serve different responses to anything that looks
+    # automated, so a URL the scraper resolved happily can still be refused
+    # when the proxy fetches it. The source's own headers win on conflict.
+    headers = {**BROWSER_HEADERS, **source.headers}
 
     if "range" in request.headers:
         headers["Range"] = request.headers["range"]
