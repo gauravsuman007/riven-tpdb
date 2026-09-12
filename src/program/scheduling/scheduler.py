@@ -173,7 +173,7 @@ class ProgramScheduler:
                     "interval": brochure.enrich_interval
                 }
 
-        onlyfans = settings_manager.settings.content.onlyfans
+        onlyfans = settings_manager.settings.onlyfans
 
         if onlyfans.enabled:
             # Weekly and overnight, for the same reason as the studio
@@ -330,7 +330,7 @@ class ProgramScheduler:
             if brochure.studios_enabled:
                 wanted[self._enrich_studios] = brochure.enrich_interval
 
-        onlyfans = settings_manager.settings.content.onlyfans
+        onlyfans = settings_manager.settings.onlyfans
 
         if onlyfans.enabled:
             wanted[self._enrich_onlyfans] = onlyfans.enrich_interval
@@ -623,7 +623,7 @@ class ProgramScheduler:
         re-crawl five sites.
         """
 
-        if not settings_manager.settings.content.onlyfans.enabled:
+        if not settings_manager.settings.onlyfans.enabled:
             return
 
         if not self._onlyfans_index_is_empty():

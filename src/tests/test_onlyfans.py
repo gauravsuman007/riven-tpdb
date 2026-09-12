@@ -74,11 +74,7 @@ for name in ("program.db.db", "program.settings", "program.services"):
 
 sys.modules["program.db.db"].db_session = lambda: None
 sys.modules["program.settings"].settings_manager = types.SimpleNamespace(
-    settings=types.SimpleNamespace(
-        content=types.SimpleNamespace(
-            onlyfans=types.SimpleNamespace(enabled=False)
-        )
-    )
+    settings=types.SimpleNamespace(onlyfans=types.SimpleNamespace(enabled=False))
 )
 
 service = _load(

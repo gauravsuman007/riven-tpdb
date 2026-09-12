@@ -23,15 +23,7 @@ HIDDEN_SECTIONS: dict[str, frozenset[str]] = {
     # Mainstream request/list providers. None of them can produce an item
     # carrying a TPDB id, which is the only thing this fork's indexer resolves.
     "content": frozenset(
-        {
-            "overseerr", "plex_watchlist", "mdblist", "listrr", "trakt",
-            # One level deeper: the OnlyFans tab's per-row toggle owns
-            # `disabled`, so rendering a raw list editor in the generic form
-            # would be a second write path to the same key -- the trap
-            # `tailscale.auth_key` caused. `plugin_dir` is deliberately NOT
-            # hidden: like `results_per_site` it has no other write path.
-            "onlyfans.disabled",
-        }
+        {"overseerr", "plex_watchlist", "mdblist", "listrr", "trakt"}
     ),
     # Stremio-style scrapers: they look content up by IMDb id, so they can only
     # ever return nothing here.
@@ -86,6 +78,13 @@ HIDDEN_SECTIONS: dict[str, frozenset[str]] = {
     # `results_per_site` is deliberately NOT hidden -- it has no other write
     # path, so hiding it would leave no way to set it at all.
     "direct_scraping": frozenset({"disabled", "site_order"}),
+    # `disabled` has a dedicated write path for the same reason
+    # `direct_scraping.disabled` does: the OnlyFans tab's per-row toggle owns
+    # it, and a raw list-of-strings editor in the generic form would be a
+    # second write path to the same key.
+    # `plugin_dir` is deliberately NOT hidden -- like `results_per_site` above
+    # it has no other write path, so hiding it would leave no way to set it.
+    "onlyfans": frozenset({"disabled"}),
 }
 
 
@@ -121,65 +120,6 @@ def _definition_for(schema: dict[str, Any], top_level_key: str) -> dict[str, Any
     return schema.get("$defs", {}).get(ref.removeprefix("#/$defs/"))
 
 
-def _resolve(schema: dict[str, Any], prop: Any) -> dict[str, Any] | None:
-    """The definition backing one property, inlined or behind a `$ref`."""
-
-    if not isinstance(prop, dict):
-        return None
-
-    if isinstance(prop.get("properties"), dict):
-        return prop
-
-    ref = prop.get("$ref")
-
-    if not ref:
-        for combinator in ("allOf", "anyOf", "oneOf"):
-            for entry in prop.get(combinator, []):
-                if isinstance(entry, dict) and entry.get("$ref"):
-                    ref = entry["$ref"]
-                    break
-            if ref:
-                break
-
-    if not isinstance(ref, str) or not ref.startswith("#/$defs/"):
-        return None
-
-    return schema.get("$defs", {}).get(ref.removeprefix("#/$defs/"))
-
-
-def _pop_nested(
-    schema: dict[str, Any], properties: dict[str, Any], dotted: str
-) -> None:
-    """Remove a field addressed as `section.field` (or deeper).
-
-    Walks the `$defs` chain rather than assuming the sub-model is inlined,
-    because pydantic emits either shape depending on how the field is declared.
-    Missing at any step is a no-op: a hidden field that no longer exists should
-    not break rendering the rest of the form.
-    """
-
-    *path, leaf = dotted.split(".")
-    definition: dict[str, Any] | None = {"properties": properties}
-
-    for step in path:
-        if definition is None:
-            return
-
-        nested = definition.get("properties", {}).get(step)
-        definition = _resolve(schema, nested)
-
-    if definition is None:
-        return
-
-    nested_properties = definition.get("properties")
-
-    if isinstance(nested_properties, dict):
-        nested_properties.pop(leaf, None)
-
-    if isinstance(required := definition.get("required"), list):
-        definition["required"] = [name for name in required if name != leaf]
-
-
 def prune_settings_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Return `schema` without the sections this fork cannot use.
 
@@ -200,13 +140,6 @@ def prune_settings_schema(schema: dict[str, Any]) -> dict[str, Any]:
             continue
 
         for name in hidden:
-            # A dotted name hides a field inside a nested section rather than
-            # the section itself -- `onlyfans.disabled` hides one field, where
-            # a bare `onlyfans` would hide the whole tab's settings.
-            if "." in name:
-                _pop_nested(pruned, properties, name)
-                continue
-
             properties.pop(name, None)
 
         if isinstance(required := definition.get("required"), list):

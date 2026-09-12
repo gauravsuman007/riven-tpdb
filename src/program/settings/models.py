@@ -993,10 +993,6 @@ class ContentModel(Observable):
         default_factory=lambda: AwardsModel(),
         description="AVN award collections",
     )
-    onlyfans: OnlyFansModel = Field(
-        default_factory=lambda: OnlyFansModel(),
-        description="OnlyFans performer index",
-    )
     tpdb: TpdbContentModel = Field(
         default_factory=lambda: TpdbContentModel(),
         description="TPDB adult content subscriptions",
@@ -1843,6 +1839,14 @@ class AppModel(Observable):
     direct_scraping: DirectScrapingModel = Field(
         default_factory=lambda: DirectScrapingModel(),
         description="Direct streaming-site scrapers, all loaded as plugins",
+    )
+    # Top-level rather than under `content`, for the same reason
+    # `direct_scraping` is: the settings page keys each tab to a top-level
+    # schema key, and this needs its own tab. Half of that tab is a live
+    # registry of scraper plugins, which the generic form cannot express.
+    onlyfans: OnlyFansModel = Field(
+        default_factory=lambda: OnlyFansModel(),
+        description="OnlyFans performer index",
     )
     filesystem: FilesystemModel = Field(
         default_factory=lambda: FilesystemModel(),

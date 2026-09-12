@@ -40,7 +40,7 @@ class OnlyFansScraperRegistry:
     """Every scraper in the OnlyFans plugin folder, minus disabled ones."""
 
     def __init__(self) -> None:
-        settings = settings_manager.settings.content.onlyfans
+        settings = settings_manager.settings.onlyfans
 
         self.plugin_dir = settings.plugin_dir
         disabled = set(settings.disabled)

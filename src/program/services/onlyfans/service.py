@@ -56,7 +56,7 @@ class OnlyFansService:
     """The performer index: who exists, and which sites carry them."""
 
     def __init__(self) -> None:
-        self.settings = settings_manager.settings.content.onlyfans
+        self.settings = settings_manager.settings.onlyfans
         self.initialized = False
 
         if not self.settings.enabled:

@@ -782,7 +782,7 @@ def set_enabled(key: str, enabled: Annotated[bool, Body(embed=True)]) -> Plugins
     comes back with one click when it is fixed.
     """
 
-    settings = settings_manager.settings.content.onlyfans
+    settings = settings_manager.settings.onlyfans
     disabled = set(settings.disabled)
 
     if enabled:
