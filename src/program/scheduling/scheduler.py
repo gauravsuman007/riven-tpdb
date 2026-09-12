@@ -300,6 +300,11 @@ class ProgramScheduler:
         brochure = settings_manager.settings.content.brochure
 
         wanted: dict[Callable[..., None], int] = {}
+        # Its own map because these are cron jobs, not intervals, and the two
+        # loops below take different arguments. It was missing entirely, which
+        # made this whole method raise `NameError` the moment the studios
+        # section was on -- see below for what that cost.
+        cron_wanted: dict[Callable[..., None], dict[str, Any]] = {}
 
         if awards.enabled:
             wanted[self._sync_awards] = awards.refresh_interval
@@ -313,12 +318,20 @@ class ProgramScheduler:
             if brochure.studios_enabled:
                 wanted[self._enrich_studios] = brochure.enrich_interval
 
-
-            cron_wanted[self._sync_studio_rows] = {
-                "day_of_week": brochure.studio_sync_day,
-                "hour": brochure.studio_sync_hour,
-                "minute": 0,
-            }
+                # Both of these, and in the same overnight slot -- the loop
+                # below reconciles `_sync_studios` too, so listing only the
+                # rows job would have removed the directory sync on every
+                # settings save.
+                cron_wanted[self._sync_studios] = {
+                    "day_of_week": brochure.studio_sync_day,
+                    "hour": brochure.studio_sync_hour,
+                    "minute": 0,
+                }
+                cron_wanted[self._sync_studio_rows] = {
+                    "day_of_week": brochure.studio_sync_day,
+                    "hour": brochure.studio_sync_hour,
+                    "minute": 0,
+                }
 
         managed = (
             self._sync_awards,

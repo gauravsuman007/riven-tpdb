@@ -330,10 +330,31 @@ def _reconcile() -> None:
 
         from program.program import Program
 
-        di[Program].scheduler_manager.refresh_content_jobs()
+        manager = di[Program].scheduler_manager
+    except Exception as exc:
+        logger.warning(f"Addons: could not reach the scheduler: {exc}")
+        return
+
+    # THE ADD-ON'S JOBS FIRST, AND ON THEIR OWN.
+    #
+    # `refresh_content_jobs` ends by calling this, so one call used to look
+    # like enough. It is not: that method reconciles the host's own awards and
+    # brochure jobs first, and anything it raises on the way takes the add-on
+    # refresh with it. It did -- a `NameError` on an uninitialised map meant
+    # that for as long as the studios section was switched on, NO add-on job
+    # registered by an install or an update ever started. Nothing was broken
+    # visibly; a pass that never runs looks exactly like a pass that runs and
+    # has nothing to do.
+    try:
+        manager.refresh_addon_jobs()
     except Exception as exc:
         # Warning, not debug. This failing means an add-on's scheduled work
         # never starts, which is indistinguishable from it running and having
         # nothing to do -- and a debug line nobody sees is how that stays
         # indistinguishable.
-        logger.warning(f"Addons: could not refresh scheduled jobs: {exc}")
+        logger.warning(f"Addons: could not refresh add-on jobs: {exc}")
+
+    try:
+        manager.refresh_content_jobs()
+    except Exception as exc:
+        logger.warning(f"Addons: could not refresh host jobs: {exc}")
