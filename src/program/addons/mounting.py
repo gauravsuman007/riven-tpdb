@@ -31,6 +31,27 @@ from program.addons.loader import registry
 PREFIX = "/api/v1/x"
 
 
+#: The running FastAPI app, handed over by `main` at startup.
+#:
+#: Stashed rather than imported on demand. `from main import app` inside a
+#: request handler re-executes main.py in that worker thread, which tries to
+#: install uvicorn's signal handlers and dies with "signal only works in main
+#: thread of the main interpreter" -- and the visible symptom is an add-on
+#: that installs correctly and then 404s everything, with the real error
+#: buried in a log line about signals.
+_app: Any = None
+
+
+def bind(app: Any) -> None:
+    global _app
+
+    _app = app
+
+
+def current_app() -> Any:
+    return _app
+
+
 def detach_all(app: Any) -> int:
     """Strip every add-on route off the app.
 
@@ -150,9 +171,16 @@ def _attach_ui(app: Any, key: str, root: Any) -> None:
         )
 
 
-def remount(app: Any) -> None:
+def remount(app: Any = None) -> None:
     """Make the running app's routes match what is loaded right now."""
 
+    app = app or _app
+
+    if app is None:
+        logger.debug("Addons: no app bound yet, not mounting routes")
+        return
+
+    bind(app)
     detach_all(app)
 
     total = 0

@@ -164,6 +164,7 @@ with server.run_in_thread():
         # installed from a git URL answer without a restart.
         from program.addons import mounting as addon_mounting
 
+        addon_mounting.bind(app)
         addon_mounting.remount(app)
 
         di[Program].run()

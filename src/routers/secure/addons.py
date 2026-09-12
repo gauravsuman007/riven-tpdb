@@ -270,11 +270,12 @@ def _reconcile() -> None:
     """
 
     try:
-        from main import app
-
         from program.addons import mounting
 
-        mounting.remount(app)
+        # No argument: the app was bound at startup. Importing `main` here to
+        # get it would re-execute it in this worker thread and die installing
+        # signal handlers.
+        mounting.remount()
     except Exception as exc:
         logger.error(f"Addons: could not remount routes: {exc}")
 

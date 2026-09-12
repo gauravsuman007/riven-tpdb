@@ -23,9 +23,14 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 from loguru import logger
-from sqlalchemy import MetaData, text
+from sqlalchemy import MetaData, create_engine, text
+from sqlalchemy.pool import NullPool
 
-from program.db import db
+# `program.db.db` is the MODULE; the SQLAlchemy wrapper is `program.db.db`
+# the ATTRIBUTE on the package, and the submodule of the same name shadows it
+# on a plain `from program.db import db`. Imported through the submodule,
+# which re-exports it, so the name resolves to the wrapper either way.
+from program.db.db import db
 
 
 #: Where the shared env.py and script template live. Add-ons ship only a
@@ -49,7 +54,6 @@ def migration_config(key: str, versions: Path, metadata: MetaData | None) -> Con
     config = Config()
     config.set_main_option("script_location", str(TEMPLATE_DIR))
     config.set_main_option("version_locations", str(versions))
-    config.set_main_option("sqlalchemy.url", str(db.engine.url))
     config.set_main_option("addon_schema", key)
     config.attributes["target_metadata"] = metadata
     return config
@@ -64,7 +68,35 @@ def upgrade(key: str, versions: Path, metadata: MetaData | None) -> None:
     """
 
     ensure_schema(key)
-    command.upgrade(migration_config(key, versions, metadata), "head")
+
+    config = migration_config(key, versions, metadata)
+
+    # A THROWAWAY ENGINE, NOT THE APPLICATION'S.
+    #
+    # The migration sets `search_path` to the add-on's schema so that a
+    # migration written without an explicit `schema=` still lands in the right
+    # place. On a pooled connection that setting SURVIVES being returned to
+    # the pool -- and the next thing to borrow it was the host, which then
+    # could not see its own tables. It brought the whole application down with
+    # `relation "MediaItem" does not exist` moments after an add-on loaded
+    # successfully, which points at nothing.
+    #
+    # NullPool means every connection here is closed rather than returned, so
+    # nothing this does can escape into the application's pool.
+    engine = create_engine(
+        # `str(engine.url)` REDACTS the password; this is the same URL with it
+        # intact, which is why it is not simply str().
+        db.engine.url.render_as_string(hide_password=False),
+        poolclass=NullPool,
+    )
+
+    try:
+        with engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")
+    finally:
+        engine.dispose()
+
     logger.debug(f"Addon {key}: migrations up to date")
 
 
@@ -79,6 +111,9 @@ def create_all(key: str, metadata: MetaData) -> None:
     """
 
     ensure_schema(key)
+
+    # Fully qualified by the metadata's own schema, so unlike `upgrade` this
+    # needs no `search_path` and can safely use the application's engine.
     metadata.create_all(db.engine)
 
 
