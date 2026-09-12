@@ -1032,6 +1032,73 @@ API instead.
   query string, which is why most were fine and the breakage looked random.
   Verified after the fix: 72 of 72 thumbnails across three queries return 200.
 
+## The OnlyFans performer index
+
+A second, separate world from the direct-scraper plugins above. Those answer
+"find me this title"; these answer "who does this site carry, and what does it
+hold for them".
+
+**Separate repo, separate folder, separate registry.** Scrapers live in
+`gauravsuman007/onlyfans_scrapers` (`../onlyfans_scrapers`), deploy to
+`/home/hellonfire/Server/riven-tpdb/onlyfans_scrapers` (bind-mounted at
+`/riven/onlyfans_scrapers`, **not** read-only because the tab can import), and
+load through `program/services/onlyfans/registry.py` rather than
+`DirectScraperService`. Do not merge the two registries: merged, an OnlyFans
+scraper appears in the direct-play site list and gets run against library
+titles, and a tube scraper appears in the OnlyFans tab claiming to index
+performers. Managed from Settings -> OnlyFans (rescan, per-scraper toggle,
+file import, manual index rebuild).
+
+Because the registries are separate, **playback is duplicated on purpose**:
+`/onlyfans/sources|handoff|stream` mirror the `/direct/*` ones, which look the
+site up in a registry that by design does not contain these scrapers.
+
+`settings.onlyfans` is **top-level, not under `content`**. The settings page
+keys each tab to a top-level schema key, so a nested section could not have its
+own tab -- a tab claiming `content` would render that whole panel a second
+time, giving every field two inputs. `direct_scraping` is top-level for the
+same reason.
+
+### Traps
+
+- **`best_matches()` must stay bypassed.** Account content routes call the
+  plugin directly. That ranker scores title relevance against a `MatchTarget`;
+  an account browse has no target, so routing it through would discard almost
+  everything and look like five broken scrapers. This is the same trap that
+  made the tube scrapers look broken in 2026-09.
+- **The account methods on `DirectScraper` are optional and must stay so.**
+  They are defaulted on the base class. Making any abstract fails all twenty
+  tube plugins at construction, and the Plugins tab reports twenty broken files
+  rather than one changed contract.
+- **A gated rendition is substituted, not withheld.** KVS serves
+  `video_alt_url2: 'https://site/?login'` still labelled `"1080p"`. Only
+  `/get_file/` URLs are accepted as playable. NOTE: the eight KVS *tube*
+  scrapers share this helper and do **not** carry the guard -- latent there.
+- **Images are addressed by position, never by URL.** Proxying a
+  caller-supplied URL would make `/onlyfans/image` an open proxy; signing only
+  moves the problem.
+- `ScraperInfo` is a **slots dataclass**, so `vars()` raises rather than
+  returning empty. Use `dataclasses.asdict`. This 500'd `/onlyfans/plugins`.
+- **macOS `tar` injects `._*` AppleDouble files** and the loader reports each
+  as `SyntaxError: source code string cannot contain null bytes`. Use
+  `COPYFILE_DISABLE=1 tar ...` when deploying by copy.
+- **A throwaway container from this image needs `--security-opt
+  seccomp=unconfined` AND `apparmor=unconfined`** to exec its Python; the
+  production container runs apparmor-unconfined and that alone is not enough.
+
+### What the sites actually give you
+
+Measured 2026-09-12, not assumed. Worth reading before trusting a feature:
+avatars exist on **two of five** (the other three render "no image" for every
+model), and per-account galleries effectively only on ultrathots, which serves
+**six** images of a gallery advertising 277. notfans has full galleries but no
+model attribution at all. `README.md` in the scrapers repo has the table.
+
+Deployed 2026-09-12: 223 accounts / 224 sources from a 3-page-per-site sync,
+one performer correctly collapsed across two sites, zero duplicate
+`(account, site)` rows.
+
+
 ## Keep on disk
 - `POST /api/v1/keep/{id}` copies a title's active file to
   `filesystem.local_download_path` (bound to `./downloads` on the server) and
