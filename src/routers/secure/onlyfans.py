@@ -28,6 +28,7 @@ be pointed at a host this app did not choose.
 import shutil
 import tempfile
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated
 
@@ -751,9 +752,9 @@ def _plugins_response() -> PluginsResponse:
 
     return PluginsResponse(
         plugin_dir=current.plugin_dir,
-        scrapers=[
-            ScraperInfoResponse(**vars(info)) for info in current.describe()
-        ],
+        # `asdict`, not `vars`: ScraperInfo is a slots dataclass and so has no
+        # __dict__ at all, which vars() raises on rather than returning empty.
+        scrapers=[ScraperInfoResponse(**asdict(info)) for info in current.describe()],
         errors=current.errors,
     )
 
