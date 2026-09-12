@@ -21,7 +21,13 @@ from pydantic import BaseModel
 
 from program.addons import registry
 from program.addons import database as addon_db
-from program.addons.installer import InstallError, install, uninstall, update
+from program.addons.installer import (
+    InstallError,
+    install,
+    uninstall,
+    update,
+    update_available,
+)
 from program.settings import settings_manager
 
 
@@ -40,6 +46,10 @@ class AddonResponse(BaseModel):
     error: str | None = None
     source: str | None = None
     revision: str | None = None
+    #: True when the remote has commits this checkout does not. None means the
+    #: check has not run or could not answer -- shown as nothing rather than
+    #: as "up to date", which is a different claim.
+    update_available: bool | None = None
     nav: dict[str, Any] | None = None
     #: The add-on's settings as JSON Schema, which is all the settings page
     #: needs to render its tab.
@@ -83,6 +93,7 @@ def _describe(key: str) -> AddonResponse:
         error=record.error,
         source=record.source,
         revision=record.revision,
+        update_available=record.update_available,
         nav=record.nav,
         settings_schema=record.settings_schema,
         settings=settings_manager.settings.addons.get(key),
@@ -163,6 +174,24 @@ def install_addon(body: Annotated[InstallRequest, Body()]) -> AddonsResponse:
     return _all()
 
 
+@router.post("/check-updates", operation_id="check_addon_updates")
+def check_updates() -> AddonsResponse:
+    """Ask every git-installed add-on's remote whether it has moved on.
+
+    Separate from listing because it is one network round trip per add-on.
+    Declared before `/{key}/update` so that "check-updates" is matched as this
+    route rather than captured as a key -- FastAPI matches in declaration
+    order, and the add-on named `check` would otherwise be unreachable.
+    """
+
+    token = settings_manager.settings.addons_git_token or None
+
+    for record in registry().addons.values():
+        record.update_available = update_available(record.path, token=token)
+
+    return _all()
+
+
 @router.post("/{key}/update", operation_id="update_addon")
 def update_addon(key: str) -> AddonsResponse:
     record = registry().get(key)
@@ -180,6 +209,14 @@ def update_addon(key: str) -> AddonsResponse:
 
     registry().discover()
     _reconcile()
+
+    # The rediscover built a fresh record, so the flag that prompted this
+    # update is gone with the old one; it is false by definition now.
+    record = registry().get(key)
+
+    if record is not None:
+        record.update_available = False
+
     return _all()
 
 

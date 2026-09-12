@@ -1093,6 +1093,17 @@ repo's AGENTS.md.
 - **Never `from main import app` in a request handler.** It re-executes main.py
   in that worker thread and dies installing uvicorn's signal handlers. `main`
   binds the app into `mounting` at startup instead.
+- **Forgetting an add-on's modules cannot be done by name.** Only the entry
+  point is named after the key (`riven_addon_<key>`); everything it imports
+  from its own folder is named by whatever the author called the package --
+  `onlyfans` ships `onlyfans_addon`. Dropping the entry point alone made
+  "update" look like it worked: the new `riven_addon.py` ran, imported the
+  STALE cached package, and every line the update changed stayed unchanged
+  until the next restart. The loader records the modules an add-on introduces
+  at import time (`_introduced_modules`, containment-checked against the
+  add-on's folder so it cannot unload a host dependency) and forgets those --
+  for failed and disabled add-ons too, since "disable, update, enable" is the
+  obvious way to update something.
 - **`refresh_addon_jobs` must not check `scheduler.running`.** It is called at
   the end of `_schedule_functions`, which runs before `scheduler.start()`, so
   that check silently skipped every add-on job on every startup. Its

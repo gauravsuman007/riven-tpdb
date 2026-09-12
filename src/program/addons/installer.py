@@ -183,6 +183,41 @@ def update(path: Path, *, token: str | None = None) -> str:
     return revision
 
 
+def update_available(path: Path, *, token: str | None = None) -> bool | None:
+    """Is the add-on's remote ahead of what is checked out?
+
+    ``None`` means "could not tell" -- no git, no network, a remote that now
+    needs credentials -- and is deliberately distinct from ``False``. The page
+    shows nothing for unknown; reporting "up to date" because the check failed
+    would be the same picture as an add-on that really is up to date, which is
+    exactly the thing the user is trying to find out.
+
+    `ls-remote` rather than `fetch`: it reads one ref over the network and
+    writes nothing, so checking costs nothing and cannot leave the working
+    tree in a state an update has to clean up.
+    """
+
+    if not (path / ".git").exists():
+        return None
+
+    try:
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD", cwd=path)
+        local = _git("rev-parse", "HEAD", cwd=path)
+        remote = _git("ls-remote", "origin", branch, cwd=path, token=token)
+    except InstallError as exc:
+        logger.debug(f"Addons: could not check {path.name} for updates: {exc}")
+        return None
+
+    if not remote:
+        return None
+
+    # "<sha>\t refs/heads/<branch>", possibly several lines if the branch name
+    # also matches a tag; the first field of the first line is the one asked for.
+    head = remote.splitlines()[0].split()[0]
+
+    return head != local
+
+
 def uninstall(path: Path) -> None:
     """Delete the add-on's folder. Its data is `database.purge`'s business."""
 

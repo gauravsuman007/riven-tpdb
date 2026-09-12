@@ -48,9 +48,18 @@ class LoadedAddon:
     #: the page can offer "update" on exactly the add-ons that can be updated.
     source: str | None = None
     revision: str | None = None
+    #: Whether the remote is ahead, or None for "not checked / could not
+    #: tell". Filled in only by an explicit check: listing add-ons must not
+    #: make a network call per add-on, or the settings page's load time
+    #: becomes a function of how reachable everyone's git host is.
+    update_available: bool | None = None
     settings_schema: dict[str, Any] | None = None
     nav: dict[str, Any] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+    #: Every module name this add-on put into `sys.modules`, so unloading can
+    #: take them back out again. Recorded rather than guessed from the key --
+    #: see `_forget_modules`.
+    modules: list[str] = field(default_factory=list)
 
 
 class AddonRegistry:
@@ -111,12 +120,16 @@ class AddonRegistry:
         record.source, record.revision = _git_origin(path)
 
         try:
-            addon = _import_addon(path)
+            addon = _import_addon(path, record.modules)
         except Exception as exc:
             logger.error(f"Addon {key}: failed to import: {exc}")
             logger.debug(traceback.format_exc())
             record.state = "failed"
             record.error = f"{type(exc).__name__}: {exc}"
+            # Whatever the failed import managed to cache is dropped here, so
+            # a fix-and-update is tried against the new files rather than
+            # against the wreckage of the attempt that failed.
+            _forget_modules(record)
             return record
 
         manifest = addon.manifest
@@ -241,15 +254,18 @@ class AddonRegistry:
 
     def unload_all(self) -> None:
         for record in self.addons.values():
-            if record.addon is None or record.state != "ok":
-                continue
+            if record.addon is not None and record.state == "ok":
+                try:
+                    record.addon.stop()
+                except Exception as exc:
+                    logger.warning(f"Addon {record.key}: stop() raised: {exc}")
 
-            try:
-                record.addon.stop()
-            except Exception as exc:
-                logger.warning(f"Addon {record.key}: stop() raised: {exc}")
-
-            _forget_modules(record.key)
+            # Outside the state check on purpose. A DISABLED add-on was still
+            # imported far enough to read its settings, so its modules are
+            # cached too -- and "disable, update, enable" is the obvious way
+            # to update something, which would otherwise be the one path that
+            # reliably ran the old code.
+            _forget_modules(record)
 
         self.addons = {}
 
@@ -276,8 +292,13 @@ class AddonRegistry:
         return collected
 
 
-def _import_addon(path: Path) -> Addon:
+def _import_addon(path: Path, introduced: list[str]) -> Addon:
     """Import ``riven_addon.py`` with the add-on's folder on the path.
+
+    ``introduced`` is filled in with the modules this import added, and is a
+    parameter rather than a return value because IT MATTERS MOST WHEN THIS
+    RAISES: a half-finished import has already cached modules, and a returned
+    list never reaches a caller that is handling an exception.
 
     The folder goes on `sys.path` so the add-on can lay itself out as a normal
     package (``from backend.service import ...``) instead of contorting
@@ -288,6 +309,11 @@ def _import_addon(path: Path) -> Addon:
 
     entry = path / "riven_addon.py"
     module_name = f"riven_addon_{path.name}"
+
+    # Snapshotted so the diff afterwards says exactly which modules this
+    # add-on brought into the process. See `_forget_modules` for why the
+    # names cannot simply be derived from the key.
+    before = set(sys.modules)
 
     sys.path.insert(0, str(path))
     try:
@@ -305,6 +331,13 @@ def _import_addon(path: Path) -> Addon:
         except ValueError:
             pass
 
+        # In the `finally` so a HALF-FINISHED import is still recorded: an
+        # add-on that raises partway through has already populated
+        # `sys.modules`, and leaving those behind is exactly the state that
+        # makes the next attempt fail the same way for a reason that is no
+        # longer true.
+        introduced.extend(_introduced_modules(before, path))
+
     addon = getattr(module, "ADDON", None)
 
     if addon is None:
@@ -316,17 +349,47 @@ def _import_addon(path: Path) -> Addon:
     return addon
 
 
-def _forget_modules(key: str) -> None:
-    """Drop the add-on's modules so a reload re-reads them from disk.
+def _introduced_modules(before: set[str], path: Path) -> list[str]:
+    """Which newly-imported modules came out of this add-on's folder.
 
-    Without this, "rescan" after an update would re-run the old code: Python
-    caches by module name and the name has not changed.
+    The containment check is what keeps this from unloading the host: an
+    add-on importing `sqlalchemy` for the first time makes that a new module
+    too, and dropping it would re-import a second, non-identical copy of the
+    host's own dependency the next time an add-on loaded.
     """
 
-    prefix = f"riven_addon_{key}"
+    root = str(path.resolve())
+    names = []
 
-    for name in [n for n in sys.modules if n == prefix or n.startswith(prefix + ".")]:
+    for name in set(sys.modules) - before:
+        module = sys.modules.get(name)
+        origin = getattr(module, "__file__", None)
+
+        if origin and str(Path(origin).resolve()).startswith(root):
+            names.append(name)
+
+    return names
+
+
+def _forget_modules(record: LoadedAddon) -> None:
+    """Drop the add-on's modules so a reload re-reads them from disk.
+
+    Without this, "rescan" after an update re-runs the old code: Python caches
+    by module name and the name has not changed.
+
+    THE NAMES CANNOT BE DERIVED FROM THE KEY. Only the entry point is named
+    after the add-on (`riven_addon_<key>`); everything it imports from its own
+    folder is named by whatever the author called the package -- `onlyfans`
+    ships `onlyfans_addon`. Forgetting the entry point alone made an update
+    look like it worked: the new `riven_addon.py` ran, imported the STALE
+    cached package, and every line the update changed stayed unchanged until
+    the next restart. So the modules are recorded at import time instead.
+    """
+
+    for name in record.modules:
         sys.modules.pop(name, None)
+
+    sys.modules.pop(f"riven_addon_{record.key}", None)
 
 
 def _git_origin(path: Path) -> tuple[str | None, str | None]:
