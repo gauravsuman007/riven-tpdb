@@ -26,7 +26,57 @@ router = APIRouter(
 async def get_settings_schema() -> dict[str, Any]:
     """Get the JSON schema for the settings."""
 
-    return prune_settings_schema(settings_manager.settings.model_json_schema())
+    return _with_addon_schemas(
+        prune_settings_schema(settings_manager.settings.model_json_schema())
+    )
+
+
+def _with_addon_schemas(schema: dict[str, Any]) -> dict[str, Any]:
+    """Replace the untyped `addons` blob with the loaded add-ons' own schemas.
+
+    `AppModel.addons` is a `dict[str, dict]` because add-ons are discovered
+    long after this model is built, so pydantic can describe it only as "an
+    object of objects" -- which the settings form would render as an
+    uneditable lump. Each loaded add-on already publishes a proper JSON Schema
+    for its own settings, so they are spliced in here.
+
+    The effect is that an add-on's settings tab, its validation and its saving
+    all come from the machinery that already exists, and the add-on writes no
+    frontend code to get any of it. An add-on that fails to load contributes
+    nothing here, so its settings are not editable while it is broken --
+    correct, since nothing would read them.
+    """
+
+    properties = schema.get("properties")
+
+    if not isinstance(properties, dict) or "addons" not in properties:
+        return schema
+
+    try:
+        from program.addons import registry
+    except Exception:
+        return schema
+
+    per_addon: dict[str, Any] = {}
+
+    for record in registry().active():
+        if record.settings_schema:
+            per_addon[record.key] = {
+                **record.settings_schema,
+                "title": record.name or record.key,
+            }
+
+    properties["addons"] = {
+        "type": "object",
+        "title": "Add-ons",
+        "properties": per_addon,
+        # Closed on purpose: with it open the form would offer to invent
+        # settings for add-ons that are not installed, and anything typed
+        # there would be dropped on the next save without explanation.
+        "additionalProperties": False,
+    }
+
+    return schema
 
 
 @router.get(
@@ -115,13 +165,13 @@ def _apply_settings_side_effects(was_auto_requesting: bool) -> None:
 
     # A schedule saved here must also BE the schedule. Several sections own
     # scheduled work whose cadence is a settings field -- the awards and
-    # brochure refreshes, and the OnlyFans index and enrichment -- and until
-    # this call existed only the collections toggle reconciled them. Editing
-    # an interval through the settings form therefore looked applied, read
-    # back as the new value, and went on running at the old one until the next
-    # restart: exactly the silent no-op the toggle's own comment warns about.
-    # Measured: onlyfans.enrich_interval changed from six hours to ten minutes
-    # and nothing ran any sooner.
+    # brochure refreshes, and whatever the loaded add-ons schedule -- and
+    # until this call existed only the collections toggle reconciled them.
+    # Editing an interval through the settings form therefore looked applied,
+    # read back as the new value, and went on running at the old one until the
+    # next restart: exactly the silent no-op the toggle's own comment warns
+    # about. Measured on an enrichment interval changed from six hours to ten
+    # minutes, after which nothing ran any sooner.
     #
     # Safe to call for any save: it reconciles registered jobs against wanted
     # ones and is a no-op when they already agree.

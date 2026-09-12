@@ -1032,125 +1032,64 @@ API instead.
   query string, which is why most were fine and the breakage looked random.
   Verified after the fix: 72 of 72 thumbnails across three queries return 200.
 
-## The OnlyFans performer index
+## Add-ons
 
-A second, separate world from the direct-scraper plugins above. Those answer
-"find me this title"; these answer "who does this site carry, and what does it
-hold for them".
+Self-contained features the host loads from `/riven/addons`, one folder each.
+`program/addons/` is the whole framework: `contract.py` is what an add-on is,
+`loader.py` finds and starts them, `database.py` owns the schema-per-add-on
+rule, `installer.py` clones them from git, `mounting.py` attaches their routes
+to the running app. The management API is `routers/secure/addons.py`; the UI is
+Settings → Plugins → Add-ons.
 
-**Separate repo, separate folder, separate registry.** Scrapers live in
-`gauravsuman007/onlyfans_scrapers` (`../onlyfans_scrapers`), deploy to
-`/home/hellonfire/Server/riven-tpdb/onlyfans_scrapers` (bind-mounted at
-`/riven/onlyfans_scrapers`, **not** read-only because the tab can import), and
-load through `program/services/onlyfans/registry.py` rather than
-`DirectScraperService`. Do not merge the two registries: merged, an OnlyFans
-scraper appears in the direct-play site list and gets run against library
-titles, and a tube scraper appears in the OnlyFans tab claiming to index
-performers. Managed from Settings -> OnlyFans (rescan, per-scraper toggle,
-file import, manual index rebuild).
+The OnlyFans performer index used to live in this repo and is now
+[riven-addon-onlyfans](https://github.com/gauravsuman007/riven-addon-onlyfans),
+which also absorbed the `onlyfans_scrapers` repo. Its traps live in that
+repo's AGENTS.md.
 
-Because the registries are separate, **playback is duplicated on purpose**:
-`/onlyfans/sources|handoff|stream` mirror the `/direct/*` ones, which look the
-site up in a registry that by design does not contain these scrapers.
+### The rules that make it work
 
-`settings.onlyfans` is **top-level, not under `content`**. The settings page
-keys each tab to a top-level schema key, so a nested section could not have its
-own tab -- a tab claiming `content` would render that whole panel a second
-time, giving every field two inputs. `direct_scraping` is top-level for the
-same reason.
+- **The folder name is the identity** — Postgres schema, route prefix and
+  settings key. `manifest.key` must equal it or the host refuses to load,
+  because the add-on's data would land somewhere its own uninstall would not
+  look.
+- **One Postgres schema per add-on, `alembic_version` included.** That is what
+  makes `DROP SCHEMA <key> CASCADE` a complete uninstall. It is also why each
+  add-on runs an INDEPENDENT alembic chain rather than a labelled branch off
+  the host's: branches share one version table, so removing an add-on would
+  leave a head alembic cannot resolve and the host would refuse to start, with
+  nothing naming the folder that was deleted.
+- **An add-on may reference host tables; the host must never reference an
+  add-on's.** A host foreign key into the add-on's schema would be dropped by
+  that CASCADE, turning a clean uninstall into a silent change to the host's
+  own schema.
+- **Add-on routes are `/api/v1/x/<key>`, not `/api/v1/addons/<key>`.** The
+  latter is the management router's own prefix, and `mounting.detach_all`
+  clears by prefix — the two overlapping would make removing an add-on delete
+  the endpoints that manage add-ons.
+- **Routes are mounted AFTER `Program.start()`**, in `main.py`. The registry is
+  filled during start, so mounting at import time would publish nothing.
+  FastAPI matches by walking a list per request, so adding routes to a live app
+  genuinely works; the OpenAPI cache is the only thing that needs clearing.
+- **`settings.addons` is an untyped dict, and `/settings/schema` splices the
+  add-ons' own schemas into it.** `AppModel` is built at import time and
+  add-ons are found long after, so there is nothing to generate a typed field
+  from. The splice is what gives an add-on a real settings tab for free.
+- **Installing an add-on runs someone else's code as Riven.** There is no
+  sandbox, and the UI says so. The installer validates a temporary clone
+  before anything is moved into place, which prevents accidents, not attacks.
 
-### Traps
+### The frontend side
 
-- **`best_matches()` must stay bypassed.** Account content routes call the
-  plugin directly. That ranker scores title relevance against a `MatchTarget`;
-  an account browse has no target, so routing it through would discard almost
-  everything and look like five broken scrapers. This is the same trap that
-  made the tube scrapers look broken in 2026-09.
-- **The account methods on `DirectScraper` are optional and must stay so.**
-  They are defaulted on the base class. Making any abstract fails all twenty
-  tube plugins at construction, and the Plugins tab reports twenty broken files
-  rather than one changed contract.
-- **A gated rendition is substituted, not withheld.** KVS serves
-  `video_alt_url2: 'https://site/?login'` still labelled `"1080p"`. Only
-  `/get_file/` URLs are accepted as playable. This was latent in the KVS
-  *tube* scrapers until 2026-09-12 and is now guarded in all of them; eporner
-  marks the same thing with an `onclick` running its login check instead of a
-  different URL, so it is skipped on that.
-- **`max_pages_per_site` silently truncates the index.** It is a runaway
-  guard, not a budget. Measured 2026-09-12: ultrathots 155 pages, hornyfap
-  246, porn4fans 66, porntn 8, notfans 2 -- 8,190 raw rows, 6,402 after
-  dedupe, and each full walk costs about twenty seconds. It had been left at
-  3 and the whole index was 223 accounts.
-- **The end of a model index is a 404, not an empty page.** Four of the five
-  404 the page after their last one. The scrapers do not agree on an HTTP
-  client, so both shapes must be checked: `requests` raises an HTTPError
-  carrying a `response`, `urllib` raises one that IS the response with
-  `code`. Matching one covered half the sites and lost the other half's count.
-- **Only two of five sites carry an avatar at all**; the rest render "no
-  image" in the index AND on the model's own page. All five carry video
-  thumbnails, so enrichment falls back to the newest video's still.
-- **Scraping `onlyfans.com/<handle>` is useless and dangerous to "fix".**
-  Every handle answers 200 with the same 17,669-byte app shell; its
-  `og:image` is the OnlyFans logo and its `og:description` the site's
-  marketing copy. Two real handles returned byte-identical pages. It wrote
-  nothing only because the patterns expected quoted attributes and the shell
-  emits them bare -- making the regex "work" would have stamped one logo on
-  every account. Removed; `services/onlyfans/profile.py` replaces it.
-- **The profile data comes from the platform's own guest API.** The shell
-  above fetches `/api2/v2/users/<name>` for itself, and that endpoint answers
-  a guest -- no account, no login -- if the request is signed: a `sess`
-  cookie from `/api2/v2/init`, then `sha1` over
-  `static_param\ntime_ms\npath\nuser_id` plus a checksum summed from fixed
-  digest positions. `user-id` must be `"0"` in the header AND in the signed
-  message; they have to agree. The constants rotate on every OnlyFans
-  redeploy, so they are pulled from a published rules feed at runtime with a
-  vendored copy as the floor. Measured 2026-09-12: real per-account avatar,
-  header and bio, and a **404 for a handle that is not an account** -- which
-  is the part the HTML shell could never give and the only reason this is
-  trusted to write to the index.
-- **`handle` is the wrong string to ask OnlyFans for.** It has been stripped
-  to alphanumerics so three sites' spellings dedupe to one identity, so it
-  404s for anyone whose username has a dot or an underscore. Up to four
-  candidates are tried per account, the sites' own slugs first (a hyphenated
-  slug is the site's spelling, not a username -- OnlyFans forbids hyphens).
-- **A 404 is remembered; a failure is not.** `of_checked_at` means "asked and
-  answered". Stamping an error would look identical to a rate limit and would
-  permanently write off every account the pass happened to reach during an
-  outage. A 429 pauses the whole batch for 15 minutes rather than the one
-  account.
-- **`avatar_from_site` exists because `avatar_url or ...` cannot upgrade.**
-  Most pictures are borrowed -- an archive site's thumbnail, or a still from
-  the performer's newest video -- and once the column is full, the
-  performer's own profile picture could never replace it without knowing the
-  one there was borrowed.
-- **A settings save now reconciles the scheduler.** `refresh_content_jobs()`
-  was only called from the collections toggle, so editing any interval
-  through the settings form read back as the new value and went on running at
-  the old one until a restart. `/settings/set` and `/settings/set/all` call it
-  now.
-- **Images are addressed by position, never by URL.** Proxying a
-  caller-supplied URL would make `/onlyfans/image` an open proxy; signing only
-  moves the problem.
-- `ScraperInfo` is a **slots dataclass**, so `vars()` raises rather than
-  returning empty. Use `dataclasses.asdict`. This 500'd `/onlyfans/plugins`.
-- **macOS `tar` injects `._*` AppleDouble files** and the loader reports each
-  as `SyntaxError: source code string cannot contain null bytes`. Use
-  `COPYFILE_DISABLE=1 tar ...` when deploying by copy.
-- **A throwaway container from this image needs `--security-opt
-  seccomp=unconfined` AND `apparmor=unconfined`** to exec its Python; the
-  production container runs apparmor-unconfined and that alone is not enough.
-
-### What the sites actually give you
-
-Measured 2026-09-12, not assumed. Worth reading before trusting a feature:
-avatars exist on **two of five** (the other three render "no image" for every
-model), and per-account galleries effectively only on ultrathots, which serves
-**six** images of a gallery advertising 277. notfans has full galleries but no
-model attribution at all. `README.md` in the scrapers repo has the table.
-
-Deployed 2026-09-12: 223 accounts / 224 sources from a 3-page-per-site sync,
-one performer correctly collapsed across two sites, zero duplicate
-`(account, site)` rows.
+- **`/x/[addon]/[...rest]`** dynamically imports the add-on's prebuilt
+  `addon.js` and hands it a DOM node. The add-on brings its own Svelte runtime;
+  two runtimes are only a problem if they share a component tree.
+- **`api/v1/x/[...path]` is a byte passthrough** and had to exist. The generic
+  `api/[...backendProxy]` ends with `json(await response.json())`, which
+  decodes the body, drops the content type and cannot do Range — it was
+  silently 500ing OnlyFans video playback long before add-ons existed, and
+  would equally have broken every add-on bundle, stylesheet and proxied image.
+- **Sidebar entries and settings tabs are data**, read from `/api/v1/addons`.
+  Only the icon is resolved locally, since an icon is a component.
 
 
 ## Keep on disk

@@ -154,6 +154,18 @@ server = Server(config=config)
 with server.run_in_thread():
     try:
         di[Program].start()
+
+        # AFTER start(), which is what fills the add-on registry -- mounting
+        # at import time would run against an empty one and quietly publish
+        # nothing. The server is already accepting connections by now, which
+        # is fine and is the point: FastAPI matches against a list it walks
+        # per request, so routes really can arrive on a live app. That is the
+        # same mechanism the management router uses to make an add-on
+        # installed from a git URL answer without a restart.
+        from program.addons import mounting as addon_mounting
+
+        addon_mounting.remount(app)
+
         di[Program].run()
     except Exception:
         logger.exception("Error in main thread")

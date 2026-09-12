@@ -243,6 +243,19 @@ class Program(threading.Thread):
 
         run_migrations()
 
+        # AFTER the host's migrations and BEFORE services start. Add-ons may
+        # reference host tables, so the host's schema has to exist first; and
+        # their own tables have to exist before anything that reads them runs.
+        # Each add-on migrates its own schema independently, so one that fails
+        # is disabled and reported -- it cannot stop the host from starting,
+        # which is the whole reason the chains are separate.
+        try:
+            from program.addons import registry as addon_registry
+
+            addon_registry().discover()
+        except Exception as exc:
+            logger.error(f"Addons: discovery failed: {exc}")
+
         self.initialize_services()
 
         with db_session() as session:

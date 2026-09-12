@@ -883,108 +883,6 @@ class CollectionsModel(Observable):
     )
 
 
-class OnlyFansModel(Observable):
-    """The performer index built from the OnlyFans archive sites.
-
-    Observable rather than Updatable for the same reason as AwardsModel and
-    BrochureModel: its jobs are registered directly, so an inherited
-    ``update_interval`` would be a settings field that does nothing.
-
-    Off by default. Unlike the studio directory -- a fixed ~1,200 rows that
-    changes about never -- these rosters run to tens of thousands of accounts
-    across five sites, so this is something to opt into rather than something
-    that starts crawling on first boot.
-    """
-
-    enabled: bool = Field(
-        default=False,
-        description="Index performer accounts from the OnlyFans archive sites",
-    )
-    plugin_dir: str = Field(
-        default="/riven/onlyfans_scrapers",
-        description=(
-            "Folder holding the OnlyFans scraper plugins. Deliberately not "
-            "the direct-scraping plugin folder: these answer a different "
-            "question and are managed from their own tab, and keeping the two "
-            "apart is what stops an OnlyFans scraper appearing in the "
-            "direct-play site list."
-        ),
-    )
-    disabled: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Scraper keys to skip loading. A disabled scraper stays in the "
-            "folder and can be re-enabled without re-importing it."
-        ),
-    )
-    sites: list[str] = Field(
-        default_factory=lambda: [
-            "ultrathots",
-            "notfans",
-            "porntn",
-            "porn4fans",
-            "hornyfap",
-        ],
-        description=(
-            "Scraper keys to index accounts from. A key that is not installed "
-            "or does not index accounts is skipped rather than failing the run."
-        ),
-    )
-    max_pages_per_site: int = Field(
-        default=400,
-        ge=1,
-        le=5000,
-        description=(
-            "Pages of the performer index to read per site, 12-25 accounts "
-            "each. A RUNAWAY GUARD, not a budget: the sync stops on its own "
-            "when a site 404s the page after its last one or repeats a page, "
-            "and a full walk of the deepest site takes about twenty seconds. "
-            "Measured 2026-09-12: ultrathots 155 pages, hornyfap 246, "
-            "porn4fans 66, porntn 8, notfans 2. Setting this low silently "
-            "truncates the index rather than failing."
-        ),
-    )
-    sync_day: str = Field(
-        default="sun",
-        description=(
-            "Weekday to rebuild the account index on: mon, tue, wed, thu, "
-            "fri, sat or sun. New accounts appear steadily but not urgently, "
-            "so weekly is enough."
-        ),
-    )
-    sync_hour: int = Field(
-        default=4,
-        ge=0,
-        le=23,
-        description="Hour of the day to rebuild the account index, local time",
-    )
-    enrich_batch_size: int = Field(
-        default=200,
-        ge=1,
-        le=1000,
-        description=(
-            "Accounts to find a picture for per run, one or two requests "
-            "each. The index runs to thousands of accounts and three of the "
-            "five sites carry no avatar at all, so this has to clear a real "
-            "backlog rather than trickle."
-        ),
-    )
-    enrich_interval: int = Field(
-        default=60 * 10,
-        ge=300,
-        description="How often to run the profile enrichment pass, in seconds",
-    )
-    onlyfans_enrich: bool = Field(
-        default=True,
-        description=(
-            "Look up each account's own onlyfans.com profile for its real "
-            "picture, bio, links and counts, via the platform's public guest "
-            "API. Up to four username guesses per account, paced, and a "
-            "definitive 404 is remembered so it is never retried. Turn off "
-            "to rely only on what the archive sites publish, which for most "
-            "accounts is a still from one of their videos."
-        ),
-    )
 
 
 class ContentModel(Observable):
@@ -1847,14 +1745,27 @@ class AppModel(Observable):
         default_factory=lambda: DirectScrapingModel(),
         description="Direct streaming-site scrapers, all loaded as plugins",
     )
-    # Top-level rather than under `content`, for the same reason
-    # `direct_scraping` is: the settings page keys each tab to a top-level
-    # schema key, and this needs its own tab. Half of that tab is a live
-    # registry of scraper plugins, which the generic form cannot express.
-    onlyfans: OnlyFansModel = Field(
-        default_factory=lambda: OnlyFansModel(),
-        description="OnlyFans performer index",
+    # --- Add-ons ------------------------------------------------------------
+    # Deliberately an untyped subtree rather than a field per add-on. This
+    # model is built at import time and add-ons are discovered long after, so
+    # there is nothing to generate a typed field from; each add-on validates
+    # its own slice against its own pydantic model as it loads, and writes the
+    # result back, which is what materialises defaults for the settings form.
+    addons: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Per-add-on configuration, keyed by add-on",
     )
+    addons_dir: str = Field(
+        default="/riven/addons",
+        description="Folder the host loads add-ons from",
+    )
+    # Kept beside the config rather than inside it: a disabled add-on is not
+    # loaded at all, so it has nowhere of its own to record that it is off.
+    addons_disabled: list[str] = Field(
+        default_factory=list,
+        description="Add-ons that are installed but must not be loaded",
+    )
+
     filesystem: FilesystemModel = Field(
         default_factory=lambda: FilesystemModel(),
         description="Filesystem configuration",

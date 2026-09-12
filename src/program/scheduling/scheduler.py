@@ -11,7 +11,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 
 from program.utils.time import utcnow
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import select
@@ -34,7 +34,6 @@ if TYPE_CHECKING:
     from program.program import Program
     from program.services.awards.service import AwardsService
     from program.services.recommendations.brochure import BrochureService
-    from program.services.onlyfans import OnlyFansService
     from program.services.recommendations.studios import StudioService
     from program.services.recommendations.enrichment import TpdbEnricher
 
@@ -70,7 +69,6 @@ class ProgramScheduler:
         self._awards: "AwardsService | None" = None
         self._brochure: "BrochureService | None" = None
         self._studios: "StudioService | None" = None
-        self._onlyfans: "OnlyFansService | None" = None
         self._tpdb_enricher: "TpdbEnricher | None" = None
 
     def start(self) -> None:
@@ -83,7 +81,6 @@ class ProgramScheduler:
         # directory empty until its first firing.
         self._kickoff_studios_if_empty()
         self._kickoff_studio_rows_if_needed()
-        self._kickoff_onlyfans_if_empty()
         self.scheduler.start()
 
     def stop(self) -> None:
@@ -173,25 +170,6 @@ class ProgramScheduler:
                     "interval": brochure.enrich_interval
                 }
 
-        onlyfans = settings_manager.settings.onlyfans
-
-        if onlyfans.enabled:
-            # Weekly and overnight, for the same reason as the studio
-            # directory: this is a crawl of five sites' model indexes, and new
-            # performer accounts appear steadily but never urgently.
-            scheduled_functions[self._sync_onlyfans] = {
-                "cron": {
-                    "day_of_week": onlyfans.sync_day,
-                    "hour": onlyfans.sync_hour,
-                    "minute": 0,
-                }
-            }
-            # Avatars and bios are one request per account, and they are what
-            # makes the account grid look like anything, so they fill in on
-            # the ordinary batch cadence rather than waiting a week.
-            scheduled_functions[self._enrich_onlyfans] = {
-                "interval": onlyfans.enrich_interval
-            }
 
         if settings_manager.settings.adultempire_metadata.enabled:
             # Weekly and overnight, for the same reason as the studio
@@ -244,6 +222,11 @@ class ProgramScheduler:
             logger.debug(
                 f"Scheduled {func.__name__} to run every {config['interval']} seconds."
             )
+
+        # Add-ons last, and through the same reconciling path a settings save
+        # uses, so there is exactly one place that decides what an add-on has
+        # scheduled -- startup and reload cannot drift apart.
+        self.refresh_addon_jobs()
 
     def _schedule_services(self) -> None:
         """Schedule each content service based on its update interval or webhook mode."""
@@ -330,29 +313,7 @@ class ProgramScheduler:
             if brochure.studios_enabled:
                 wanted[self._enrich_studios] = brochure.enrich_interval
 
-        onlyfans = settings_manager.settings.onlyfans
 
-        if onlyfans.enabled:
-            wanted[self._enrich_onlyfans] = onlyfans.enrich_interval
-
-        # Cron rather than interval, and therefore kept apart from `wanted`:
-        # the studio directory is a several-minute crawl that belongs at its
-        # hour, not N seconds after whenever the process last restarted.
-        cron_wanted: dict[Callable[..., None], dict[str, object]] = {}
-
-        if brochure.enabled and brochure.studios_enabled:
-            cron_wanted[self._sync_studios] = {
-                "day_of_week": brochure.studio_sync_day,
-                "hour": brochure.studio_sync_hour,
-                "minute": 0,
-            }
-
-        if onlyfans.enabled:
-            cron_wanted[self._sync_onlyfans] = {
-                "day_of_week": onlyfans.sync_day,
-                "hour": onlyfans.sync_hour,
-                "minute": 0,
-            }
             cron_wanted[self._sync_studio_rows] = {
                 "day_of_week": brochure.studio_sync_day,
                 "hour": brochure.studio_sync_hour,
@@ -390,7 +351,7 @@ class ProgramScheduler:
                 self.scheduler.remove_job(job_id)
                 logger.debug(f"Removed scheduled job {job_id}")
 
-        for func in (self._sync_studios, self._sync_studio_rows, self._sync_onlyfans):
+        for func in (self._sync_studios, self._sync_studio_rows):
             job_id = func.__name__
 
             if func in cron_wanted:
@@ -413,18 +374,89 @@ class ProgramScheduler:
                 # directory is already populated and nothing is re-crawled.
                 self._kickoff_studios_if_empty()
                 self._kickoff_studio_rows_if_needed()
-                self._kickoff_onlyfans_if_empty()
             elif self.scheduler.get_job(job_id) is not None:
                 self.scheduler.remove_job(job_id)
                 logger.debug(f"Removed scheduled job {job_id}")
+
+        self.refresh_addon_jobs()
 
         # The services cache their settings at construction, so a toggle has to
         # drop them or the next run would still see the old values.
         self._awards = None
         self._brochure = None
         self._studios = None
-        self._onlyfans = None
         self._tpdb_enricher = None
+
+    def refresh_addon_jobs(self) -> None:
+        """(Re)register whatever the loaded add-ons want scheduled.
+
+        Reconciled rather than appended: the set is recomputed from what is
+        loaded *now*, and any add-on job that is no longer wanted is removed.
+        Without that, disabling an add-on would leave its jobs running against
+        a schema that may since have been dropped -- and the failure would
+        surface as an exception from a scheduler thread with nothing naming
+        the add-on that caused it.
+
+        Job ids carry the add-on key so that two add-ons scheduling functions
+        of the same name cannot silently replace each other's jobs.
+        """
+
+        if self.scheduler is None or not self.scheduler.running:
+            return
+
+        try:
+            from program.addons import registry
+        except Exception:
+            return
+
+        wanted: dict[str, tuple[Callable[..., None], dict[str, Any]]] = {}
+
+        for record in registry().active():
+            if record.addon is None:
+                continue
+
+            try:
+                jobs = record.addon.jobs()
+            except Exception as exc:
+                logger.warning(f"Addon {record.key}: jobs() raised: {exc}")
+                continue
+
+            for func, config in jobs.items():
+                wanted[f"addon:{record.key}:{func.__name__}"] = (func, config)
+
+        for job in list(self.scheduler.get_jobs()):
+            if job.id.startswith("addon:") and job.id not in wanted:
+                self.scheduler.remove_job(job.id)
+                logger.debug(f"Removed scheduled job {job.id}")
+
+        for job_id, (func, config) in wanted.items():
+            try:
+                if "cron" in config:
+                    self.scheduler.add_job(
+                        func,
+                        "cron",
+                        id=job_id,
+                        max_instances=1,
+                        replace_existing=True,
+                        misfire_grace_time=60 * 60,
+                        **config["cron"],
+                    )
+                else:
+                    self.scheduler.add_job(
+                        func,
+                        "interval",
+                        seconds=int(config.get("interval", 3600)),
+                        id=job_id,
+                        max_instances=1,
+                        replace_existing=True,
+                        next_run_time=datetime.now(),
+                        misfire_grace_time=30,
+                    )
+
+                logger.debug(f"Scheduled {job_id} ({config})")
+            except Exception as exc:
+                # One malformed job config must not cost the others theirs.
+                logger.error(f"Could not schedule {job_id}: {exc}")
 
     def _awards_service(self):
         """The awards service, built lazily so a disabled one costs nothing."""
@@ -613,85 +645,10 @@ class ProgramScheduler:
             logger.debug(f"Could not check the studio directory: {exc}")
             return False
 
-    def _kickoff_onlyfans_if_empty(self) -> None:
-        """Build the performer index once, now, if there is nothing in it.
 
-        Same reasoning as `_kickoff_studios_if_empty`: the weekly cron exists
-        to run at its hour, so without this the OnlyFans page would stay empty
-        from the moment the feature is enabled until the next Sunday. Once the
-        index has anything in it this does nothing, so restarts do not
-        re-crawl five sites.
-        """
 
-        if not settings_manager.settings.onlyfans.enabled:
-            return
 
-        if not self._onlyfans_index_is_empty():
-            return
 
-        self.scheduler.add_job(
-            self._sync_onlyfans,
-            "date",
-            run_date=datetime.now(),
-            id="_sync_onlyfans_once",
-            replace_existing=True,
-            misfire_grace_time=60,
-        )
-        logger.debug("Scheduled a one-off OnlyFans account index sync")
-
-    def _onlyfans_index_is_empty(self) -> bool:
-        """Whether the account index has nothing in it.
-
-        A failure to check counts as "not empty", so a database hiccup cannot
-        trigger a five-site crawl -- the same way the studio check treats it.
-        """
-
-        from program.media.onlyfans import OnlyFansAccount
-
-        try:
-            with db_session() as session:
-                return (
-                    session.execute(select(OnlyFansAccount).limit(1)).first() is None
-                )
-        except SQLAlchemyError as exc:
-            logger.debug(f"Could not check the OnlyFans account index: {exc}")
-            return False
-
-    def _onlyfans_service(self):
-        """The OnlyFans index service, built lazily like the rest."""
-
-        from program.services.onlyfans import OnlyFansService
-
-        if self._onlyfans is None:
-            self._onlyfans = OnlyFansService()
-
-        return self._onlyfans
-
-    def _sync_onlyfans(self) -> None:
-        """Rebuild the performer index from the archive sites. Weekly."""
-
-        service = self._onlyfans_service()
-
-        if not service.initialized:
-            return
-
-        try:
-            service.sync()
-        except Exception as exc:
-            logger.error(f"OnlyFans account index sync failed: {exc}")
-
-    def _enrich_onlyfans(self) -> None:
-        """Attach avatars and bios to accounts that lack them."""
-
-        service = self._onlyfans_service()
-
-        if not service.initialized:
-            return
-
-        try:
-            service.enrich_batch()
-        except Exception as exc:
-            logger.error(f"OnlyFans account enrichment failed: {exc}")
 
     def _studio_service(self):
         """The studio directory service, built lazily like the rest."""

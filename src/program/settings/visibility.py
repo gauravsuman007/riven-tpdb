@@ -79,12 +79,6 @@ HIDDEN_SECTIONS: dict[str, frozenset[str]] = {
     # path, so hiding it would leave no way to set it at all.
     "direct_scraping": frozenset({"disabled", "site_order"}),
     # `disabled` has a dedicated write path for the same reason
-    # `direct_scraping.disabled` does: the OnlyFans tab's per-row toggle owns
-    # it, and a raw list-of-strings editor in the generic form would be a
-    # second write path to the same key.
-    # `plugin_dir` is deliberately NOT hidden -- like `results_per_site` above
-    # it has no other write path, so hiding it would leave no way to set it.
-    "onlyfans": frozenset({"disabled"}),
 }
 
 
