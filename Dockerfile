@@ -27,7 +27,10 @@ LABEL name="Riven TPDB" \
       url="https://github.com/riven-tpdb/riven-tpdb"
 
 # Install only runtime dependencies
-RUN apk add --no-cache curl libcurl shadow unzip ffmpeg libpq fuse3 libcap libcap-utils postgresql17-client
+# git is here for the add-on installer: Settings -> Plugins -> Add-ons
+# clones a repository into /riven/addons, and without it every install
+# fails with a FileNotFoundError that says only 'git'.
+RUN apk add --no-cache curl libcurl shadow unzip ffmpeg libpq fuse3 libcap libcap-utils postgresql17-client git
 
 # Configure FUSE
 RUN sed -i 's/^#\s*user_allow_other/user_allow_other/' /etc/fuse.conf || \
