@@ -79,6 +79,16 @@ services:
             # interface it needs to implement. Read-only: this container only
             # ever reads plugin files, never writes to the folder.
             - ./plugins:/riven/plugins:ro
+            # The OnlyFans performer-index scrapers, from the onlyfans_scrapers
+            # repo. A separate folder from ./plugins above, not a second copy
+            # of it: those answer "find me this title", these answer "who does
+            # this site carry", and the app keeps two registries so an OnlyFans
+            # scraper never appears in the direct-play site list. Managed from
+            # Settings -> OnlyFans.
+            #
+            # NOT read-only, unlike ./plugins: that tab can import a scraper
+            # file, which writes into this folder.
+            - ./onlyfans_scrapers:/riven/onlyfans_scrapers
         depends_on:
             riven_postgres:
                 condition: service_healthy

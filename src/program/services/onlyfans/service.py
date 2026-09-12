@@ -70,9 +70,9 @@ class OnlyFansService:
     def sync(self) -> int:
         """Walk every configured site's model index. Returns accounts touched."""
 
-        from program.services.directscrapers import service as scraper_service
+        from program.services.onlyfans.registry import registry
 
-        scrapers = scraper_service().services
+        scrapers = registry().services
         touched = 0
 
         for key in self.settings.sites:
@@ -217,10 +217,10 @@ class OnlyFansService:
         not accounts improved -- a miss is a normal outcome here.
         """
 
-        from program.services.directscrapers import service as scraper_service
+        from program.services.onlyfans.registry import registry
 
         limit = limit or self.settings.enrich_batch_size
-        scrapers = scraper_service().services
+        scrapers = registry().services
 
         with db_session() as session:
             pending = (

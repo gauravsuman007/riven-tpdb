@@ -25,11 +25,14 @@ only moves the problem; resolving the gallery and taking the Nth image cannot
 be pointed at a host this app did not choose.
 """
 
+import shutil
+import tempfile
 import time
+from pathlib import Path
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
@@ -37,9 +40,11 @@ from sqlalchemy import func, or_, select
 
 from program.db.db import db_session
 from program.media.onlyfans import OnlyFansAccount, OnlyFansAccountSource
-from program.services.directscrapers import service as direct_service
 from program.services.onlyfans import OnlyFansService, normalise_handle
+from program.services.onlyfans import registry as of_registry
+from program.services.onlyfans import reset as reset_of_registry
 from program.services.vpn import STREAMING, VpnUnavailable, vpn
+from program.settings import settings_manager
 from program.utils.time import utcnow
 
 
@@ -303,7 +308,7 @@ def _scraper_for(handle: str, site: str):
             )
         site_handle = source.site_handle
 
-    scraper = direct_service().services.get(site)
+    scraper = of_registry().services.get(site)
 
     if scraper is None:
         raise HTTPException(
@@ -405,7 +410,7 @@ def _gallery_images(site: str, gallery_id: str) -> list:
     if cached and (time.monotonic() - cached[0]) < _GALLERY_TTL:
         return cached[1]
 
-    scraper = direct_service().services.get(site)
+    scraper = of_registry().services.get(site)
 
     if scraper is None:
         raise HTTPException(
@@ -515,3 +520,377 @@ def sync() -> dict[str, int]:
     """Rebuild the index now, rather than waiting for the weekly job."""
 
     return {"accounts": service().sync()}
+
+
+# --- Playback ---------------------------------------------------------------
+#
+# Mirrors /direct/sources|handoff|stream rather than reusing them. Those look
+# the site up in the direct-play registry, which by design does not contain
+# these scrapers, so an account video played through them would 404. The
+# duplication is the cost of keeping the two sets genuinely separate.
+
+
+class SourceResponse(BaseModel):
+    """One rendition, without its URL.
+
+    The URL is deliberately withheld: it expires and several of these hosts
+    check Referer, so handing it to the browser produces a link that 403s on
+    use. `index` is what /stream and /handoff take.
+    """
+
+    index: int
+    label: str
+    resolution: str | None
+    size: int | None
+    mime_type: str
+
+
+class SourcesResponse(BaseModel):
+    site: str
+    video_id: str
+    sources: list[SourceResponse]
+
+
+class HandoffResponse(BaseModel):
+    """Whether a player can be pointed straight at the CDN.
+
+    `reason` is filled in instead of `url` when it cannot, so the caller can
+    fall back to the proxy rather than guessing why it got nothing.
+    """
+
+    url: str | None = None
+    mime_type: str | None = None
+    reason: str | None = None
+
+
+def _resolve(site: str, video_id: str) -> list:
+    scraper = of_registry().services.get(site)
+
+    if scraper is None:
+        raise HTTPException(
+            status_code=404, detail=f"No scraper named {site} is installed"
+        )
+
+    try:
+        sources = scraper.resolve(video_id)
+    except Exception as exc:
+        logger.warning(f"OnlyFans resolve failed for {site}:{video_id}: {exc}")
+        raise HTTPException(
+            status_code=502, detail="Could not resolve this video"
+        ) from exc
+
+    if not sources:
+        raise HTTPException(status_code=404, detail="No playable source")
+
+    return sources
+
+
+@router.get("/sources", operation_id="onlyfans_sources")
+def sources(
+    site: Annotated[str, Query()],
+    video_id: Annotated[str, Query()],
+) -> SourcesResponse:
+    """Every rendition of one account video, best quality first."""
+
+    resolved = _resolve(site, video_id)
+
+    return SourcesResponse(
+        site=site,
+        video_id=video_id,
+        sources=[
+            SourceResponse(
+                index=index,
+                label=source.label,
+                resolution=source.resolution,
+                size=source.size,
+                mime_type=source.mime_type,
+            )
+            for index, source in enumerate(resolved)
+        ],
+    )
+
+
+@router.get("/handoff", operation_id="onlyfans_handoff")
+def handoff(
+    site: Annotated[str, Query()],
+    video_id: Annotated[str, Query()],
+    index: Annotated[int, Query(ge=0)] = 0,
+) -> HandoffResponse:
+    """The CDN URL itself, when a player can actually use it.
+
+    Refused rather than returned when the source needs headers a media player
+    will not send, or when playback is routed through the VPN -- handing the
+    URL over in either case produces a silent failure in the player instead of
+    an explanation here.
+    """
+
+    resolved = _resolve(site, video_id)
+
+    if index >= len(resolved):
+        raise HTTPException(status_code=404, detail="No such source")
+
+    source = resolved[index]
+
+    if source.headers:
+        return HandoffResponse(
+            reason="the source requires headers a media player will not send"
+        )
+
+    try:
+        if vpn().proxy_for(STREAMING) is not None:
+            return HandoffResponse(reason="playback is routed through the VPN")
+    except VpnUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return HandoffResponse(url=source.url, mime_type=source.mime_type)
+
+
+@router.get("/stream", operation_id="onlyfans_stream")
+async def stream(
+    request: Request,
+    site: Annotated[str, Query()],
+    video_id: Annotated[str, Query()],
+    index: Annotated[int, Query(ge=0)] = 0,
+) -> StreamingResponse:
+    """Resolve and proxy one rendition, passing Range through both ways."""
+
+    resolved = _resolve(site, video_id)
+
+    if index >= len(resolved):
+        raise HTTPException(status_code=404, detail="No such source")
+
+    source = resolved[index]
+    headers = dict(source.headers)
+
+    if "range" in request.headers:
+        headers["Range"] = request.headers["range"]
+
+    try:
+        proxy = vpn().proxy_for(STREAMING)
+    except VpnUnavailable as exc:
+        # Not falling back to a direct connection: someone routing playback is
+        # controlling where it appears to come from, and quietly using the
+        # host's own address would defeat that invisibly, mid-play.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    client = httpx.AsyncClient(follow_redirects=True, timeout=30.0, proxy=proxy)
+
+    try:
+        upstream = await client.send(
+            client.build_request("GET", source.url, headers=headers), stream=True
+        )
+    except Exception as exc:
+        await client.aclose()
+        logger.error(f"OnlyFans stream upstream failed for {site}:{video_id}: {exc}")
+        raise HTTPException(status_code=502, detail="Upstream connection failed")
+
+    if upstream.status_code >= 400:
+        status_code = upstream.status_code
+        await upstream.aclose()
+        await client.aclose()
+        raise HTTPException(status_code=502, detail=f"Upstream returned {status_code}")
+
+    response_headers = {
+        key: upstream.headers[key]
+        for key in ("content-type", "content-length", "content-range")
+        if key in upstream.headers
+    }
+    # Advertised unconditionally: these upstreams honour Range, and without it
+    # the browser will not offer a seek bar on a fresh stream.
+    response_headers["accept-ranges"] = "bytes"
+
+    async def body():
+        try:
+            async for chunk in upstream.aiter_bytes():
+                yield chunk
+        except Exception as exc:
+            logger.debug(f"OnlyFans stream interrupted for {site}:{video_id}: {exc}")
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        body(), status_code=upstream.status_code, headers=response_headers
+    )
+
+
+# --- Scraper management -----------------------------------------------------
+
+
+class ScraperInfoResponse(BaseModel):
+    key: str
+    name: str
+    base_url: str
+    enabled: bool
+    source_file: str
+    indexes_accounts: bool
+
+
+class PluginsResponse(BaseModel):
+    plugin_dir: str
+    scrapers: list[ScraperInfoResponse]
+    #: Filename -> what went wrong. Surfaced rather than swallowed so a file
+    #: that fails to import reads as broken instead of missing.
+    errors: dict[str, str]
+
+
+class ImportResult(BaseModel):
+    filename: str
+    accepted: bool
+    key: str | None = None
+    error: str | None = None
+
+
+class ImportResponse(BaseModel):
+    results: list[ImportResult]
+    plugins: PluginsResponse
+
+
+def _plugins_response() -> PluginsResponse:
+    current = of_registry()
+
+    return PluginsResponse(
+        plugin_dir=current.plugin_dir,
+        scrapers=[
+            ScraperInfoResponse(**vars(info)) for info in current.describe()
+        ],
+        errors=current.errors,
+    )
+
+
+@router.get("/plugins", operation_id="onlyfans_plugins")
+def plugins() -> PluginsResponse:
+    """Every scraper in the OnlyFans folder, disabled ones included."""
+
+    return _plugins_response()
+
+
+@router.post("/plugins/rescan", operation_id="onlyfans_plugins_rescan")
+def rescan() -> PluginsResponse:
+    """Re-read the folder, picking up files added or edited on disk."""
+
+    reset_of_registry()
+    return _plugins_response()
+
+
+@router.post("/plugins/{key}/enabled", operation_id="onlyfans_plugin_set_enabled")
+def set_enabled(key: str, enabled: Annotated[bool, Body(embed=True)]) -> PluginsResponse:
+    """Enable or disable one scraper.
+
+    Disabling leaves the file in place and records the key, so re-enabling does
+    not mean re-importing -- and so a scraper disabled because a site broke
+    comes back with one click when it is fixed.
+    """
+
+    settings = settings_manager.settings.content.onlyfans
+    disabled = set(settings.disabled)
+
+    if enabled:
+        disabled.discard(key)
+    else:
+        disabled.add(key)
+
+    settings.disabled = sorted(disabled)
+    settings_manager.save()
+    reset_of_registry()
+
+    return _plugins_response()
+
+
+#: Uploads are written here first and only moved into the plugin folder once
+#: they load. A file that fails validation never reaches the folder, so it
+#: cannot become a permanent error row that someone has to clean up by hand.
+_MAX_PLUGIN_BYTES = 1024 * 1024
+
+
+@router.post("/plugins/import", operation_id="onlyfans_plugins_import")
+async def import_plugins(
+    files: Annotated[list[UploadFile], File()],
+) -> ImportResponse:
+    """Add scraper files to the OnlyFans folder.
+
+    Each file is validated before it is kept: written to a temporary folder,
+    loaded through the same discovery the app uses, and moved in only if it
+    actually yields a `DirectScraper`. Rejecting up front is the difference
+    between "that file was not a scraper" and a permanent broken row in the
+    tab that nobody can explain.
+    """
+
+    target = Path(of_registry().plugin_dir)
+
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Plugin folder is not writable: {exc}"
+        ) from exc
+
+    results: list[ImportResult] = []
+
+    for upload in files:
+        # `Path(...).name` rather than trusting the client: a filename carrying
+        # a path separator would otherwise write outside the plugin folder.
+        name = Path(upload.filename or "").name
+
+        if not name.endswith(".py") or name.startswith((".", "_")):
+            results.append(
+                ImportResult(
+                    filename=name or "(unnamed)",
+                    accepted=False,
+                    error="Not a plugin file: expected a .py file",
+                )
+            )
+            continue
+
+        payload = await upload.read()
+
+        if len(payload) > _MAX_PLUGIN_BYTES:
+            results.append(
+                ImportResult(
+                    filename=name, accepted=False, error="File is too large"
+                )
+            )
+            continue
+
+        with tempfile.TemporaryDirectory() as staging:
+            staged = Path(staging) / name
+            staged.write_bytes(payload)
+
+            from program.services.directscrapers.plugins import discover_plugins
+
+            found = discover_plugins(staging)
+
+            if found.errors:
+                results.append(
+                    ImportResult(
+                        filename=name,
+                        accepted=False,
+                        error=next(iter(found.errors.values())),
+                    )
+                )
+                continue
+
+            if not found.plugins:
+                results.append(
+                    ImportResult(
+                        filename=name,
+                        accepted=False,
+                        error="File defines no DirectScraper subclass",
+                    )
+                )
+                continue
+
+            key = next(iter(found.plugins))
+
+            try:
+                shutil.move(str(staged), target / name)
+            except OSError as exc:
+                results.append(
+                    ImportResult(filename=name, accepted=False, error=str(exc))
+                )
+                continue
+
+            results.append(ImportResult(filename=name, accepted=True, key=key))
+
+    reset_of_registry()
+    return ImportResponse(results=results, plugins=_plugins_response())

@@ -900,6 +900,23 @@ class OnlyFansModel(Observable):
         default=False,
         description="Index performer accounts from the OnlyFans archive sites",
     )
+    plugin_dir: str = Field(
+        default="/riven/onlyfans_scrapers",
+        description=(
+            "Folder holding the OnlyFans scraper plugins. Deliberately not "
+            "the direct-scraping plugin folder: these answer a different "
+            "question and are managed from their own tab, and keeping the two "
+            "apart is what stops an OnlyFans scraper appearing in the "
+            "direct-play site list."
+        ),
+    )
+    disabled: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Scraper keys to skip loading. A disabled scraper stays in the "
+            "folder and can be re-enabled without re-importing it."
+        ),
+    )
     sites: list[str] = Field(
         default_factory=lambda: [
             "ultrathots",
