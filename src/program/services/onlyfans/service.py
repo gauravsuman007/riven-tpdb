@@ -277,13 +277,26 @@ class OnlyFansService:
         limit = limit or self.settings.enrich_batch_size
         scrapers = registry().services
 
+        # An account still needs work if it has no picture at all -- or if the
+        # picture it has was borrowed from an archive site and its own profile
+        # has not been looked for yet. The second half is conditional on the
+        # setting for a reason: with the profile pass off, nothing ever stamps
+        # `of_checked_at`, so an unconditional clause would re-select the same
+        # accounts forever and the ones with no picture would never come up.
+        wanted = OnlyFansAccount.avatar_url.is_(None)
+
+        if self.settings.onlyfans_enrich:
+            wanted = wanted | OnlyFansAccount.of_checked_at.is_(None)
+
         with db_session() as session:
             pending = (
                 session.execute(
                     select(OnlyFansAccount)
-                    .where(OnlyFansAccount.avatar_url.is_(None))
+                    .where(wanted)
                     .order_by(
                         OnlyFansAccount.saved.desc(),
+                        # Nothing at all before merely-borrowed.
+                        OnlyFansAccount.avatar_url.is_(None).desc(),
                         OnlyFansAccount.source_count.desc(),
                     )
                     .limit(limit)
@@ -310,6 +323,13 @@ class OnlyFansService:
             if account is None:
                 return False
 
+            # THE PERFORMER'S OWN PROFILE FIRST, because it is the only
+            # source here that is actually about the person rather than about
+            # one archive's copy of them: real picture, real bio, real counts.
+            # Everything below is a substitute for it.
+            if self.settings.onlyfans_enrich and account.of_checked_at is None:
+                self._apply_onlyfans_profile(account)
+
             for source in account.sources:
                 scraper = scrapers.get(source.site)
 
@@ -319,7 +339,12 @@ class OnlyFansService:
                 profile = scraper.account_profile(source.site_handle)
 
                 if profile is not None:
-                    account.avatar_url = account.avatar_url or profile.avatar
+                    if profile.avatar and not account.avatar_url:
+                        account.avatar_url = profile.avatar
+                        # Borrowed: the performer's own profile picture
+                        # replaces it if one is ever found.
+                        account.avatar_from_site = True
+
                     account.bio = account.bio or profile.bio
 
                 if account.avatar_url:
@@ -348,25 +373,140 @@ class OnlyFansService:
                 for video in videos:
                     if video.thumbnail:
                         account.avatar_url = video.thumbnail
+                        account.avatar_from_site = True
                         break
 
                 if account.avatar_url:
                     break
 
-            if self.settings.onlyfans_enrich and account.of_checked_at is None:
-                public = _public_profile(account.handle)
-                # Stamped whether or not it found anything. Without this the
-                # weekly pass would retry every miss forever, and misses are
-                # the expected outcome -- see `_public_profile`.
-                account.of_checked_at = utcnow()
-
-                if public:
-                    account.avatar_url = account.avatar_url or public.get("avatar")
-                    account.bio = account.bio or public.get("bio")
-
             account.refreshed_at = utcnow()
             session.commit()
             return True
+
+    # --- The performer's own profile ----------------------------------------
+
+    #: Candidates tried per account before giving up. Each is one request, and
+    #: the index runs to thousands of accounts, so this is a budget rather
+    #: than an exhaustive search: the first two forms cover almost everything
+    #: and the tail is guesswork that costs the same as a hit.
+    _MAX_CANDIDATES = 4
+
+    def _of_candidates(self, account: OnlyFansAccount) -> list[str]:
+        """The usernames this account might have on onlyfans.com.
+
+        `handle` has been stripped to alphanumerics so that three sites'
+        spellings collapse to one identity, which makes it exactly wrong as a
+        URL for anyone whose real username contains a dot or an underscore.
+        The sites' own slugs usually preserve the separator, so they go first;
+        the collapsed form is the fallback, and the last two are the two
+        separators OnlyFans actually allows, reinstated.
+        """
+
+        candidates: list[str] = []
+
+        for source in account.sources:
+            slug = (source.site_handle or "").strip().strip("/")
+
+            # Archive slugs are hyphenated by convention; OnlyFans usernames
+            # cannot contain a hyphen, so a hyphenated slug is the site's
+            # spelling and not a username.
+            if slug and "-" not in slug:
+                candidates.append(slug)
+
+        candidates.append(account.handle)
+        candidates.append(account.handle.replace(" ", "_"))
+
+        for source in account.sources:
+            slug = (source.site_handle or "").strip().strip("/")
+
+            if slug and "-" in slug:
+                candidates.extend([slug.replace("-", "_"), slug.replace("-", ".")])
+
+        seen: list[str] = []
+        for candidate in candidates:
+            if candidate and candidate.casefold() not in [
+                value.casefold() for value in seen
+            ]:
+                seen.append(candidate)
+
+        return seen[: self._MAX_CANDIDATES]
+
+    def _apply_onlyfans_profile(self, account: OnlyFansAccount) -> None:
+        """Fill the account from onlyfans.com. Never raises.
+
+        The stamp is the subtle part. `of_checked_at` means "asked and
+        answered", so it is written for a hit and for a definitive 404 -- but
+        NOT when every candidate merely failed. A rate limit or a signing
+        rotation looks like a miss from here, and stamping those would
+        permanently write off every account the pass happened to reach during
+        the outage.
+        """
+
+        from program.services.onlyfans import profile as of_profile
+
+        found: dict | None = None
+        definitive = False
+
+        try:
+            for candidate in self._of_candidates(account):
+                outcome, data = of_profile.profile(candidate)
+
+                if outcome == "ok" and data:
+                    found = data
+                    definitive = True
+                    break
+
+                if outcome == "missing":
+                    # This candidate is not an account; the next one still
+                    # might be. Only meaningful once they ALL say so.
+                    definitive = True
+                    continue
+
+                # "error" -- we do not know. Stop, and stamp nothing.
+                definitive = False
+                break
+        except Exception as exc:
+            logger.debug(f"OnlyFans: profile lookup failed for {account.handle}: {exc}")
+            return
+
+        if definitive:
+            account.of_checked_at = utcnow()
+
+        if not found:
+            return
+
+        # The picture and the bio OVERWRITE what an archive site lent us --
+        # that is the whole point of the pass -- but never overwrite a
+        # previous profile hit, and never clear a field the profile left
+        # empty. A performer with no bio on OnlyFans should not lose the one
+        # an archive site wrote for them.
+        if found.get("avatar") and (account.avatar_url is None or account.avatar_from_site):
+            account.avatar_url = found["avatar"]
+            account.avatar_from_site = False
+
+        if found.get("bio"):
+            account.bio = found["bio"]
+
+        for column, key in (
+            ("header_url", "header"),
+            ("website", "website"),
+            ("location", "location"),
+            ("of_user_id", "of_user_id"),
+            ("of_username", "of_username"),
+            ("posts_count", "posts_count"),
+            ("photos_count", "photos_count"),
+            ("videos_count", "videos_count"),
+            ("likes_count", "likes_count"),
+            ("subscribe_price", "subscribe_price"),
+        ):
+            if found.get(key) is not None:
+                setattr(account, column, found[key])
+
+        account.is_verified = bool(found.get("is_verified"))
+
+        logger.debug(
+            f"OnlyFans: profile matched {account.handle} -> {found['of_username']}"
+        )
 
 
 #: An unfinished run older than this is treated as abandoned rather than in
@@ -444,72 +584,3 @@ def _record(
             session.commit()
     except Exception as exc:
         logger.debug(f"OnlyFans: could not record status for {site}: {exc}")
-
-
-def _public_profile(handle: str) -> dict[str, str] | None:
-    """Best-effort read of a public onlyfans.com profile.
-
-    MEASURED 2026-09-12, AND IT NEVER WORKS. The TLS impersonation clears the
-    handshake and every handle answers 200 -- but with the SAME 17669-byte
-    application shell, whose Open Graph tags are the OnlyFans logo and the
-    site's own marketing copy. There is no per-account data in the response at
-    all. Two real handles returned byte-identical pages.
-
-    That makes this worse than useless if it appears to succeed: adopting
-    those tags would set the same logo as the avatar and the same boilerplate
-    as the bio on every account in the index. The only reason it never did is
-    that the patterns below expect quoted `content="..."` and the shell emits
-    it unquoted, so the match failed and nothing was written -- an accident,
-    not a safeguard, which is why there is now an explicit one.
-
-    Kept rather than deleted because the wall is theirs and may move: if a
-    profile ever renders its own tags again, this will pick them up. The
-    setting that enables it now defaults to off.
-    """
-
-    try:
-        from curl_cffi import requests as curl_requests
-
-        from program.services.vpn import SCRAPING, vpn
-
-        response = curl_requests.get(
-            f"https://onlyfans.com/{handle}",
-            impersonate="chrome124",
-            proxies=vpn().proxies_for(SCRAPING) or None,
-            timeout=15,
-        )
-
-        if response.status_code != 200:
-            return None
-
-        # Open Graph tags, quoted or not -- the shell emits them bare.
-        avatar = re.search(
-            r'<meta property="?og:image"? content="?([^">]+)"?', response.text
-        )
-        bio = re.search(
-            r'<meta property="?og:description"? content="([^"]+)"', response.text
-        )
-
-        found = {}
-        if avatar:
-            found["avatar"] = avatar.group(1)
-        if bio:
-            found["bio"] = bio.group(1)
-
-        # THE GENERIC SHELL, REFUSED. Its og:image is the OnlyFans logo and
-        # its og:description is the site's marketing blurb, so adopting
-        # either would stamp the same avatar and the same bio on every
-        # account. Matched on the logo path rather than the body length,
-        # which would change the first time they rebuild the bundle.
-        if "of-logo" in found.get("avatar", "") or found.get("bio", "").startswith(
-            "OnlyFans is the social platform"
-        ):
-            return None
-
-        return found or None
-    except Exception:
-        # Deliberately silent at debug level only: this failing is the normal
-        # case and logging it as a warning would fill the log with expected
-        # outcomes once per account per week.
-        logger.debug(f"OnlyFans: no public profile for {handle}")
-        return None

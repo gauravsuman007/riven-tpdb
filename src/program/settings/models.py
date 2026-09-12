@@ -975,13 +975,14 @@ class OnlyFansModel(Observable):
         description="How often to run the profile enrichment pass, in seconds",
     )
     onlyfans_enrich: bool = Field(
-        default=False,
+        default=True,
         description=(
-            "Additionally attempt a public onlyfans.com profile for each "
-            "account. OFF because it was measured as useless: every handle "
-            "answers 200 with the same application shell, whose only Open "
-            "Graph tags are the OnlyFans logo and the site's own marketing "
-            "copy. Left as a switch in case that wall moves."
+            "Look up each account's own onlyfans.com profile for its real "
+            "picture, bio, links and counts, via the platform's public guest "
+            "API. Up to four username guesses per account, paced, and a "
+            "definitive 404 is remembered so it is never retried. Turn off "
+            "to rely only on what the archive sites publish, which for most "
+            "accounts is a still from one of their videos."
         ),
     )
 

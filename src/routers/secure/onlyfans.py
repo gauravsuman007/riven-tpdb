@@ -98,10 +98,25 @@ class AccountResponse(BaseModel):
     source_count: int
     saved: bool
     sites: list[str]
+    is_verified: bool = False
 
 
 class AccountDetailResponse(AccountResponse):
     sources: list[AccountSourceResponse]
+
+    # From the performer's own onlyfans.com profile, and all optional: the
+    # lookup is a guess at their username and most of the index has not been
+    # reached yet, so the detail page has to render fully without any of it.
+    of_username: str | None = None
+    of_url: str | None = None
+    header_url: str | None = None
+    website: str | None = None
+    location: str | None = None
+    posts_count: int | None = None
+    photos_count: int | None = None
+    videos_count: int | None = None
+    likes_count: int | None = None
+    subscribe_price: float | None = None
 
 
 class AccountPage(BaseModel):
@@ -162,6 +177,7 @@ def _account_response(account: OnlyFansAccount) -> AccountResponse:
         source_count=account.source_count,
         saved=account.saved,
         sites=[source.site for source in account.sources],
+        is_verified=bool(account.is_verified),
     )
 
 
@@ -252,6 +268,22 @@ def get_account(handle: str) -> AccountDetailResponse:
                 )
                 for source in account.sources
             ],
+            of_username=account.of_username,
+            # Built rather than stored: the stored username IS the link, and a
+            # second column holding the same fact could disagree with it.
+            of_url=(
+                f"https://onlyfans.com/{account.of_username}"
+                if account.of_username
+                else None
+            ),
+            header_url=account.header_url,
+            website=account.website,
+            location=account.location,
+            posts_count=account.posts_count,
+            photos_count=account.photos_count,
+            videos_count=account.videos_count,
+            likes_count=account.likes_count,
+            subscribe_price=account.subscribe_price,
         )
 
 
@@ -551,6 +583,10 @@ class SyncStatusResponse(BaseModel):
     #: picture" without a second request.
     accounts: int = 0
     accounts_with_avatar: int = 0
+    #: How many have been matched to their own onlyfans.com profile. Separate
+    #: from the avatar count because most pictures are borrowed from an
+    #: archive site, so one number cannot answer both questions.
+    accounts_with_profile: int = 0
 
 
 #: Sites with a walk in flight. A second request for a site already running is
@@ -627,6 +663,11 @@ def _sync_status() -> SyncStatusResponse:
             .select_from(OnlyFansAccount)
             .where(OnlyFansAccount.avatar_url.is_not(None))
         ).scalar_one()
+        with_profile = session.execute(
+            select(func.count())
+            .select_from(OnlyFansAccount)
+            .where(OnlyFansAccount.of_username.is_not(None))
+        ).scalar_one()
 
         rows: list[SyncRunResponse] = []
 
@@ -672,12 +713,63 @@ def _sync_status() -> SyncStatusResponse:
         sites=rows,
         accounts=accounts,
         accounts_with_avatar=with_avatar,
+        accounts_with_profile=with_profile,
     )
 
 
 @router.get("/sync/status", operation_id="onlyfans_sync_status")
 def sync_status() -> SyncStatusResponse:
     """Per-site progress, cheap enough to poll while a walk is running."""
+
+    return _sync_status()
+
+
+#: True while a manual enrichment batch is in flight. A second one would ask
+#: onlyfans.com for the same accounts twice at once and fight the pacing in
+#: `profile.MIN_INTERVAL`, which exists precisely to keep that from happening.
+_enriching = False
+
+
+def _run_enrich(limit: int | None) -> None:
+    global _enriching
+
+    try:
+        service().enrich_batch(limit=limit)
+    except Exception as exc:
+        logger.error(f"OnlyFans: manual enrichment failed: {exc}")
+    finally:
+        _enriching = False
+
+
+@router.post("/enrich", operation_id="enrich_onlyfans_accounts")
+def enrich(
+    limit: Annotated[int | None, Query(ge=1, le=1000)] = None,
+) -> SyncStatusResponse:
+    """Run a profile/artwork batch now, in the background.
+
+    The same pass the scheduler runs. Returns the index totals immediately
+    rather than the batch's result: a batch is minutes of paced requests, and
+    the answer anyone wants is "how many have a picture now", which
+    `/sync/status` already answers and the page is already polling.
+    """
+
+    global _enriching
+
+    # Before the flag is claimed: this raises 503 when the feature is off, and
+    # claiming first would leave the flag set with no thread to clear it,
+    # refusing every later attempt for the life of the process.
+    service()
+
+    with _running_lock:
+        if _enriching:
+            raise HTTPException(
+                status_code=409, detail="An enrichment batch is already running"
+            )
+        _enriching = True
+
+    threading.Thread(
+        target=_run_enrich, args=(limit,), name="onlyfans-enrich", daemon=True
+    ).start()
 
     return _sync_status()
 

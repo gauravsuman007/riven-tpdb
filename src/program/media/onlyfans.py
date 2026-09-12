@@ -60,6 +60,40 @@ class OnlyFansAccount(Base):
     avatar_url: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True)
     bio: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True)
 
+    # WHERE THE PICTURE CAME FROM, and the only reason this column exists.
+    # An archive site's own thumbnail -- or, for the three that publish no
+    # avatar at all, a still from the performer's newest video there -- is a
+    # good answer and a bad one to KEEP: once the performer's own profile is
+    # found, its picture must replace the borrowed one, and an
+    # `avatar_url or ...` can never do that because the column is full.
+    # True means borrowed and replaceable; False means it is theirs.
+    avatar_from_site: Mapped[bool] = mapped_column(
+        sqlalchemy.Boolean, default=False, server_default="false"
+    )
+
+    # --- from the performer's own onlyfans.com profile ----------------------
+    # All nullable and all independent: a profile that is found fills these,
+    # one that is not leaves them alone, and nothing else in the index reads
+    # them, so a site that stops answering costs detail rather than rows.
+    of_user_id: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True)
+    # As OnlyFans spells it, which is NOT `handle`: that one has been stripped
+    # to alphanumerics for deduplication and would 404 for anyone whose name
+    # contains a dot or an underscore.
+    of_username: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True)
+    header_url: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True)
+    website: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True)
+    location: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True)
+    is_verified: Mapped[bool] = mapped_column(
+        sqlalchemy.Boolean, default=False, server_default="false"
+    )
+    posts_count: Mapped[int | None] = mapped_column(sqlalchemy.Integer, nullable=True)
+    photos_count: Mapped[int | None] = mapped_column(sqlalchemy.Integer, nullable=True)
+    videos_count: Mapped[int | None] = mapped_column(sqlalchemy.Integer, nullable=True)
+    likes_count: Mapped[int | None] = mapped_column(sqlalchemy.Integer, nullable=True)
+    subscribe_price: Mapped[float | None] = mapped_column(
+        sqlalchemy.Float, nullable=True
+    )
+
     # How many sites carry this account. Ordering signal: a performer three
     # sites independently indexed is more likely to be a real, findable
     # account than one that appears once.
