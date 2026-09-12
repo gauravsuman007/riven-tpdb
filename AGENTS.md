@@ -1078,6 +1078,33 @@ repo's AGENTS.md.
   sandbox, and the UI says so. The installer validates a temporary clone
   before anything is moved into place, which prevents accidents, not attacks.
 
+### Traps found building it
+
+- **`SET search_path` survives the connection pool.** An add-on migration sets
+  it so a migration without an explicit `schema=` still lands in the add-on's
+  schema. On a pooled connection the next borrower inherits it -- and the next
+  borrower was the host, which died with `relation "MediaItem" does not exist`
+  seconds after an add-on reported loading fine. Migrations run on a throwaway
+  NullPool engine and use `SET LOCAL`; both guards are deliberate.
+- **`str(engine.url)` redacts the password.** A migration config built from it
+  reconnects as nobody and fails with a bare "password authentication failed"
+  naming the add-on rather than the mistake. Use
+  `render_as_string(hide_password=False)`, or hand alembic a live connection.
+- **Never `from main import app` in a request handler.** It re-executes main.py
+  in that worker thread and dies installing uvicorn's signal handlers. `main`
+  binds the app into `mounting` at startup instead.
+- **`refresh_addon_jobs` must not check `scheduler.running`.** It is called at
+  the end of `_schedule_functions`, which runs before `scheduler.start()`, so
+  that check silently skipped every add-on job on every startup. Its
+  registration line is INFO for the same reason: jobs that never registered and
+  jobs that run and find nothing look identical otherwise.
+- **`git` has to be in the runtime image** or every install fails with a
+  FileNotFoundError whose entire message is `git`.
+- **Extracting a feature resets its settings.** Its subtree moves from
+  `settings.<key>` to `settings.addons.<key>`, and the old one is dropped by
+  `AppModel` validation on the first save. Re-set anything that was not a
+  default -- `onlyfans.enabled` came back false and the index quietly stopped.
+
 ### The frontend side
 
 - **`/x/[addon]/[...rest]`** dynamically imports the add-on's prebuilt
