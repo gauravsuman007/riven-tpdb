@@ -113,6 +113,29 @@ def _apply_settings_side_effects(was_auto_requesting: bool) -> None:
             # The setting is saved regardless; nothing new will be queued.
             logger.error(f"Could not cancel in-flight award downloads: {exc}")
 
+    # A schedule saved here must also BE the schedule. Several sections own
+    # scheduled work whose cadence is a settings field -- the awards and
+    # brochure refreshes, and the OnlyFans index and enrichment -- and until
+    # this call existed only the collections toggle reconciled them. Editing
+    # an interval through the settings form therefore looked applied, read
+    # back as the new value, and went on running at the old one until the next
+    # restart: exactly the silent no-op the toggle's own comment warns about.
+    # Measured: onlyfans.enrich_interval changed from six hours to ten minutes
+    # and nothing ran any sooner.
+    #
+    # Safe to call for any save: it reconciles registered jobs against wanted
+    # ones and is a no-op when they already agree.
+    try:
+        from program.program import Program
+        from kink import di
+
+        di[Program].scheduler_manager.refresh_content_jobs()
+    except Exception as exc:
+        # Never fails the save. The value is persisted either way and a
+        # restart applies it; reporting a 500 here would make a successful
+        # settings write look rejected.
+        logger.debug(f"Could not refresh scheduled jobs after a settings save: {exc}")
+
 
 @router.get(
     "/load",

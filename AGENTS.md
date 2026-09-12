@@ -1076,6 +1076,31 @@ same reason.
   *tube* scrapers until 2026-09-12 and is now guarded in all of them; eporner
   marks the same thing with an `onclick` running its login check instead of a
   different URL, so it is skipped on that.
+- **`max_pages_per_site` silently truncates the index.** It is a runaway
+  guard, not a budget. Measured 2026-09-12: ultrathots 155 pages, hornyfap
+  246, porn4fans 66, porntn 8, notfans 2 -- 8,190 raw rows, 6,402 after
+  dedupe, and each full walk costs about twenty seconds. It had been left at
+  3 and the whole index was 223 accounts.
+- **The end of a model index is a 404, not an empty page.** Four of the five
+  404 the page after their last one. The scrapers do not agree on an HTTP
+  client, so both shapes must be checked: `requests` raises an HTTPError
+  carrying a `response`, `urllib` raises one that IS the response with
+  `code`. Matching one covered half the sites and lost the other half's count.
+- **Only two of five sites carry an avatar at all**; the rest render "no
+  image" in the index AND on the model's own page. All five carry video
+  thumbnails, so enrichment falls back to the newest video's still.
+- **`onlyfans.com` public profiles are useless and dangerous to "fix".**
+  Every handle answers 200 with the same 17,669-byte app shell; its
+  `og:image` is the OnlyFans logo and its `og:description` the site's
+  marketing copy. Two real handles returned byte-identical pages. It wrote
+  nothing only because the patterns expected quoted attributes and the shell
+  emits them bare -- making the regex "work" would have stamped one logo on
+  every account. There is now an explicit refusal; the setting defaults off.
+- **A settings save now reconciles the scheduler.** `refresh_content_jobs()`
+  was only called from the collections toggle, so editing any interval
+  through the settings form read back as the new value and went on running at
+  the old one until a restart. `/settings/set` and `/settings/set/all` call it
+  now.
 - **Images are addressed by position, never by URL.** Proxying a
   caller-supplied URL would make `/onlyfans/image` an open proxy; signing only
   moves the problem.
