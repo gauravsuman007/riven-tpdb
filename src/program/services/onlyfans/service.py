@@ -24,7 +24,11 @@ from loguru import logger
 from sqlalchemy import func, select
 
 from program.db.db import db_session
-from program.media.onlyfans import OnlyFansAccount, OnlyFansAccountSource
+from program.media.onlyfans import (
+    OnlyFansAccount,
+    OnlyFansAccountSource,
+    OnlyFansSyncRun,
+)
 from program.settings import settings_manager
 from program.utils.time import utcnow
 
@@ -67,15 +71,22 @@ class OnlyFansService:
 
     # --- Building the index -------------------------------------------------
 
-    def sync(self) -> int:
-        """Walk every configured site's model index. Returns accounts touched."""
+    def sync(self, sites: list[str] | None = None) -> int:
+        """Walk each configured site's model index. Returns accounts touched.
+
+        `sites` narrows the run to a subset, which is what the per-site "run
+        now" button in Settings uses. Unknown names are ignored rather than
+        rejected: the list is configuration and a plugin can be removed from
+        the folder between the page rendering and the button being pressed.
+        """
 
         from program.services.onlyfans.registry import registry
 
         scrapers = registry().services
+        wanted = [key for key in self.settings.sites if sites is None or key in sites]
         touched = 0
 
-        for key in self.settings.sites:
+        for key in wanted:
             scraper = scrapers.get(key)
 
             if scraper is None:
@@ -96,40 +107,83 @@ class OnlyFansService:
                 touched += self._sync_site(key, scraper)
             except Exception as exc:
                 logger.error(f"OnlyFans: {key} index failed: {exc}")
+                _record(key, state="failed", error=str(exc)[:500], finished=True)
 
         logger.info(f"OnlyFans: indexed {touched} accounts")
         return touched
 
     def _sync_site(self, key: str, scraper) -> int:
-        """One site's index, paged until it stops producing new accounts."""
+        """One site's index, paged until the site says there is no more.
+
+        These indexes are deeper than they look -- measured 2026-09-12:
+        ultrathots 155 pages, hornyfap 246, porn4fans 66, porntn 8, notfans 2
+        -- and each full walk costs about twenty seconds, so the page cap is a
+        runaway guard rather than a budget. It was 3, which silently truncated
+        the index to 223 accounts out of roughly eight thousand.
+        """
 
         seen: set[str] = set()
         touched = 0
+        created = 0
+        page = 0
+
+        _record(key, state="running", started=True, pages=0, seen=0, new=0, error=None)
 
         for page in range(1, self.settings.max_pages_per_site + 1):
-            accounts = scraper.list_accounts(page)
+            try:
+                accounts = scraper.list_accounts(page)
+            except Exception as exc:
+                # THE END OF THE INDEX IS A 404, not an empty page. Four of
+                # the five sites answer the page after the last one with a
+                # 404, which reads as a site failure and used to lose the
+                # whole site's count and log an error for an ordinary
+                # outcome. Only a first-page failure is a real failure.
+                if page > 1 and _is_end_of_index(exc):
+                    logger.debug(f"OnlyFans: {key} index ends at page {page - 1}")
+                    break
+                raise
 
             if not accounts:
                 break
 
-            # A site that has run out of accounts serves the last page again
-            # rather than an empty one, so "no new handles" is the real end of
-            # the index. Paging to `max_pages_per_site` regardless would make
-            # every sync do the maximum number of requests on every site.
+            # A site that has run out of accounts may also serve the last page
+            # again rather than 404ing, so "no new handles" is the other end
+            # of the index.
             fresh = [a for a in accounts if a.handle not in seen]
             if not fresh:
                 break
             seen.update(a.handle for a in fresh)
 
             for account in fresh:
-                if self._store(key, account):
-                    touched += 1
+                stored, is_new = self._store(key, account)
+                touched += stored
+                created += is_new
 
-        logger.debug(f"OnlyFans: {key} contributed {touched} accounts")
+            # Per page, not per run: a walk of two hundred pages that reports
+            # nothing until it finishes cannot answer "is this moving", which
+            # is the only question anyone has while it runs.
+            _record(key, pages=page, seen=len(seen), new=created)
+
+        _record(
+            key,
+            state="ok",
+            finished=True,
+            pages=page,
+            seen=len(seen),
+            new=created,
+            error=None,
+        )
+        logger.debug(
+            f"OnlyFans: {key} walked {page} pages, {len(seen)} accounts, {created} new"
+        )
         return touched
 
-    def _store(self, key: str, account) -> bool:
-        """Upsert one account and its source row.
+    def _store(self, key: str, account) -> tuple[bool, bool]:
+        """Upsert one account and its source row. Returns (stored, created).
+
+        The two are separate because a re-run must be legible: "3859 seen, 0
+        new" says the walk worked and nothing had changed, which a single
+        number cannot.
 
         One session and one commit per account rather than per run: a sync
         that dies on its four-thousandth account keeps the first three
@@ -140,13 +194,14 @@ class OnlyFansService:
 
         if len(handle) < _MIN_HANDLE_LENGTH:
             logger.debug(f"OnlyFans: {key} yielded unusable handle {account.handle!r}")
-            return False
+            return False, False
 
         try:
             with db_session() as session:
                 existing = session.execute(
                     select(OnlyFansAccount).where(OnlyFansAccount.handle == handle)
                 ).scalar_one_or_none()
+                created = existing is None
 
                 if existing is None:
                     existing = OnlyFansAccount(
@@ -202,10 +257,10 @@ class OnlyFansService:
                 )
 
                 session.commit()
-                return True
+                return True, created
         except Exception as exc:
             logger.debug(f"OnlyFans: could not store {key}:{account.handle}: {exc}")
-            return False
+            return False, False
 
     # --- Enrichment ---------------------------------------------------------
 
@@ -263,11 +318,37 @@ class OnlyFansService:
 
                 profile = scraper.account_profile(source.site_handle)
 
-                if profile is None:
+                if profile is not None:
+                    account.avatar_url = account.avatar_url or profile.avatar
+                    account.bio = account.bio or profile.bio
+
+                if account.avatar_url:
+                    break
+
+                # THE NEWEST VIDEO'S THUMBNAIL, as the avatar of last resort.
+                #
+                # Three of the five sites render "no image" for every model in
+                # their index AND on the model's own page, so an account
+                # carried only by those had no picture at all and fell back to
+                # its initials -- which was most of the index. Every one of
+                # them does carry video thumbnails, and a still from the
+                # performer's own content is a far better answer than two
+                # letters.
+                #
+                # Stored in the same column deliberately: the card wants "a
+                # picture of this person", and keeping a second column for
+                # "but it came from a video" would have every reader choose
+                # between them identically.
+                try:
+                    videos = scraper.account_videos(source.site_handle, 1)
+                except Exception as exc:
+                    logger.debug(f"OnlyFans: {source.site} videos failed: {exc}")
                     continue
 
-                account.avatar_url = account.avatar_url or profile.avatar
-                account.bio = account.bio or profile.bio
+                for video in videos:
+                    if video.thumbnail:
+                        account.avatar_url = video.thumbnail
+                        break
 
                 if account.avatar_url:
                     break
@@ -288,19 +369,102 @@ class OnlyFansService:
             return True
 
 
+#: An unfinished run older than this is treated as abandoned rather than in
+#: progress. Nothing can correct a `running` row once the process that wrote
+#: it is gone, and a permanently spinning progress bar is worse than a stale
+#: result: it is a claim that something is still happening.
+STALE_AFTER = 3600
+
+
+def _is_end_of_index(exc: Exception) -> bool:
+    """Whether a page request failed because there are no more pages.
+
+    Four of the five sites 404 the page AFTER the last one rather than
+    serving an empty list, so this is the ordinary way a walk ends, not a
+    fault. Both exception shapes are checked because the scrapers do not
+    agree on an HTTP client -- two use `requests` (an HTTPError carrying a
+    `response`) and two use `urllib` (an HTTPError that IS the response, with
+    `code`). Matching on only one of them made half the sites log an error
+    and lose their count at the end of every successful walk.
+    """
+
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+
+    if status is None:
+        status = getattr(exc, "code", None)
+
+    return status in (404, 410)
+
+
+def _record(
+    site: str,
+    *,
+    state: str | None = None,
+    started: bool = False,
+    finished: bool = False,
+    pages: int | None = None,
+    seen: int | None = None,
+    new: int | None = None,
+    error: str | None = None,
+) -> None:
+    """Write one site's progress. Never raises.
+
+    Status is a readout, so a failure to write it must not be able to end the
+    run it is describing -- that would turn "the progress bar broke" into "the
+    sync died", which is exactly backwards.
+    """
+
+    try:
+        with db_session() as session:
+            run = session.get(OnlyFansSyncRun, site)
+
+            if run is None:
+                run = OnlyFansSyncRun(site=site)
+                session.add(run)
+
+            if state is not None:
+                run.state = state
+            if started:
+                run.started_at = utcnow()
+                run.finished_at = None
+            if finished:
+                run.finished_at = utcnow()
+            if pages is not None:
+                run.pages = pages
+            if seen is not None:
+                run.accounts_seen = seen
+            if new is not None:
+                run.accounts_new = new
+
+            # Cleared explicitly on a good run rather than left behind: a
+            # stale error next to a green state reads as a current problem.
+            if error is not None or state in ("running", "ok"):
+                run.error = error
+
+            session.commit()
+    except Exception as exc:
+        logger.debug(f"OnlyFans: could not record status for {site}: {exc}")
+
+
 def _public_profile(handle: str) -> dict[str, str] | None:
     """Best-effort read of a public onlyfans.com profile.
 
-    onlyfans.com has no public API, and its profile pages sit behind
-    Cloudflare plus signed-request auth, so this is expected to fail for most
-    accounts and returns None rather than raising when it does. It exists
-    because when it *does* work it is the only source of the performer's own
-    words, and the archive sites' bios are copies at best.
+    MEASURED 2026-09-12, AND IT NEVER WORKS. The TLS impersonation clears the
+    handshake and every handle answers 200 -- but with the SAME 17669-byte
+    application shell, whose Open Graph tags are the OnlyFans logo and the
+    site's own marketing copy. There is no per-account data in the response at
+    all. Two real handles returned byte-identical pages.
 
-    The TLS fingerprint is the part worth trying -- as with
-    `noodlemagazine`, the first obstacle is the handshake rather than
-    JavaScript -- but unlike that site there is a real auth wall behind it, so
-    a 200 here is the exception.
+    That makes this worse than useless if it appears to succeed: adopting
+    those tags would set the same logo as the avatar and the same boilerplate
+    as the bio on every account in the index. The only reason it never did is
+    that the patterns below expect quoted `content="..."` and the shell emits
+    it unquoted, so the match failed and nothing was written -- an accident,
+    not a safeguard, which is why there is now an explicit one.
+
+    Kept rather than deleted because the wall is theirs and may move: if a
+    profile ever renders its own tags again, this will pick them up. The
+    setting that enables it now defaults to off.
     """
 
     try:
@@ -318,13 +482,12 @@ def _public_profile(handle: str) -> dict[str, str] | None:
         if response.status_code != 200:
             return None
 
-        # The public profile renders its name and description into Open Graph
-        # tags, which survive when the rest of the page is a login wall.
+        # Open Graph tags, quoted or not -- the shell emits them bare.
         avatar = re.search(
-            r'<meta property="og:image" content="([^"]+)"', response.text
+            r'<meta property="?og:image"? content="?([^">]+)"?', response.text
         )
         bio = re.search(
-            r'<meta property="og:description" content="([^"]+)"', response.text
+            r'<meta property="?og:description"? content="([^"]+)"', response.text
         )
 
         found = {}
@@ -332,6 +495,17 @@ def _public_profile(handle: str) -> dict[str, str] | None:
             found["avatar"] = avatar.group(1)
         if bio:
             found["bio"] = bio.group(1)
+
+        # THE GENERIC SHELL, REFUSED. Its og:image is the OnlyFans logo and
+        # its og:description is the site's marketing blurb, so adopting
+        # either would stamp the same avatar and the same bio on every
+        # account. Matched on the logo path rather than the body length,
+        # which would change the first time they rebuild the bundle.
+        if "of-logo" in found.get("avatar", "") or found.get("bio", "").startswith(
+            "OnlyFans is the social platform"
+        ):
+            return None
+
         return found or None
     except Exception:
         # Deliberately silent at debug level only: this failing is the normal

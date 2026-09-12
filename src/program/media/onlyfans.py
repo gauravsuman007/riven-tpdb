@@ -153,3 +153,56 @@ class OnlyFansAccountSource(Base):
 
     def __repr__(self) -> str:
         return f"<OnlyFansAccountSource {self.site}:{self.site_handle}>"
+
+
+class OnlyFansSyncRun(Base):
+    """What the index walk did on one site, last time it ran.
+
+    One row per site, overwritten each run, and written AS the run goes rather
+    than at the end. That is the whole point: a full walk of the largest site
+    is several hundred pages, and a status that only appears once the job
+    finishes cannot answer the question anyone actually has while waiting,
+    which is "is this moving, and how far along is it".
+
+    A row survives a restart, so "when did this site last succeed" is
+    answerable after a crash -- which is exactly when it is worth asking. A
+    run interrupted by a restart is left as `running` with a stale
+    `started_at`; the reader treats an unfinished run older than
+    `STALE_AFTER` as abandoned rather than in progress, because there is no
+    process left to correct it.
+    """
+
+    __tablename__ = "OnlyFansSyncRun"
+
+    site: Mapped[str] = mapped_column(sqlalchemy.String, primary_key=True)
+
+    #: "running", "ok", or "failed". Not an enum: a new state is a migration
+    #: for no benefit, and every reader treats anything it does not know as
+    #: "not running".
+    state: Mapped[str] = mapped_column(sqlalchemy.String, default="running")
+
+    started_at: Mapped[datetime | None] = mapped_column(
+        sqlalchemy.DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        sqlalchemy.DateTime(timezone=True), nullable=True
+    )
+
+    #: Pages fetched so far. The index has no page count to compare against --
+    #: these sites stop by 404ing the page after the last one -- so progress
+    #: is honestly a count, never a percentage.
+    pages: Mapped[int] = mapped_column(sqlalchemy.Integer, default=0)
+
+    #: Distinct handles this site offered, and how many of them were new to
+    #: the index. The second number is what makes a re-run legible: 3859 seen
+    #: and 0 new means the walk worked and nothing had changed.
+    accounts_seen: Mapped[int] = mapped_column(sqlalchemy.Integer, default=0)
+    accounts_new: Mapped[int] = mapped_column(sqlalchemy.Integer, default=0)
+
+    #: Why it stopped, when it stopped badly. Kept verbatim; a site in this
+    #: family goes down or changes domain often enough that the text is the
+    #: useful part.
+    error: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<OnlyFansSyncRun {self.site} {self.state} pages={self.pages}>"

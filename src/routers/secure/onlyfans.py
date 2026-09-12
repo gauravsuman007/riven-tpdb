@@ -27,6 +27,7 @@ be pointed at a host this app did not choose.
 
 import shutil
 import tempfile
+import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -40,9 +41,14 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 
 from program.db.db import db_session
-from program.media.onlyfans import OnlyFansAccount, OnlyFansAccountSource
+from program.media.onlyfans import (
+    OnlyFansAccount,
+    OnlyFansAccountSource,
+    OnlyFansSyncRun,
+)
 from program.services.directscrapers.base import BROWSER_HEADERS
 from program.services.onlyfans import OnlyFansService, normalise_handle
+from program.services.onlyfans.service import STALE_AFTER
 from program.services.onlyfans import registry as of_registry
 from program.services.onlyfans import reset as reset_of_registry
 from program.services.vpn import STREAMING, VpnUnavailable, vpn
@@ -519,11 +525,161 @@ async def image(
     return StreamingResponse(body(), status_code=upstream.status_code, headers=headers)
 
 
-@router.post("/sync", operation_id="sync_onlyfans_accounts")
-def sync() -> dict[str, int]:
-    """Rebuild the index now, rather than waiting for the weekly job."""
+class SyncRunResponse(BaseModel):
+    """One site's index walk, as it stands."""
 
-    return {"accounts": service().sync()}
+    site: str
+    #: "running", "ok", "failed", or "never" for a site that has not been
+    #: walked since this table existed.
+    state: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    pages: int = 0
+    accounts_seen: int = 0
+    accounts_new: int = 0
+    error: str | None = None
+    #: True when the scraper is present and says it indexes accounts. A site
+    #: that cannot be walked is shown saying so rather than sitting at
+    #: "never" looking like it is merely waiting its turn.
+    available: bool = True
+
+
+class SyncStatusResponse(BaseModel):
+    running: bool
+    sites: list[SyncRunResponse]
+    #: Index totals, so the page can say "3,806 accounts, 2,140 with a
+    #: picture" without a second request.
+    accounts: int = 0
+    accounts_with_avatar: int = 0
+
+
+#: Sites with a walk in flight. A second request for a site already running is
+#: refused rather than queued: two walks of one index race on the same rows
+#: for no benefit, and the status row can only describe one of them.
+_running: set[str] = set()
+_running_lock = threading.Lock()
+
+
+def _run_sync(sites: list[str]) -> None:
+    try:
+        service().sync(sites=sites)
+    except Exception as exc:
+        logger.error(f"OnlyFans: manual sync failed: {exc}")
+    finally:
+        with _running_lock:
+            _running.difference_update(sites)
+
+
+@router.post("/sync", operation_id="sync_onlyfans_accounts")
+def sync(sites: Annotated[list[str] | None, Query()] = None) -> SyncStatusResponse:
+    """Start an index walk now, rather than waiting for the weekly job.
+
+    Returns immediately with the status rather than the result. A full walk of
+    all five sites is several hundred requests and minutes of work; holding
+    the connection open for it would time out in every proxy between here and
+    the browser, and would give no progress while it ran. `GET /sync/status`
+    is the readout.
+    """
+
+    configured = list(settings_manager.settings.onlyfans.sites)
+    wanted = [key for key in (sites or configured) if key in configured]
+
+    if not wanted:
+        raise HTTPException(
+            status_code=400, detail="No configured OnlyFans site was named"
+        )
+
+    with _running_lock:
+        already = sorted(_running.intersection(wanted))
+
+        if already:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Already indexing {', '.join(already)}",
+            )
+
+        _running.update(wanted)
+
+    # A thread, not a task queue: this is one long IO-bound walk with no
+    # ordering requirement and nothing to hand back, and the scheduler that
+    # owns the weekly run is not a general-purpose executor.
+    threading.Thread(
+        target=_run_sync, args=(wanted,), name="onlyfans-sync", daemon=True
+    ).start()
+
+    return _sync_status()
+
+
+def _sync_status() -> SyncStatusResponse:
+    settings = settings_manager.settings.onlyfans
+    installed = of_registry().services
+
+    with db_session() as session:
+        runs = {
+            run.site: run
+            for run in session.execute(select(OnlyFansSyncRun)).scalars().all()
+        }
+        accounts = session.execute(
+            select(func.count()).select_from(OnlyFansAccount)
+        ).scalar_one()
+        with_avatar = session.execute(
+            select(func.count())
+            .select_from(OnlyFansAccount)
+            .where(OnlyFansAccount.avatar_url.is_not(None))
+        ).scalar_one()
+
+        rows: list[SyncRunResponse] = []
+
+        for site in settings.sites:
+            run = runs.get(site)
+            scraper = installed.get(site)
+            available = scraper is not None and getattr(
+                scraper, "indexes_accounts", False
+            )
+
+            if run is None:
+                rows.append(SyncRunResponse(site=site, state="never", available=available))
+                continue
+
+            state = run.state
+
+            # A run left as `running` by a restart has no process behind it
+            # and nothing will ever finish it, so it is reported as failed
+            # rather than as a progress bar that never moves.
+            if state == "running" and run.started_at is not None:
+                age = (utcnow() - run.started_at).total_seconds()
+                if age > STALE_AFTER and site not in _running:
+                    state = "failed"
+
+            rows.append(
+                SyncRunResponse(
+                    site=site,
+                    state=state,
+                    started_at=run.started_at.isoformat() if run.started_at else None,
+                    finished_at=run.finished_at.isoformat() if run.finished_at else None,
+                    pages=run.pages,
+                    accounts_seen=run.accounts_seen,
+                    accounts_new=run.accounts_new,
+                    error=run.error
+                    if state != "failed" or run.error
+                    else "interrupted before it finished",
+                    available=available,
+                )
+            )
+
+    return SyncStatusResponse(
+        running=bool(_running),
+        sites=rows,
+        accounts=accounts,
+        accounts_with_avatar=with_avatar,
+    )
+
+
+@router.get("/sync/status", operation_id="onlyfans_sync_status")
+def sync_status() -> SyncStatusResponse:
+    """Per-site progress, cheap enough to poll while a walk is running."""
+
+    return _sync_status()
 
 
 # --- Playback ---------------------------------------------------------------

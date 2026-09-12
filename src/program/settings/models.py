@@ -931,13 +931,17 @@ class OnlyFansModel(Observable):
         ),
     )
     max_pages_per_site: int = Field(
-        default=40,
+        default=400,
         ge=1,
-        le=1000,
+        le=5000,
         description=(
             "Pages of the performer index to read per site, 12-25 accounts "
-            "each. The sync also stops early when a page adds no new account, "
-            "so this is a ceiling rather than a target."
+            "each. A RUNAWAY GUARD, not a budget: the sync stops on its own "
+            "when a site 404s the page after its last one or repeats a page, "
+            "and a full walk of the deepest site takes about twenty seconds. "
+            "Measured 2026-09-12: ultrathots 155 pages, hornyfap 246, "
+            "porn4fans 66, porntn 8, notfans 2. Setting this low silently "
+            "truncates the index rather than failing."
         ),
     )
     sync_day: str = Field(
@@ -955,27 +959,29 @@ class OnlyFansModel(Observable):
         description="Hour of the day to rebuild the account index, local time",
     )
     enrich_batch_size: int = Field(
-        default=20,
+        default=200,
         ge=1,
-        le=200,
+        le=1000,
         description=(
-            "Accounts to fetch a profile for per run. Avatar and bio only "
-            "exist on the account's own page, which is one request each."
+            "Accounts to find a picture for per run, one or two requests "
+            "each. The index runs to thousands of accounts and three of the "
+            "five sites carry no avatar at all, so this has to clear a real "
+            "backlog rather than trickle."
         ),
     )
     enrich_interval: int = Field(
-        default=60 * 60 * 6,
-        ge=3600,
+        default=60 * 10,
+        ge=300,
         description="How often to run the profile enrichment pass, in seconds",
     )
     onlyfans_enrich: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Additionally attempt a public onlyfans.com profile for each "
-            "account. Expected to fail for most of them -- the site gates "
-            "profiles behind Cloudflare and signed-request auth -- so it is "
-            "best-effort and rate limited. Turn it off to index from the "
-            "archive sites alone."
+            "account. OFF because it was measured as useless: every handle "
+            "answers 200 with the same application shell, whose only Open "
+            "Graph tags are the OnlyFans logo and the site's own marketing "
+            "copy. Left as a switch in case that wall moves."
         ),
     )
 
