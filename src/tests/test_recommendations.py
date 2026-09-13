@@ -111,6 +111,8 @@ AWARD_WEIGHTS = engine_module.AWARD_WEIGHTS
 NOMINEE_FRACTION = engine_module.NOMINEE_FRACTION
 arrange = engine_module.arrange
 Recommendation = engine_module.Recommendation
+library_links = engine_module.library_links
+attach_library = engine_module.attach_library
 
 RatingBackfill = ratings_module.RatingBackfill
 RankedTitle = sys.modules["program.services.recommendations.adultempire"].RankedTitle
@@ -781,6 +783,76 @@ def test_propagation_leaves_a_real_item_rating_alone(tmp_path):
 
     assert RatingBackfill._propagate(session) == 0
     assert item.rating == 3.5
+
+
+# ------------------------------------------------------- library title match
+
+
+def _library_session(rows):
+    """A session whose one query answers (id, title, tpdb_id) tuples."""
+
+    return SimpleNamespace(
+        execute=lambda *_a, **_k: SimpleNamespace(all=lambda: list(rows))
+    )
+
+
+def test_a_library_title_is_found_by_its_folded_name():
+    links = library_links(_library_session([(871, "Cheerleaders", "uuid-1")]))
+
+    assert links["cheerleaders"].item_id == 871
+    assert links["cheerleaders"].tpdb_id == "uuid-1"
+
+
+def test_punctuation_and_case_do_not_stop_a_match():
+    # The storefront writes "Pirates 2 - Stagnetti's Revenge" and TPDB writes
+    # "Pirates 2: Stagnetti's Revenge". They are the same film.
+    links = library_links(_library_session([(859, "Pirates 2: Stagnetti's Revenge", None)]))
+    item = Recommendation(key="p", title="Pirates 2 - Stagnetti's Revenge", score=1.0)
+
+    attach_library([item], links)
+
+    assert item.library_item_id == 859
+
+
+def test_two_library_titles_with_one_name_match_neither():
+    # Guessing between them would point a card at the wrong film, which is
+    # worse than the storefront page it would otherwise have opened.
+    links = library_links(
+        _library_session([(9, "Family Cheaters", None), (138, "Family Cheaters", None)])
+    )
+
+    assert "familycheaters" not in links
+
+
+def test_a_third_copy_does_not_resurrect_an_ambiguous_name():
+    # The second row deletes the entry; without remembering that it was
+    # ambiguous, the third would put one back and the guess returns.
+    links = library_links(
+        _library_session([(1, "Nurses", None), (2, "Nurses", None), (3, "Nurses", None)])
+    )
+
+    assert "nurses" not in links
+
+
+def test_a_title_the_library_does_not_hold_is_left_alone():
+    item = Recommendation(key="x", title="Something Else", score=1.0)
+
+    attach_library([item], library_links(_library_session([(1, "Nurses", None)])))
+
+    assert item.library_item_id is None
+    assert item.library_tpdb_id is None
+
+
+def test_the_library_match_is_kept_apart_from_the_entry_match():
+    # A self-sourced storefront row has no TPDB id of its own, and the request
+    # path reads that column. Filling it from the library would make the entry
+    # look matched when it is not.
+    item = Recommendation(key="c", title="Cheerleaders", score=1.0, tpdb_id=None)
+
+    attach_library([item], library_links(_library_session([(871, "Cheerleaders", "uuid-1")])))
+
+    assert item.tpdb_id is None
+    assert item.library_tpdb_id == "uuid-1"
 
 
 import tempfile  # noqa: E402 - only the harness below needs it

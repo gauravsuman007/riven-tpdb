@@ -17,8 +17,12 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
 
+from program.db.db import db_session
 from program.services.recommendations.engine import (
+    LibraryLink,
     Recommendation,
+    attach_library,
+    library_links,
     movies,
     scenes,
     studios,
@@ -49,6 +53,12 @@ class RecommendationResponse(BaseModel):
     kind: str
     score: float
     entry_id: int | None = None
+    #: The library item this title names, when the library holds one. A card
+    #: points here in preference to the catalogue entry: a self-sourced
+    #: storefront row has no TPDB id and its entry page is the storefront
+    #: listing, which is not what someone clicking a title they own wants.
+    library_item_id: int | None = None
+    library_tpdb_id: str | None = None
     collection_key: str | None = None
     external_source: str | None = None
     external_id: str | None = None
@@ -118,7 +128,19 @@ class VocabularyStatus(BaseModel):
     scene_engine_available: bool
 
 
-def _response(recommendation: Recommendation) -> RecommendationResponse:
+def _library() -> dict[str, LibraryLink]:
+    """The title index, read once per request rather than once per card."""
+
+    with db_session() as session:
+        return library_links(session)
+
+
+def _response(
+    recommendation: Recommendation, links: dict[str, LibraryLink] | None = None
+) -> RecommendationResponse:
+    if links is not None:
+        attach_library([recommendation], links)
+
     return RecommendationResponse(**asdict(recommendation))
 
 
@@ -293,19 +315,21 @@ def recommendations(
         if resolved is None:
             raise HTTPException(404, f"No intent named {intent!r}")
 
+    links = _library()
+
     if engine == "scenes":
         if resolved is None:
             raise HTTPException(400, "The scene engine needs an intent to query on")
 
         return [
-            _response(item)
+            _response(item, links)
             for item in scenes.rank(
                 resolved, limit=limit, min_rating=min_rating, sort=sort
             )
         ]
 
     return [
-        _response(item)
+        _response(item, links)
         for item in movies.rank(
             intent=resolved, limit=limit, min_rating=min_rating, sort=sort
         )
@@ -331,6 +355,7 @@ def rows(
 
     rails: list[Rail] = []
     notices: list[str] = []
+    links = _library()
 
     # One read of the corpus for every movie rail. The award ballot alone runs
     # to five figures of rows, and ranking per rail would re-read all of it --
@@ -353,7 +378,7 @@ def rows(
                     "library already contains."
                 ),
                 kind="movies",
-                items=[_response(item) for item in baseline],
+                items=[_response(item, links) for item in baseline],
             )
         )
     else:
@@ -373,7 +398,7 @@ def rows(
                 intent=intent.name,
                 reason=intent.description,
                 kind="movies",
-                items=[_response(item) for item in items],
+                items=[_response(item, links) for item in items],
             )
         )
 
@@ -399,7 +424,7 @@ def rows(
                         reason=intent.description,
                         kind="scenes",
                         intent=intent.name,
-                        items=[_response(item) for item in items],
+                        items=[_response(item, links) for item in items],
                     )
                 )
 
@@ -425,10 +450,11 @@ def studio_split(
     """
 
     split = studios.split(studio, limit=limit)
+    links = _library()
 
     return StudioSplitResponse(
         studio=split.studio,
         baseline_rating=split.baseline_rating,
-        deep_cuts=[_response(item) for item in split.deep_cuts],
-        popular=[_response(item) for item in split.popular],
+        deep_cuts=[_response(item, links) for item in split.deep_cuts],
+        popular=[_response(item, links) for item in split.popular],
     )

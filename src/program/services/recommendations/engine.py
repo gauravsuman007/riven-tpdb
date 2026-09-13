@@ -22,6 +22,7 @@ thing that makes a bad recommendation fixable rather than merely annoying.
 from __future__ import annotations
 
 import math
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Literal, Sequence
@@ -99,6 +100,16 @@ class Recommendation:
     performers: list[str] = field(default_factory=list)
     poster_path: str | None = None
     requested: bool = False
+    #: The library already holds this title, matched by name rather than by
+    #: id. See ``library_links``: the catalogue and the library are separate
+    #: id spaces and a self-sourced storefront row never acquires a TPDB id,
+    #: so a title you own is recommended to you again with nowhere to click.
+    library_item_id: int | None = None
+    #: That library item's TPDB uuid, when it has one. Kept apart from
+    #: ``tpdb_id`` on purpose: this is the LIBRARY's identification of the
+    #: title, not the catalogue entry's, and the request path reads the
+    #: latter. Merging them would make a self-sourced entry look matched.
+    library_tpdb_id: str | None = None
     #: Score components, retained so a result can explain itself.
     signals: dict[str, float] = field(default_factory=dict)
     reasons: list[str] = field(default_factory=list)
@@ -166,6 +177,21 @@ def _fold(value: str | None) -> str:
     return (value or "").strip().lower()
 
 
+def _name_key(value: str | None) -> str:
+    """A title reduced to its letters and digits.
+
+    Stronger than ``_fold``, and deliberately NOT the same function: ``_fold``
+    is what collapses duplicate rows into one recommendation, and widening it
+    would silently merge titles the rails currently keep apart. This is only
+    ever used to ask whether the library holds a title by this name, where the
+    two sources punctuate differently for the same film -- the storefront
+    writes "Pirates 2 - Stagnetti\'s Revenge" and TPDB writes
+    "Pirates 2: Stagnetti\'s Revenge".
+    """
+
+    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+
+
 def decade_facet(year: int | None) -> str | None:
     """``1978 -> "1970s"``, matching StashDB's decade themes.
 
@@ -216,6 +242,79 @@ def build_taste(session: Any, limit: int = 500) -> LibraryTaste:
             taste.facets[key] = taste.facets.get(key, 0) + 1
 
     return taste
+
+
+#: A library title that a recommendation can be pointed at.
+@dataclass(slots=True)
+class LibraryLink:
+    item_id: int
+    tpdb_id: str | None
+
+
+def library_links(session: Any) -> dict[str, LibraryLink]:
+    """Folded title -> the one library item with that title.
+
+    WHY THIS EXISTS
+    ---------------
+    A catalogue entry and a library item are separate records in separate id
+    spaces, joined only when the entry was REQUESTED through Riven
+    (``CollectionEntry.media_item_id``). A title that arrived in the library
+    any other way is never joined, and a self-sourced storefront row -- Adult
+    Empire gives title, studio, year and cast, so it is requestable without
+    ever resolving a TPDB id -- never acquires one either. The result is a
+    card for something you already own, linking to the storefront page
+    instead of to the title.
+
+    WHY TITLE ALONE
+    ---------------
+    There is nothing else. The entry carries a year from the storefront and
+    the library carries TPDB's release date, and for re-released features
+    those disagree by years -- Cheerleaders is 2007 on Adult Empire and 2014
+    in TPDB. Cast is empty on self-sourced rows. So the fold is the whole
+    evidence, which is why an ambiguous fold is DROPPED rather than guessed
+    at: two library items called the same thing means this cannot say which,
+    and a link to the wrong title is worse than no link.
+
+    Nothing is written. This decides where a card points, not what the
+    library or the catalogue believe about each other.
+    """
+
+    rows = session.execute(
+        select(MediaItem.id, MediaItem.title, MediaItem.tpdb_id)
+    ).all()
+
+    links: dict[str, LibraryLink] = {}
+    ambiguous: set[str] = set()
+
+    for item_id, title, tpdb_id in rows:
+        key = _name_key(title)
+
+        if not key or key in ambiguous:
+            continue
+
+        if key in links:
+            del links[key]
+            ambiguous.add(key)
+            continue
+
+        links[key] = LibraryLink(item_id=item_id, tpdb_id=tpdb_id)
+
+    return links
+
+
+def attach_library(
+    recommendations: Iterable[Recommendation], links: dict[str, LibraryLink]
+) -> None:
+    """Stamp each recommendation with the library title it names, if any."""
+
+    for recommendation in recommendations:
+        link = links.get(_name_key(recommendation.title))
+
+        if link is None:
+            continue
+
+        recommendation.library_item_id = link.item_id
+        recommendation.library_tpdb_id = link.tpdb_id
 
 
 # ------------------------------------------------------------ movie engine
