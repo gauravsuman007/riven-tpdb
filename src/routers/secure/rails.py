@@ -28,10 +28,12 @@ user who turned everything off would watch the page put it all back.
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Path
+
+from sqlalchemy import delete
 from pydantic import BaseModel
 
 from program.db.db import db_session
-from program.rails import layout_for, save_layout
+from program.rails import RailLayout, layout_for, save_layout
 
 
 router = APIRouter(prefix="/rails", tags=["rails"])
@@ -91,6 +93,25 @@ def set_layout(
 
     with db_session() as session:
         save_layout(session, page, [(rail.key, rail.enabled) for rail in rails])
+        session.commit()
+
+    return _read(page)
+
+
+@router.delete("/{page:path}", operation_id="reset_rail_layout")
+def reset_layout(page: Annotated[str, Path()]) -> RailLayoutResponse:
+    """Forget one page's arrangement entirely.
+
+    NOT the same as switching every row off, and that is the whole reason
+    this exists. An empty layout means "never arranged", which the surfaces
+    read as "use your own defaults" -- including rows added by later updates.
+    A layout that exists with everything off is a decision, and is honoured
+    forever. Without this there would be no way back from the second to the
+    first, and a page arranged once could never return to following the app.
+    """
+
+    with db_session() as session:
+        session.execute(delete(RailLayout).where(RailLayout.page == page))
         session.commit()
 
     return _read(page)
