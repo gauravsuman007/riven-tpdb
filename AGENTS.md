@@ -1210,6 +1210,63 @@ A flag is not a guarantee the endpoint works. `riven-tv` treats a missing or
 malformed answer as "that section does not appear", never as an error, so an
 add-on is free to be newer than the television it lands on.
 
+## Rails: the host stores the ORDER, never the rows
+
+A page's rows are arrangeable -- Home, Explore, and each add-on's own page --
+and the arrangement lives in `RailLayout` (`program/rails`), served by
+`/api/v1/rails/{page}` where page is "home", "explore" or "x/<addon>".
+
+**The table holds keys and nothing else.** A rail's title and endpoint travel
+with the code that draws it: `$lib/tv/manifest` for the frontend's own home
+rows, the recommendation engine for Explore's ranked rows, `Addon.rails()`
+for an add-on's. Store a title beside the order and a retitled row keeps its
+old name on every deployment that ever saved a layout -- and the stale copy
+is the one on screen.
+
+Three rules, and each one has already been the bug:
+
+* **Empty is not "everything off".** No saved layout means *never arranged*,
+  which the surfaces read as "use your own defaults" and which picks up rows
+  added by later updates. A layout that exists with every row off is a
+  decision and is honoured forever. `DELETE /api/v1/rails/{page}` is the only
+  way back from the second to the first.
+* **A missing rail is skipped, never pruned.** Disable an add-on and its rows
+  leave every page while their positions stay; re-enable it and they come
+  back where they were. Verified live.
+* **A new rail turns itself on.** `arrange()` appends catalogued rails the
+  layout has never heard of -- otherwise every row an update adds is
+  invisible to exactly the people who arranged their pages.
+
+`arrange()` filters by page; `forEditing()` deliberately does NOT. Home and
+Explore offer the whole catalogue, because offering every installed row is
+what "add a row" means there; an add-on's own page is narrowed by passing
+only its own rails in. Getting this backwards put OnlyFans performer rows on
+Home uninvited -- fixed, but the shapes are one line apart.
+
+**An add-on's rail endpoint answers CARDS, not the add-on's own shape:**
+`{"items": [{id, title, subtitle, image, action}]}`, `action` being "open" or
+"play". No card carries a URL -- this app addresses a performer as
+`/x/onlyfans/<id>` and the television as a session-prefixed path with the id
+in a query string, so a card naming one would be wrong on the other. It is
+also a safety property: an add-on is third-party code, and a card that could
+name a link would be naming it on a page carrying the viewer's session.
+
+## Add-on capabilities are inferred, except the one that matters
+
+`/api/v1/addons` reports "settings", "api", "jobs", "rails", "database",
+"tv", "slots" by CALLING the add-on -- it has settings because
+`settings_model()` answered. A manifest field restating that would be a
+second truth able to disagree with the first, and the badge would be drawn
+from the wrong one.
+
+`"scrapers"` is declared, and has to be: the host owns no scraper code at
+all. It is also the only capability with a consequence rather than a label --
+it is the claim that this add-on's outbound traffic belongs in the tunnel the
+VPN tab configures. What actually enforces that is `_RoutedSession` in the
+shared `scraper_api`, and `tests/test_tube_scrapers.py` asserts every bundled
+scraper goes through it and asks the VPN per purpose. The badge is the claim;
+that test is the enforcement.
+
 ## Keep on disk
 - `POST /api/v1/keep/{id}` copies a title's active file to
   `filesystem.local_download_path` (bound to `./downloads` on the server) and
