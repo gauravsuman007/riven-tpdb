@@ -1267,6 +1267,39 @@ shared `scraper_api`, and `tests/test_tube_scrapers.py` asserts every bundled
 scraper goes through it and asks the VPN per purpose. The badge is the claim;
 that test is the enforcement.
 
+## A rail card opens the library's copy, when there is one
+
+A recommendation is a `CollectionEntry`, and an entry links to a `MediaItem`
+only when it was requested **through Riven** (`media_item_id`). A title that
+reached the library any other way is never joined. Adult Empire's
+`self_sourced` rows — 551 of them — make that visible: they carry title,
+studio, year and cast, so they are requestable without resolving a TPDB id
+and never acquire one, and the card for a film already in the library opened
+the storefront listing it was mirrored from.
+
+`library_links()` in `recommendations/engine.py` builds a folded-title index
+of `MediaItem` and stamps `library_item_id` / `library_tpdb_id` onto each
+recommendation. Three rules, each of which was a decision:
+
+- **Nothing is written.** This decides where a card points, not what the
+  library and the catalogue believe about each other. In particular it does
+  not set `media_item_id`, which would remove the title from every rail —
+  `rank_many` filters on it.
+- **Never into `tpdb_id`.** That column is what the request path reads;
+  filling it from the library would make a self-sourced entry look matched.
+- **An ambiguous name matches nothing.** Name is the whole evidence: the
+  storefront's year and TPDB's release date disagree by years on anything
+  re-released (Cheerleaders is 2007 on one, 2014 on the other) and
+  self-sourced rows have no cast. Two library items called *Family Cheaters*
+  means this cannot say which, and the wrong film is worse than the
+  storefront page it would replace.
+
+`_name_key()` (letters and digits only) is deliberately **not** `_fold()`.
+`_fold` is what collapses duplicate rows into one recommendation, and
+widening it would silently merge titles the rails currently keep apart.
+
+Tests: `src/tests/test_recommendations.py`.
+
 ## Keep on disk
 - `POST /api/v1/keep/{id}` copies a title's active file to
   `filesystem.local_download_path` (bound to `./downloads` on the server) and
