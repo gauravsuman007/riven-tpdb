@@ -137,6 +137,25 @@ class AddonRail:
     and a rail that could name any path could point a viewer's browser at the
     rest of the API with the viewer's own cookies attached.
 
+    IT MUST ANSWER CARDS, NOT THE ADD-ON'S OWN SHAPE::
+
+        {"items": [{"id", "title", "subtitle", "image", "action"}, ...]}
+
+    ``action`` is "open" or "play", and it is what a card DOES rather than
+    where it goes. No card carries a URL: each surface builds its own from
+    the add-on's key and the card's id, because the two surfaces have
+    genuinely different addresses for the same thing -- ``/x/onlyfans/<id>``
+    in this app, a session-prefixed path with the id in a query string on the
+    television. A card that named a URL would be right on one of them.
+
+    That is the same card the television already takes, and the reason is the
+    same: a row drawn on the host's Home page is drawn by the HOST, which
+    cannot know what an account or a scene or a chapter looks like in some
+    add-on's vocabulary. One normalised shape means one renderer draws every
+    add-on's rows on every surface, including add-ons written after the
+    renderer. An add-on's own page is free to keep using its own richer
+    endpoints -- it draws those itself.
+
     THE KEY MUST BE STABLE ACROSS VERSIONS. It is what a saved layout stores,
     so renaming one silently drops the row from every page somebody had
     arranged. Retitle freely -- ``title`` is only what is drawn.
