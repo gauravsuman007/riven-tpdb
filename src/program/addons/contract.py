@@ -117,6 +117,48 @@ class AddonTv:
 
 
 @dataclass(slots=True)
+class AddonRail:
+    """One row of cards this add-on can contribute to a page.
+
+    A rail is NOT a page. It is a horizontal row on somebody else's screen --
+    the host's home page, the host's Explore page, or the add-on's own -- and
+    which of those it lands on is the add-on's claim and the user's decision
+    in that order: the add-on says where the row makes sense, and the user
+    adds, removes and reorders it from the page itself.
+
+    WHERE IT MAY BE PICKED IS NOT THE ADD-ON'S DECISION. Every rail an add-on
+    offers can be added to the host's home and Explore pages, because those
+    pages offer everything installed -- that is what "add a rail" means there.
+    ``default_page`` says only where the row sits when NOBODY has arranged
+    anything yet, which is the state every fresh install is in.
+
+    ``endpoint`` is relative to the add-on's own mount (``/api/v1/x/<key>/``),
+    for the same reason every other path here is: the host owns the URL space,
+    and a rail that could name any path could point a viewer's browser at the
+    rest of the API with the viewer's own cookies attached.
+
+    THE KEY MUST BE STABLE ACROSS VERSIONS. It is what a saved layout stores,
+    so renaming one silently drops the row from every page somebody had
+    arranged. Retitle freely -- ``title`` is only what is drawn.
+    """
+
+    key: str
+    title: str
+    #: Where this row appears BEFORE anyone has arranged that page: "own"
+    #: (the add-on's own screen), "home", "explore", or "none" for a rail
+    #: that is offered but off until asked for.
+    default_page: str = "own"
+    #: Path under the add-on's own API answering this row's items.
+    endpoint: str = ""
+    #: One line under the title, for the picker rather than the page.
+    description: str = ""
+    #: Whether the television can draw it. Rows there are fetched by a
+    #: renderer that cannot run the add-on's bundle, so this is a promise
+    #: about the endpoint's shape, not about the row's usefulness.
+    tv: bool = False
+
+
+@dataclass(slots=True)
 class AddonManifest:
     """The add-on's own description of itself."""
 
@@ -147,6 +189,22 @@ class AddonManifest:
     #: rather than a default mount function. Nothing is fetched unless a page
     #: with that slot is actually rendered.
     slots: tuple[str, ...] = ()
+    #: What this add-on does, for the management page -- the half the host
+    #: cannot see for itself.
+    #:
+    #: Most capabilities are INFERRED: the host knows an add-on has settings
+    #: because ``settings_model()`` returned one, has rails because
+    #: ``rails()`` did, has an API because ``router()`` did. Declaring those
+    #: again would create a second truth that can disagree with the first,
+    #: and the wrong one is the one drawn on the page.
+    #:
+    #: So this field carries only what no method reveals. Today that is
+    #: ``"scrapers"``: the host owns no scraper code at all -- deliberately,
+    #: they live in the add-ons -- so nothing it can call tells it that an
+    #: add-on fetches from third-party sites. That claim matters because it
+    #: is what routes an add-on's traffic through the tunnel, so it is
+    #: stated rather than guessed.
+    capabilities: tuple[str, ...] = ()
 
 
 class Addon:
@@ -171,6 +229,23 @@ class Addon:
         """
 
         return None
+
+    def rails(self) -> "tuple[AddonRail, ...]":
+        """Rows of cards this add-on offers, for the host's rail catalogue.
+
+        Returning them does not put them on any page. The catalogue is the
+        list a user picks from; the layout is what they picked, and it lives
+        in the host's database keyed by rail key. An add-on that stops
+        returning a rail loses it from every page until it returns again --
+        which is what makes disabling an add-on take its rows with it, and
+        re-enabling it put them back where they were.
+
+        Called on every catalogue read rather than cached, so an add-on whose
+        rails depend on its own settings (one row per configured site, say)
+        gets that for free.
+        """
+
+        return ()
 
     # --- Database -----------------------------------------------------------
 

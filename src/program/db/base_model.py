@@ -34,6 +34,9 @@ def get_base_metadata() -> MetaData:
         Studio,  # pyright: ignore[reportUnusedImport]
         StudioRowEntry,  # pyright: ignore[reportUnusedImport]
     )
+    from program.rails import (
+        RailLayout,  # pyright: ignore[reportUnusedImport]
+    )
     from program.scheduling import (
         ScheduledTask,  # pyright: ignore[reportUnusedImport]
     )

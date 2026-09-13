@@ -9,6 +9,7 @@ from program.addons.contract import (
     Addon,
     AddonManifest,
     AddonNav,
+    AddonRail,
     AddonTv,
 )
 from program.addons.loader import AddonRegistry, LoadedAddon, registry
@@ -18,6 +19,7 @@ __all__ = [
     "Addon",
     "AddonManifest",
     "AddonNav",
+    "AddonRail",
     "AddonTv",
     "AddonRegistry",
     "HOST_API_VERSION",

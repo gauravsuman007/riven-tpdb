@@ -63,6 +63,12 @@ class LoadedAddon:
     #: manifest and passed through to the frontend, which decides whether
     #: any of them are places it actually offers.
     slots: list[str] = field(default_factory=list)
+    #: What this add-on does, in one vocabulary, for the management page:
+    #: "settings", "api", "jobs", "rails", "database", "tv", "slots",
+    #: "scrapers". All but the last are INFERRED from what the add-on
+    #: actually implements rather than from what it claims, so a capability
+    #: badge cannot be wrong about code that is right there to call.
+    capabilities: list[str] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
     #: Every module name this add-on put into `sys.modules`, so unloading can
     #: take them back out again. Recorded rather than guessed from the key --
@@ -175,6 +181,7 @@ class AddonRegistry:
             return record
 
         record.slots = list(manifest.slots)
+        record.capabilities = _capabilities(addon)
 
         if manifest.nav is not None:
             record.nav = {
@@ -433,3 +440,55 @@ _registry = AddonRegistry()
 
 def registry() -> AddonRegistry:
     return _registry
+
+
+def _capabilities(addon: Addon) -> list[str]:
+    """What an add-on does, asked of the add-on rather than of its manifest.
+
+    Every entry but ``scrapers`` is decided by CALLING the method: an add-on
+    has settings because ``settings_model()`` returned a model, has rails
+    because ``rails()`` returned some. A manifest field restating that would
+    be a second truth able to disagree with the first, and the badge on the
+    page would be drawn from the wrong one.
+
+    ``scrapers`` is the exception and has to be. The host owns no scraper
+    code at all -- that is the whole point of the split -- so nothing it can
+    call reveals that an add-on fetches from third-party sites. It is also
+    the one capability with a CONSEQUENCE rather than a label: it is what
+    says this add-on's outbound traffic belongs in the tunnel the VPN
+    settings configure. So it is declared, in the manifest, deliberately.
+
+    Anything that raises contributes nothing. A capability list is decoration
+    on a management page; an add-on that loads and runs must not be reported
+    as broken because one of these threw.
+    """
+
+    def offers(name: str) -> bool:
+        try:
+            return bool(getattr(addon, name)())
+        except Exception as exc:
+            logger.debug(f"Addon {addon.manifest.key}: {name}() raised: {exc}")
+            return False
+
+    found: list[str] = []
+
+    if offers("settings_model"):
+        found.append("settings")
+    if offers("router"):
+        found.append("api")
+    if offers("jobs"):
+        found.append("jobs")
+    if offers("rails"):
+        found.append("rails")
+    if offers("metadata"):
+        found.append("database")
+    if addon.manifest.tv is not None:
+        found.append("tv")
+    if addon.manifest.slots:
+        found.append("slots")
+
+    for declared in addon.manifest.capabilities:
+        if declared not in found:
+            found.append(declared)
+
+    return found

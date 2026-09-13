@@ -58,6 +58,19 @@ class AddonResponse(BaseModel):
     #: renders a slot only when some loaded add-on claims it, so an
     #: absent or disabled add-on leaves no empty section behind.
     slots: list[str] = []
+    #: What this add-on does -- "settings", "api", "jobs", "rails",
+    #: "database", "tv", "slots", "scrapers" -- for the badges on the
+    #: management page. Inferred from what it implements, except "scrapers",
+    #: which nothing the host can call would reveal.
+    capabilities: list[str] = []
+    #: Rows this add-on offers a page, as {key, title, default_page, endpoint,
+    #: description, tv}. The CATALOGUE, not the layout: what the user may
+    #: pick from. Which of them a page actually shows is `/api/v1/rails`.
+    #:
+    #: Read live rather than at load time, because an add-on's rails may
+    #: depend on its own settings -- one row per configured site -- and a
+    #: cached list would go stale the moment somebody saved that tab.
+    rails: list[dict[str, Any]] = []
     #: The add-on's settings as JSON Schema, which is all the settings page
     #: needs to render its tab.
     settings_schema: dict[str, Any] | None = None
@@ -104,12 +117,47 @@ def _describe(key: str) -> AddonResponse:
         nav=record.nav,
         tv=record.tv,
         slots=record.slots,
+        capabilities=record.capabilities,
+        rails=_rails(record),
         settings_schema=record.settings_schema,
         settings=settings_manager.settings.addons.get(key),
         tables=size["tables"],
         bytes=size["bytes"],
         status=status,
     )
+
+
+def _rails(record) -> list[dict[str, Any]]:
+    """The add-on's rail catalogue, or nothing.
+
+    A disabled or failed add-on offers no rails at all, and that is how a
+    page loses its rows when an add-on is switched off: the rails stop being
+    catalogued, so nothing draws them, while the saved LAYOUT keeps their
+    positions untouched. Switch it back on and the rows return where they
+    were, which is the behaviour somebody who disabled an add-on for an
+    afternoon expects.
+    """
+
+    if record.state != "ok" or record.addon is None:
+        return []
+
+    try:
+        return [
+            {
+                "key": rail.key,
+                "title": rail.title,
+                "default_page": rail.default_page,
+                "endpoint": rail.endpoint,
+                "description": rail.description,
+                "tv": rail.tv,
+            }
+            for rail in record.addon.rails()
+        ]
+    except Exception as exc:
+        # Same rule as status(): a broken rails() must not be able to hide the
+        # add-on from the page that would let you remove it.
+        logger.debug(f"Addon {record.key}: rails() raised: {exc}")
+        return []
 
 
 def _all() -> AddonsResponse:
