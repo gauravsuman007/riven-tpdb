@@ -19,7 +19,6 @@ from program.services.streaming import playback_url, transcode
 from program.services.streaming.upstream_guard import limiter, throttle
 from program.services.streaming.media_stream import PROXY_REQUIRED_PROVIDERS
 from program.services.streaming.transcode import PlaybackInfo, SessionManager
-from program.services.vpn import STREAMING, VpnUnavailable, vpn
 from program.settings import settings_manager
 from program.utils.async_client import AsyncClient
 from program.utils.proxy_client import ProxyClient
@@ -351,16 +350,13 @@ def direct_playback(item_id: int, part: int = 0) -> DirectPlaybackModel:
             reason="direct playback is disabled in settings"
         )
 
-    try:
-        if vpn().proxy_for(STREAMING) is not None:
-            # Handing the URL to a player would quietly take playback off the
-            # tunnel -- the exact thing the setting exists to prevent, and
-            # invisibly, which is worse than not offering it.
-            return DirectPlaybackModel(
-                reason="playback is routed through the VPN"
-            )
-    except VpnUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # No VPN check here, deliberately. The VPN is for the tube and OnlyFans
+    # add-ons -- their scraping and their video streams. A library file comes
+    # from the debrid provider, which is not a site that needs hiding from,
+    # and it NEVER goes through the tunnel: not proxied by /stream/file, and
+    # not refused a direct handoff because streaming happens to be routed.
+    # (This used to refuse the handoff whenever vpn.route_streaming was on,
+    # which applied an add-on setting to traffic it was never about.)
 
     # `check=True` verifies the link and re-mints a spent one. A player gets a
     # single attempt at this URL and cannot recover from a stale one the way
