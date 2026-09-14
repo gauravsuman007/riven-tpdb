@@ -1326,6 +1326,23 @@ class StreamModel(Observable):
     # hands the account key to every device that plays a file, where it lands
     # in browser history, player logs and crash reports. That is a real
     # trade, worth making on a throwaway account and not on a valuable one.
+    # Seeking in an external player opens a new range request and abandons the
+    # old one. Proxied, each became its own CDN connection, and TorBox answers
+    # enough of them with 429 -- for hours, and for freshly minted links to
+    # the same file too. At this many live connections per file the oldest is
+    # closed, since the player that seeked has already stopped reading it.
+    max_upstream_connections_per_file: int = Field(
+        default=2,
+        ge=1,
+        le=8,
+        description=(
+            "Most connections this server holds open to the debrid CDN for one "
+            "file. When a player seeks past it, the oldest is closed. TorBox "
+            "throttles a file that is asked for too often; 2 lets a player read "
+            "the end of a file and play from the start at once."
+        ),
+    )
+
     direct_debrid_handoff: bool = Field(
         default=False,
         description=(

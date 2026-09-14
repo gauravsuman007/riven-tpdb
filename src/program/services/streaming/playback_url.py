@@ -125,7 +125,10 @@ def mint_url(original_filename: str) -> str | None:
         try:
             minted = service.unrestrict_link(entry.download_url)
         except Exception as e:
-            logger.warning(f"Could not mint a playback URL for {original_filename}: {e}")
+            # Provider errors can quote the request, key and all.
+            logger.warning(
+                f"Could not mint a playback URL for {original_filename}: {redact(str(e))}"
+            )
             return None
 
         if not minted or not is_playable(minted.download):
@@ -141,6 +144,49 @@ def mint_url(original_filename: str) -> str | None:
         return minted.download
 
 
+#: How long a link check is believed, in seconds. The HLS routes verify on
+#: every playlist and every segment request; without this, a viewer watching
+#: an HLS stream sent the CDN a fresh one-byte request every few seconds for
+#: the whole film -- the same per-file request budget a seek storm spends.
+VERIFY_TTL = 60.0
+
+#: url -> (checked at, status). Status 0 means the request itself failed.
+_verified: dict[str, tuple[float, int]] = {}
+
+
+def probe_status(url: str) -> int:
+    """
+    The CDN's answer to a one-byte range request, cached for ``VERIFY_TTL``.
+
+    0 when the request could not be made at all. One byte is enough to learn
+    whether the link is alive, and avoids pulling a gigabyte to find out.
+    """
+
+    import time
+
+    import httpx
+
+    now = time.monotonic()
+    cached = _verified.get(url)
+
+    if cached and now - cached[0] < VERIFY_TTL:
+        return cached[1]
+
+    try:
+        with httpx.Client(follow_redirects=True, timeout=15) as client:
+            status = client.get(url, headers={"Range": "bytes=0-0"}).status_code
+    except Exception as e:
+        logger.debug(f"Could not verify {redact(url)}: {redact(str(e))}")
+        status = 0
+
+    if len(_verified) > 512:
+        _verified.clear()
+
+    _verified[url] = (now, status)
+
+    return status
+
+
 def verify(url: str) -> bool:
     """
     Cheaply check that `url` still serves data.
@@ -150,19 +196,11 @@ def verify(url: str) -> bool:
     do, because ffmpeg cannot come back and ask for a fresh one.
     """
 
-    import httpx
+    return 0 < probe_status(url) < 400
 
-    try:
-        with httpx.Client(follow_redirects=True, timeout=15) as client:
-            # One byte is enough to learn whether the link is alive, and avoids
-            # pulling a gigabyte to find out.
-            response = client.get(url, headers={"Range": "bytes=0-0"})
 
-            return response.status_code < 400
-    except Exception as e:
-        logger.debug(f"Could not verify {redact(url)}: {redact(str(e))}")
-
-        return False
+class ProviderThrottled(Exception):
+    """The CDN answered 429. The link is NOT spent, and minting will not help."""
 
 
 def resolve(
@@ -217,8 +255,20 @@ def resolve(
 
     # A stored URL is only worth trying when it is a real HTTP URL. An internal
     # reference has to be minted regardless of `force`.
-    if not force and is_playable(stored) and (not check or verify(stored)):
-        return PlayableMedia(url=stored, provider=provider, filename=filename, file_size=file_size)
+    if not force and is_playable(stored):
+        if not check:
+            return PlayableMedia(url=stored, provider=provider, filename=filename, file_size=file_size)
+
+        status = probe_status(stored)
+
+        if 0 < status < 400:
+            return PlayableMedia(url=stored, provider=provider, filename=filename, file_size=file_size)
+
+        if status == 429:
+            # A refusal, not an expiry. Minting asks the provider's API for a
+            # new link to the same file, which the CDN refuses just the same --
+            # measured -- and spends request budget on a file already over it.
+            raise ProviderThrottled(filename)
 
     if minted := mint_url(filename):
         return PlayableMedia(url=minted, provider=provider, filename=filename, file_size=file_size)

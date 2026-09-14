@@ -1300,6 +1300,53 @@ widening it would silently merge titles the rails currently keep apart.
 
 Tests: `src/tests/test_recommendations.py`.
 
+## Seeking a proxied file got it throttled by TorBox
+
+Reported as "played fine, then too much seeking and it stopped with an error"
+from an external player. The chain, all measured 2026-09-14 on item 871:
+
+1. An external player seeks by opening a **new** range request and abandoning
+   the old one (VLC also opens one for `moov` at the tail). Its URL is
+   `/Videos/{id}/stream.{ext}` -> frontend -> `/api/v1/stream/file` -> CDN,
+   so each seek was a new connection from this server to TorBox's CDN.
+   `direct_debrid_handoff` does not change this: it is used by the in-page
+   player only.
+2. TorBox's CDN limits connections and request rate **per file** and answers
+   **429**. It kept refusing that file for ~40 minutes, to a single request with
+   nothing open, and to a **freshly minted link** for the same file, while
+   other files on the account served 206. So a 429 is about the file, not the
+   link or the account.
+3. `/stream/file` re-minted on any status `< 500` -- 429 included -- and
+   `playback_url.verify` treated 429 as dead, so the HLS/remux routes (which
+   verify on **every** playlist and segment request) re-minted too. Each
+   refusal cost a TorBox API call plus another CDN request on a file already
+   over its limit.
+
+The fix, in `program/services/streaming/upstream_guard.py`:
+
+- **Per-file connection cap, newest wins** (`stream.max_upstream_connections_per_file`,
+  default 2). At the cap the *oldest* upstream connection is closed: the
+  player that seeked has stopped reading it, and refusing the new request
+  would stall the seek. The iterator races each read against eviction, or an
+  unread response holds the CDN socket until a timeout.
+- **429 is a cooldown, never a re-mint.** Recorded per file; the next request
+  gets `503` + `Retry-After` without touching the CDN. Honours the CDN's own
+  `Retry-After`, else 30s doubling to 10 min, cleared on success. The
+  frontend forwards `Retry-After`; dropping it makes a player retry at once.
+- `resolve(check=True)` raises `ProviderThrottled` on 429, and the checked
+  routes map it through the same throttle, so every route stops together.
+- `verify` results are cached 60s. HLS was sending the CDN a probe per segment.
+
+**Do not "simplify" 429 back into the re-mint branch.** It is the one status
+below 500 that means *stop asking*.
+
+Also: ffmpeg quotes its input URL in errors, and a TorBox URL carries the
+**account API key** as `?token=`. `Remux failed`, `HLS session ... exited`,
+and the mint warning all logged it in the clear; all three are redacted now.
+See [[debrid-token-log-leakage]] in memory.
+
+Tests: `src/tests/test_upstream_guard.py` (stdlib-only).
+
 ## Keep on disk
 - `POST /api/v1/keep/{id}` copies a title's active file to
   `filesystem.local_download_path` (bound to `./downloads` on the server) and

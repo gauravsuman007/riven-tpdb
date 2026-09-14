@@ -512,9 +512,14 @@ class Session:
                     return path.read_bytes()
 
                 error = await self.read_error()
+                # ffmpeg quotes its input URL in the error, and a TorBox URL
+                # carries the account API key as ?token=. Redacted here, not by
+                # the caller: this is where the text is turned into a log line.
+                from program.services.streaming.playback_url import redact
+
                 logger.error(
                     f"HLS session {self.session_key} exited before segment {seq}"
-                    + (f": {error}" if error else "")
+                    + (f": {redact(error)}" if error else "")
                 )
                 return None
 

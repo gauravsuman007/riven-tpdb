@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from program.managers.sse_manager import sse_manager
 from program.media.media_entry import MediaEntry
 from program.services.streaming import playback_url, transcode
+from program.services.streaming.upstream_guard import limiter, throttle
 from program.services.streaming.media_stream import PROXY_REQUIRED_PROVIDERS
 from program.services.streaming.transcode import PlaybackInfo, SessionManager
 from program.services.vpn import STREAMING, VpnUnavailable, vpn
@@ -156,6 +157,12 @@ async def stream_file(
 
     media = playback_url.resolve(item_id, part=part)
     forward_headers = _build_forward_headers(request)
+    key = media.filename
+
+    # A file the CDN refused a moment ago is not asked again until it has had
+    # time to cool off. Asking is how a short throttle becomes a long one.
+    if cooling := throttle.remaining(key):
+        raise _throttled(item_id, cooling)
 
     upstream_response: httpx.Response | None = None
 
@@ -170,8 +177,17 @@ async def stream_file(
                 # AsyncClient raises on 4xx/5xx via an event hook rather than
                 # returning the response, so the rejection arrives here.
                 status_code = e.response.status_code
+                retry_after = e.response.headers.get("retry-after")
                 await e.response.aclose()
                 upstream_response = None
+
+                if status_code == 429:
+                    # NOT a spent link, and the one status below 500 that must
+                    # not re-mint. The CDN refuses the file, not the link:
+                    # measured, a freshly minted link to a throttled file is
+                    # refused just the same, so minting only spent an API call
+                    # and another CDN request on a file already over its limit.
+                    raise _throttled(item_id, throttle.refused(key, retry_after))
 
                 if attempt == 0 and status_code < 500:
                     # 400/401/403/404/410 from a debrid CDN all mean the same
@@ -197,6 +213,13 @@ async def stream_file(
             break
 
         assert upstream_response is not None
+        throttle.succeeded(key)
+
+        # Admitted only once the CDN has answered: a request that never got a
+        # connection must not evict one that did.
+        lease = limiter.acquire(
+            key, settings_manager.settings.stream.max_upstream_connections_per_file
+        )
 
         response_headers = _extract_response_headers(upstream_response, media.filename)
 
@@ -207,12 +230,36 @@ async def stream_file(
             response_headers["content-type"] = guessed_type
 
         async def stream_iterator():
+            chunks = upstream_response.aiter_bytes()
+            evicted = asyncio.ensure_future(lease.cancelled.wait())
+
             try:
-                async for chunk in upstream_response.aiter_bytes():
-                    yield chunk
+                while True:
+                    # Race each read against eviction. A player that seeked
+                    # has stopped reading this response, so the next chunk may
+                    # never be asked for -- waiting for it would hold the CDN
+                    # connection open until a timeout, which is the leak.
+                    read = asyncio.ensure_future(chunks.__anext__())
+                    done, _ = await asyncio.wait(
+                        {read, evicted}, return_when=asyncio.FIRST_COMPLETED
+                    )
+
+                    if read not in done:
+                        read.cancel()
+                        logger.debug(
+                            f"Closed a superseded upstream connection for item {item_id}"
+                        )
+                        return
+
+                    try:
+                        yield read.result()
+                    except StopAsyncIteration:
+                        return
             except Exception as e:
-                logger.error(f"Error during streaming: {e}")
+                logger.error(f"Error during streaming: {playback_url.redact(str(e))}")
             finally:
+                evicted.cancel()
+                limiter.release(lease)
                 await upstream_response.aclose()
 
         return StreamingResponse(
@@ -226,8 +273,48 @@ async def stream_file(
     except Exception as e:
         if upstream_response is not None and not upstream_response.is_closed:
             await upstream_response.aclose()
-        logger.exception(f"Unexpected error in stream_file: {e}")
+        logger.exception(f"Unexpected error in stream_file: {playback_url.redact(str(e))}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+def _resolve_checked(item_id: int, part: int) -> playback_url.PlayableMedia:
+    """``resolve(check=True)`` for the routes that hand a URL to ffmpeg or a player.
+
+    Those routes verify before every use, so they are exactly the ones that
+    would keep probing a file the CDN is refusing. The shared throttle is
+    consulted first and a fresh 429 is recorded in it, so the HLS player,
+    the remux and ``/stream/file`` all stop asking together.
+    """
+
+    try:
+        media = playback_url.resolve(item_id, check=True, part=part)
+    except playback_url.ProviderThrottled as refused:
+        media_key = str(refused)
+
+        if cooling := throttle.remaining(media_key):
+            raise _throttled(item_id, cooling)
+
+        raise _throttled(item_id, throttle.refused(media_key))
+
+    if cooling := throttle.remaining(media.filename):
+        raise _throttled(item_id, cooling)
+
+    return media
+
+
+def _throttled(item_id: int, seconds: float) -> HTTPException:
+    """503 with Retry-After: the provider is refusing this file for now."""
+
+    wait = max(1, int(seconds + 0.999))
+    logger.warning(
+        f"The debrid CDN is throttling item {item_id}; not asking again for {wait}s"
+    )
+
+    return HTTPException(
+        status_code=503,
+        detail=f"The provider is rate limiting this file. Try again in {wait}s.",
+        headers={"Retry-After": str(wait)},
+    )
 
 
 class DirectPlaybackModel(BaseModel):
@@ -278,7 +365,7 @@ def direct_playback(item_id: int, part: int = 0) -> DirectPlaybackModel:
     # `check=True` verifies the link and re-mints a spent one. A player gets a
     # single attempt at this URL and cannot recover from a stale one the way
     # /stream/file does, so it must be known-good before it leaves here.
-    media = playback_url.resolve(item_id, check=True, part=part)
+    media = _resolve_checked(item_id, part)
 
     if media.provider in PROXY_REQUIRED_PROVIDERS:
         # These providers bind the link to the fetching client in ways a
@@ -307,7 +394,7 @@ async def get_playback_info(item_id: int, part: int = 0) -> PlaybackInfo:
     canPlayType.
     """
 
-    media = playback_url.resolve(item_id, check=True, part=part)
+    media = _resolve_checked(item_id, part)
     result = transcode.probe(media.url, cache_key=media.filename)
     mode, reason = transcode.decide(result)
 
@@ -331,7 +418,7 @@ async def stream_remux(item_id: int, t: float = 0.0, part: int = 0) -> Streaming
     range-requested.
     """
 
-    media = playback_url.resolve(item_id, check=True, part=part)
+    media = _resolve_checked(item_id, part)
     cmd = transcode.build_remux_command(media.url, start_time=t)
 
     process = await asyncio.create_subprocess_exec(
@@ -355,7 +442,11 @@ async def stream_remux(item_id: int, t: float = 0.0, part: int = 0) -> Streaming
 
             if process.returncode not in (0, None) and process.stderr:
                 error = (await process.stderr.read()).decode(errors="replace")
-                logger.error(f"Remux failed for item {item_id}: {error.strip()[:400]}")
+                # ffmpeg quotes its input URL, which carries the TorBox API key.
+                logger.error(
+                    f"Remux failed for item {item_id}: "
+                    f"{playback_url.redact(error.strip())[:400]}"
+                )
 
     return StreamingResponse(pump(), media_type="video/mp4")
 
@@ -370,7 +461,7 @@ async def get_hls_playlist(item_id: int, part: int = 0):
     actually produces.
     """
 
-    media = playback_url.resolve(item_id, check=True, part=part)
+    media = _resolve_checked(item_id, part)
     result = transcode.probe(media.url, cache_key=media.filename)
 
     return Response(
@@ -393,7 +484,7 @@ async def get_hls_segment(item_id: int, seq: int, part: int = 0) -> Response:
     if seq < 0:
         raise HTTPException(status_code=400, detail="Invalid segment")
 
-    media = playback_url.resolve(item_id, check=True, part=part)
+    media = _resolve_checked(item_id, part)
     result = transcode.probe(media.url, cache_key=media.filename)
 
     data = await _session_manager.segment(
