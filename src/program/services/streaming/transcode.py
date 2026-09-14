@@ -668,7 +668,7 @@ def build_playlist(duration: float) -> str:
     return "\n".join(lines)
 
 
-def build_remux_command(url: str, start_time: float = 0.0) -> list[str]:
+def build_remux_command(url: str, start_time: float = 0.0, copy_audio: bool = False) -> list[str]:
     """
     Progressive fragmented-MP4 remux: keep the video, fix the wrapper.
 
@@ -698,12 +698,9 @@ def build_remux_command(url: str, start_time: float = 0.0) -> list[str]:
         url,
         "-c:v",
         "copy",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "160k",
-        "-ac",
-        "2",
+        # Copied when the client decodes the audio as-is: re-encoding it then
+        # only costs CPU and quality to repair a container.
+        *(["-c:a", "copy"] if copy_audio else ["-c:a", "aac", "-b:a", "160k", "-ac", "2"]),
         # Fragmented MP4 so it can be streamed without a seekable output.
         # The flag is `default_base_moof`, not `default_base_is_moof` -- ffmpeg
         # rejects the latter as an undefined constant and writes nothing.

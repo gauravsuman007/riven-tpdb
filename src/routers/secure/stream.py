@@ -405,17 +405,21 @@ async def get_playback_info(item_id: int, part: int = 0) -> PlaybackInfo:
 
 
 @router.get("/remux/{item_id}")
-async def stream_remux(item_id: int, t: float = 0.0, part: int = 0) -> StreamingResponse:
+async def stream_remux(
+    item_id: int, t: float = 0.0, part: int = 0, copy_audio: bool = False
+) -> StreamingResponse:
     """
     Progressive fragmented-MP4 remux for files whose video is already playable.
 
     Only the audio is re-encoded and the container is rebuilt, so this costs a
     fraction of a full transcode. `t` seeks, since a fragmented stream cannot be
-    range-requested.
+    range-requested. `copy_audio` keeps the audio untouched too, for a client
+    that decodes it and needs only the container rebuilt (an MP4 whose index
+    sits at the end).
     """
 
     media = _resolve_checked(item_id, part)
-    cmd = transcode.build_remux_command(media.url, start_time=t)
+    cmd = transcode.build_remux_command(media.url, start_time=t, copy_audio=copy_audio)
 
     process = await asyncio.create_subprocess_exec(
         *cmd,
