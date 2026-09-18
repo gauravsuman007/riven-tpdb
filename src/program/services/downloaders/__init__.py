@@ -15,6 +15,7 @@ from program.media.stream import Stream
 from program.media.media_entry import MediaEntry
 from program.utils.time import utcnow
 from program.media.models import ActiveStream, MediaMetadata
+from program.services.downloaders.entry_selection import stale_entries
 from program.services.downloaders.models import (
     DebridFile,
     DownloadedTorrent,
@@ -1010,8 +1011,19 @@ class Downloader(Runner[None, DownloaderBase]):
                 # This is a candidate release fetched in the background: keep
                 # the currently active entry as a downloaded alternate rather
                 # than discarding it, and make the new one active.
+                #
+                # Only the OTHER releases are deactivated. This loop had no
+                # condition on it, so on a multi-file candidate each file
+                # deactivated the sibling added just before it and the release
+                # ended up with one active file out of however many it holds
+                # -- the same loss as the `clear()` below, in the quieter form
+                # where the files still exist but only one of them is live.
                 for existing in item.filesystem_entries:
-                    existing.is_active = False
+                    if (
+                        getattr(existing, "stream_infohash", None)
+                        != download_result.infohash
+                    ):
+                        existing.is_active = False
 
                 # Set AFTER the loop above, and not left to the constructor.
                 #
@@ -1028,8 +1040,31 @@ class Downloader(Runner[None, DownloaderBase]):
                 item.filesystem_entries.append(entry)
                 item.downloading_stream_hash = None
             else:
-                # Clear existing entries and add the new one
-                item.filesystem_entries.clear()
+                # FILES OF THIS RELEASE ACCUMULATE. Only a DIFFERENT release
+                # is cleared away.
+                #
+                # This was `item.filesystem_entries.clear()`, and the clear
+                # was the bug: `update_item_attributes` calls this once per
+                # file in the torrent, so on a multi-file release each file
+                # wiped the one before it and the item was left holding
+                # whichever file happened to be processed last. "Mistress
+                # Maitland" (Deeper) is a 16.3 GiB torrent of four scenes and
+                # reached the library as a single 4.1 GiB file -- the last one
+                # in the provider's listing order -- with the other three
+                # downloaded, mounted and unreachable. That is exactly the
+                # state `media_parts` exists to prevent, and it never saw them:
+                # the loss happened before anything was persisted.
+                #
+                # What counts as stale, and why, is `stale_entries` --
+                # pure and in its own module so it can be tested without a
+                # database, a settings file and the RTN parser.
+                for existing in stale_entries(
+                    item.filesystem_entries,
+                    download_result.infohash,
+                    debrid_file.filename,
+                ):
+                    item.filesystem_entries.remove(existing)
+
                 item.filesystem_entries.append(entry)
 
             logger.debug(

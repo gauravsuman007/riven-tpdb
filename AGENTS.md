@@ -874,6 +874,46 @@ stack is a full checkout at `/home/hellonfire/Server/riven-tpdb`.
   the token means a playlist that opens and whose every track 401s. `.m3u`
   earns its place in the Android chooser exactly the way `.mp4` does.
 
+## Only one file of a multi-file release reached the library
+
+The playlist feature above was correct and had nothing to show. "Mistress
+Maitland" (Deeper) is a 16.3 GiB torrent of four scenes; item 874 held ONE
+4.1 GiB file -- `DEEPER_101429`, the last one in TorBox's listing order --
+with the other three downloaded, mounted and unreachable. Reported as "the
+player shows a 4 GB file and no way to reach the rest", which reads like a
+player bug and is not one.
+
+`Downloader._update_attributes` creates one `MediaEntry` per file and is
+called ONCE PER FILE by `update_item_attributes`. Its non-candidate branch
+opened with `item.filesystem_entries.clear()`, so every file deleted the file
+before it. Nothing downstream could recover: the loss happened before anything
+was persisted, so `media_parts` grouped a set of one, `/stream/parts` answered
+with one entry, and the parts panel and the `.m3u` hand-off both correctly
+declined to offer a playlist for a single-file title.
+
+- `entry_selection.stale_entries()` is the rule now, and it lives in its own
+  import-free module because the downloader package cannot be imported without
+  a settings file, a database and RTN -- a rule in there is a rule nothing can
+  test. Exactly two things are replaced: files of a DIFFERENT release (which
+  is what the `clear()` was for, and must keep working, or `media_parts`
+  groups on an infohash that is no longer active), and an existing entry for
+  the SAME filename (so re-processing replaces rather than doubles).
+- The candidate branch (`keep_existing=True`) had the same bug in a quieter
+  form: its deactivation loop had no condition, so each file deactivated the
+  sibling added just before it and a multi-file candidate ended up with one
+  live file out of however many. It now deactivates only OTHER releases.
+- TRAP when auditing this: an item whose files were lost this way looks
+  completely healthy. `last_state` is Completed, the VFS mount works, playback
+  works. The only symptom is that the torrent's size and the item's file size
+  disagree. `select fe.media_item_id, count(*) from "FilesystemEntry" fe join
+  "MediaEntry" me on me.id = fe.id group by 1` is how to find the survivors.
+- Repairing an already-damaged item: `POST /api/v1/scrape/queue_release` with
+  the SAME infohash re-pins and re-downloads it through the fixed code. Do NOT
+  use `/items/reset` -- it blacklists the active stream, so the title comes
+  back on a different release.
+- Tests: `src/tests/test_entry_selection.py` (stdlib only), which also asserts
+  the downloader still calls the rule and no longer clears per file.
+
 ## The request button: what the entry matcher was getting wrong
 Audited by resolving 50 matched `CollectionEntry` rows against the live TPDB
 record their `tpdb_id` names (2026-09-11). 47 of 50 landed on the right title.
