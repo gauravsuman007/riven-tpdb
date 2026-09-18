@@ -92,7 +92,9 @@ def enrich(entry, match):
     entry.match_state = MATCH_MATCHED
     entry.matched_at = datetime.now()
 
-    if match.poster:
+    # Gap-fill, never replace -- see the shipped `enrich_entry`, and
+    # test_a_match_never_replaces_the_storefronts_own_cover below.
+    if match.poster and not entry.poster_path:
         entry.poster_path = match.poster
 
     return True
@@ -258,6 +260,46 @@ def test_a_miss_stays_requestable():
     assert entry.actionable is True, (
         "a title TPDB could not match must still be requestable from the "
         "storefront metadata it already has"
+    )
+
+
+
+def test_a_match_never_replaces_the_storefronts_own_cover():
+    """A wrong match must not be able to destroy correct artwork.
+
+    The storefront row's poster is the cover of that exact product id, so it is
+    right by construction; the matched record's is right only if the match is.
+    Replacing it was permanent in practice: the MediaItem built from the entry
+    inherits the poster, and the Adult Empire indexer only ever fills gaps, so
+    no later re-sync could undo it. "Pirates" (Digital Playground) wore the
+    cover of "Butthole Pirates" (Heatwave) in the library for weeks after the
+    matcher that confused the two had been fixed.
+    """
+
+    session = _session()
+    storefront = "https://imgs1cdn.adultempire.com/products/15/700215h.jpg"
+    entry = _entry(session, poster_path=storefront)
+
+    assert enrich(entry, _Match())
+    assert entry.tpdb_id == "uuid-pirates", "the match still applies"
+    assert entry.poster_path == storefront
+
+
+def test_an_entry_with_no_cover_still_takes_the_matchs_one():
+    session = _session()
+    entry = _entry(session)
+
+    assert enrich(entry, _Match())
+    assert entry.poster_path == "https://example/poster.jpg"
+
+
+def test_the_shipped_enrich_entry_gap_fills():
+    """The mirror above is a copy; this is what stops it drifting."""
+
+    body = (SRC / "program" / "services" / "recommendations" / "tpdb_lookup.py").read_text()
+
+    assert "if match.poster and not entry.poster_path:" in body, (
+        "enrich_entry must fill a missing poster, never replace one"
     )
 
 

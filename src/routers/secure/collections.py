@@ -28,6 +28,11 @@ from program.media.collection import (
 )
 from program.media.item import MediaItem
 from program.services.collections import service as user_collections
+from program.services.recommendations.engine import (
+    LibraryLink,
+    library_links,
+    link_for,
+)
 from program.services.recommendations.tpdb_lookup import enrich_entry
 from program.settings import settings_manager
 from program.utils.time import utcnow
@@ -62,6 +67,15 @@ class CollectionEntryResponse(BaseModel):
     actionable: bool
     media_item_id: int | None
     state: str | None
+    #: The library item this entry's title names, when the library holds one.
+    #:
+    #: `media_item_id` is only set when the title was requested THROUGH Riven,
+    #: and a self-sourced storefront row never resolves a TPDB id either -- so
+    #: a shelf card for something already owned had nowhere useful to point and
+    #: opened the storefront listing it was mirrored from. Matched by title;
+    #: see `library_links` for why that is the whole available evidence.
+    library_item_id: int | None = None
+    library_tpdb_id: str | None = None
 
 
 class CollectionSummary(BaseModel):
@@ -97,11 +111,24 @@ class RequestResponse(BaseModel):
 
 
 def _entry_response(
-    entry: CollectionEntry, states: dict[int, str]
+    entry: CollectionEntry,
+    states: dict[int, str],
+    links: dict[str, LibraryLink] | None = None,
 ) -> "CollectionEntryResponse":
-    """Map one entry to its API shape."""
+    """Map one entry to its API shape.
+
+    ``links`` is the library title index, read once per request. Every endpoint
+    that serves entries passes it, because every one of them feeds a card
+    somebody clicks: the brochure shelves, the collection detail page, the home
+    hero and the single-entry lookup all render the same row, and one of them
+    left out is one surface still opening the storefront.
+    """
+
+    link = link_for(entry.title, links) if links else None
 
     return CollectionEntryResponse(
+        library_item_id=link.item_id if link else None,
+        library_tpdb_id=link.tpdb_id if link else None,
         id=entry.id,
         title=entry.title,
         studio=entry.studio,
@@ -245,6 +272,10 @@ def get_collection(
 
         entries = session.execute(query).scalars().all()
 
+        # The library title index, read once for the whole page rather than
+        # once per card.
+        links = library_links(session)
+
         # The library state of a requested entry, fetched in one query rather
         # than by walking each entry's relationship.
         item_ids = [e.media_item_id for e in entries if e.media_item_id]
@@ -265,7 +296,7 @@ def get_collection(
 
         return CollectionDetail(
             **summary.model_dump(),
-            entries=[_entry_response(e, states) for e in entries],
+            entries=[_entry_response(e, states, links) for e in entries],
         )
 
 
@@ -396,6 +427,7 @@ def brochure(
         if not collections:
             return []
 
+        links = library_links(session)
         shelves: list[BrochureShelf] = []
 
         for collection in collections:
@@ -438,7 +470,7 @@ def brochure(
                     description=collection.description,
                     refreshed_at=collection.refreshed_at,
                     total=total or 0,
-                    entries=[_entry_response(e, states) for e in entries],
+                    entries=[_entry_response(e, states, links) for e in entries],
                 )
             )
 
@@ -496,7 +528,7 @@ def get_entry(entry_id: Annotated[int, Path()]) -> CollectionEntryResponse:
             if row:
                 states[row[0]] = row[1].value if row[1] else "Unknown"
 
-        return _entry_response(entry, states)
+        return _entry_response(entry, states, library_links(session))
 
 
 @router.get("/{key}/categories", operation_id="list_collection_categories")
@@ -592,6 +624,7 @@ def avn_overview(
 
         expected.sort(reverse=True)
 
+        links = library_links(session)
         rows: list[AvnYear] = []
 
         for year in expected:
@@ -663,7 +696,7 @@ def avn_overview(
                     total=total or 0,
                     matched=matched or 0,
                     requested=requested or 0,
-                    entries=[_entry_response(e, states) for e in entries],
+                    entries=[_entry_response(e, states, links) for e in entries],
                 )
             )
 
@@ -968,7 +1001,7 @@ def add_to_collection(
             if row:
                 states[row[0]] = row[1].value if row[1] else "Unknown"
 
-        return _entry_response(entry, states)
+        return _entry_response(entry, states, library_links(session))
 
 
 @router.delete("/{key}/items/{entry_id}", operation_id="remove_from_collection")

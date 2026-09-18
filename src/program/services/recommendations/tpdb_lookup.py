@@ -219,7 +219,18 @@ def enrich_entry(entry: CollectionEntry) -> bool:
     entry.match_state = MATCH_MATCHED
     entry.matched_at = utcnow()
 
-    if match.poster:
+    # FILLS A GAP, NEVER REPLACES A COVER.
+    #
+    # A storefront row's poster is the cover of that exact product id, so it is
+    # right by construction; the matched record's is right only if the match
+    # is. Overwriting meant one wrong match destroyed the correct artwork
+    # permanently -- and permanently is the operative word, because the item
+    # built from that entry inherits the poster and the Adult Empire indexer
+    # only ever fills gaps, so no later re-sync of the entry could undo it.
+    # "Pirates" (Digital Playground, 2005) carried the cover of "Butthole
+    # Pirates" (Heatwave) in the library for a month after the matcher that
+    # confused the two had been fixed.
+    if match.poster and not entry.poster_path:
         entry.poster_path = match.poster
 
     logger.debug(f"Matched {entry.title!r} to {match.provider} {match.tpdb_id}")

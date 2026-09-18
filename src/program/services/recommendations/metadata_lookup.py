@@ -34,7 +34,12 @@ from loguru import logger
 
 from program.apis.stashdb_api import StashdbApi, StashdbApiError
 from program.apis.tpdb_api import TpdbApi
-from program.services.awards.matching import Match, evaluate_candidate, best_match
+from program.services.awards.matching import (
+    Match,
+    apply_match_poster,  # noqa: F401 - re-exported; callers import it from here
+    best_match,
+    evaluate_candidate,
+)
 from program.services.indexers.stashdb_mapping import scene_to_movie_dict
 from program.services.recommendations import adultempire_lookup, tpdb_lookup
 from program.services.recommendations.adultempire import AdultEmpireClient

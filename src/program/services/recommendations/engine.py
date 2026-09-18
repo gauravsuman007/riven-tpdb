@@ -302,13 +302,27 @@ def library_links(session: Any) -> dict[str, LibraryLink]:
     return links
 
 
+def link_for(title: str | None, links: dict[str, LibraryLink]) -> LibraryLink | None:
+    """The library item this title names, if any.
+
+    Exported so that every surface which shows a catalogue title asks the same
+    question the same way. The rails were not the only place a card could open
+    the storefront listing for something already owned -- the brochure shelves
+    and the home hero do it too, from ``CollectionEntry`` rather than from a
+    ``Recommendation`` -- and a second, hand-rolled title fold in those routers
+    would answer differently the first time either side was tuned.
+    """
+
+    return links.get(_name_key(title))
+
+
 def attach_library(
     recommendations: Iterable[Recommendation], links: dict[str, LibraryLink]
 ) -> None:
     """Stamp each recommendation with the library title it names, if any."""
 
     for recommendation in recommendations:
-        link = links.get(_name_key(recommendation.title))
+        link = link_for(recommendation.title, links)
 
         if link is None:
             continue

@@ -20,8 +20,10 @@ from sqlalchemy import select
 
 from program.apis.tpdb_api import TpdbApi, TpdbApiError
 from program.db.db import db_session
+from program.media.collection import CollectionEntry
 from program.media.item import MediaItem
 from program.services.recommendations.metadata_lookup import (
+    apply_match_poster,
     assign_provider_id,
     resolve_movie,
 )
@@ -93,8 +95,17 @@ class TpdbEnricher:
                 if not assign_provider_id(item, match):
                     continue
 
-                if match.poster:
-                    item.poster_path = match.poster
+                # Not `if match.poster:`. A provider poster the newly
+                # attached record does not vouch for has to GO, or the item
+                # keeps the previous match's cover under the new match's id --
+                # see `apply_match_poster`.
+                if apply_match_poster(item, match) and not item.poster_path:
+                    # Put the storefront's own cover back rather than leaving
+                    # the item bare. It is the cover of this product id, so it
+                    # is right whatever any metadata provider thinks, and the
+                    # Adult Empire indexer would only restore it on a re-index
+                    # that may never be asked for.
+                    item.poster_path = _storefront_poster(session, item)
 
                 item.indexed_at = utcnow()
                 session.commit()
@@ -129,3 +140,14 @@ class TpdbEnricher:
             # ceremony year.
             year_offset=0,
         )
+
+
+def _storefront_poster(session, item: MediaItem) -> str | None:
+    """The Adult Empire cover for this item's product id, if one is cached."""
+
+    return session.execute(
+        select(CollectionEntry.poster_path).where(
+            CollectionEntry.external_id == item.adultempire_id,
+            CollectionEntry.poster_path.is_not(None),
+        )
+    ).scalars().first()

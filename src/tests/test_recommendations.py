@@ -113,6 +113,7 @@ arrange = engine_module.arrange
 Recommendation = engine_module.Recommendation
 library_links = engine_module.library_links
 attach_library = engine_module.attach_library
+link_for = engine_module.link_for
 
 RatingBackfill = ratings_module.RatingBackfill
 RankedTitle = sys.modules["program.services.recommendations.adultempire"].RankedTitle
@@ -853,6 +854,24 @@ def test_the_library_match_is_kept_apart_from_the_entry_match():
 
     assert item.tpdb_id is None
     assert item.library_tpdb_id == "uuid-1"
+
+
+def test_the_library_index_answers_for_a_plain_title_too():
+    """`link_for` is what the entry surfaces ask.
+
+    The rails were not the only place a card could open the storefront listing
+    for a title already owned -- the brochure shelves, the home hero and the
+    studio pages draw `CollectionEntry` rows rather than `Recommendation`s and
+    had the same bug. They share this function rather than folding the title
+    themselves, because two folds tuned at different times answer differently
+    for exactly the punctuation cases this exists to handle.
+    """
+
+    links = library_links(_library_session([(859, "Pirates 2: Stagnetti's Revenge", None)]))
+
+    assert link_for("Pirates 2 - Stagnetti's Revenge", links).item_id == 859
+    assert link_for("Butthole Pirates", links) is None
+    assert link_for(None, links) is None
 
 
 import tempfile  # noqa: E402 - only the harness below needs it

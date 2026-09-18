@@ -382,7 +382,11 @@ class AwardsService:
                 else:
                     entry.tpdb_kind = match.kind
                     entry.match_score = match.score
-                    entry.poster_path = match.poster
+                    # Gap-fill, like `enrich_entry`: an award ballot row
+                    # usually has no artwork of its own, but where it does, it
+                    # is this title's and a match's is only as good as the
+                    # match.
+                    entry.poster_path = entry.poster_path or match.poster
                     entry.match_state = MATCH_MATCHED
                     matched += 1
 

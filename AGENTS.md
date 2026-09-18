@@ -1300,6 +1300,68 @@ widening it would silently merge titles the rails currently keep apart.
 
 Tests: `src/tests/test_recommendations.py`.
 
+### ...and so does every OTHER surface, through one function
+
+The first version of this fix reached the Explore rails only. It was written as
+a `href()` in `explore/+page.svelte` that checked the library fields before
+falling through to `entryHref()` -- so the bestseller and trending shelves, the
+home hero, the studio pages and the brochure page's own redirect all kept the
+old answer, and the same owned title opened the storefront from any of them.
+That is the shape to watch for: a rule about WHERE A TITLE LIVES, implemented
+at one of the five places that draw a title.
+
+There is now exactly one decision, `entryHref()` in `lib/collections.ts`, and
+every surface routes through it. Its order is: the library item's own ids
+first (`library_tpdb_id`, then `library_item_id`), then the entry's
+(`tpdb_id`, then `media_item_id`), then the brochure page. The library's ids
+are never mixed with the entry's -- an owned title whose media item carries no
+TPDB id belongs on its riven page, because the entry's TPDB record would render
+a page that cannot find the copy you own and offers to request it again.
+
+- Backend: `CollectionEntryResponse` carries `library_item_id` /
+  `library_tpdb_id`, stamped by `_entry_response` from the index
+  `library_links()` builds. **Every** entry-serving endpoint passes it --
+  collection detail, brochure shelves, the AVN overview and the single-entry
+  lookup -- because each one feeds a card somebody clicks, and one left out is
+  one surface still opening the storefront. `engine.link_for()` is the shared
+  fold; do not write a second one.
+- `explore/brochure/[id]/+page.server.ts` asks "is this page still the right
+  one for this entry?" by comparing `entryHref(entry)` against its own URL,
+  rather than re-testing `tpdb_id`. Re-deciding it locally is exactly how this
+  page kept its old answer while every card linking to it learned a better one.
+- Studio rows need nothing of their own: a studio title is promoted to an
+  entry and then redirected through that same page.
+
+## A wrong match must not be able to destroy correct artwork
+
+"Pirates" (Digital Playground, 2005) sat in the library wearing the cover of
+"Butthole Pirates" (Heatwave) -- with the RIGHT TPDB id beside it, which is
+what made it invisible for weeks. Three separate rules had to be wrong at once,
+and each is now enforced:
+
+1. **`enrich_entry` REPLACED the storefront's poster with the match's.** A
+   storefront row's cover is the cover of that exact product id and is right by
+   construction; a match's is right only if the match is. It gap-fills now.
+   The damage was permanent in practice: `build_movie` copies the entry's
+   poster onto the MediaItem, and `AdultEmpireIndexer._apply` only ever fills
+   gaps, so no later re-sync of the entry could undo it.
+2. **The matcher accepted "Butthole Pirates" for "Pirates".** Fixed earlier by
+   `MIN_TITLE_SYMMETRY` (see the matching section); containment alone cannot
+   tell a film from someone else's parody of it.
+3. **Re-matching corrected the id and kept the picture.** `if match.poster:` --
+   the obvious form -- leaves the previous provider's artwork in place exactly
+   when the new record has none, at the moment the id beside it changes. That
+   is now `apply_match_poster()` in `awards/matching.py`: a poster from a
+   metadata CDN the new record does not vouch for is CLEARED, and enrichment
+   puts the storefront cover back in its place. A poster from anywhere else is
+   left alone -- it was never the match's to begin with. The manual endpoint
+   `POST /items/{id}/tpdb` already made this decision by hand; this is the same
+   rule applied to the automatic path.
+
+Tests: the poster rules in `src/tests/test_awards.py` and
+`src/tests/test_brochure_tpdb_first.py` (which also asserts the shipped
+`enrich_entry` still gap-fills, because that suite mirrors its body).
+
 ## Seeking a proxied file got it throttled by TorBox
 
 Reported as "played fine, then too much seeking and it stopped with an error"

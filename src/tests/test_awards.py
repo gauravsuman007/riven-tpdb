@@ -671,6 +671,62 @@ def test_an_exact_title_still_matches_without_studio_or_cast():
     assert match.accepted, match.reasons
 
 
+# ------------------------------------------------------- a match's artwork
+#
+# The poster has to travel with the association that supplied it. Keeping a
+# provider poster past the match that chose it is how "Pirates" (Digital
+# Playground) sat in the library under the cover of "Butthole Pirates"
+# (Heatwave) -- with the RIGHT TPDB id beside it, which is what made it
+# invisible.
+
+
+class _Target:
+    def __init__(self, poster_path=None):
+        self.poster_path = poster_path
+
+
+def _match(poster):
+    return matching.Match(tpdb_id="x", kind="movie", title="Pirates", poster=poster)
+
+
+def test_a_matched_record_supplies_its_own_artwork():
+    target = _Target(poster_path=None)
+
+    assert matching.apply_match_poster(target, _match("https://cdn.theporndb.net/a.jpg"))
+    assert target.poster_path == "https://cdn.theporndb.net/a.jpg"
+
+
+def test_a_match_with_no_artwork_takes_the_old_provider_poster_away():
+    """The bug this exists for: the id changes, the picture does not."""
+
+    target = _Target("https://cdn.theporndb.net/bg-heatwave-butthole-pirates.jpg")
+
+    assert matching.apply_match_poster(target, _match(None))
+    assert target.poster_path is None
+
+
+def test_a_storefront_cover_is_never_taken_away():
+    """It is the cover of a product id, so no match's opinion improves it."""
+
+    target = _Target("https://imgs1cdn.adultempire.com/products/15/700215h.jpg")
+
+    assert not matching.apply_match_poster(target, _match(None))
+    assert target.poster_path == "https://imgs1cdn.adultempire.com/products/15/700215h.jpg"
+
+
+def test_re_applying_the_same_poster_writes_nothing():
+    target = _Target("https://cdn.theporndb.net/a.jpg")
+
+    assert not matching.apply_match_poster(target, _match("https://cdn.theporndb.net/a.jpg"))
+
+
+def test_a_stashdb_poster_is_a_provider_poster_too():
+    target = _Target("https://cdn.stashdb.org/images/1.jpg")
+
+    assert matching.apply_match_poster(target, _match(None))
+    assert target.poster_path is None
+
+
 for _name, _fn in sorted(list(globals().items())):
     if _name.startswith("test_") and callable(_fn):
         check(_name, _fn)

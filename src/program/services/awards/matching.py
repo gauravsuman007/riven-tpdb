@@ -294,3 +294,52 @@ def best_match(candidates: list[Match]) -> Match | None:
         return None
 
     return max(accepted, key=lambda c: (c.score, c.title_ratio))
+
+
+#: Hosts that only ever serve artwork BELONGING TO a metadata record. A poster
+#: from one of these is only as correct as the match that supplied it; a poster
+#: from anywhere else (the storefront's own CDN) is the cover of a product id
+#: and is correct on its own terms.
+_METADATA_IMAGE_HOSTS = ("theporndb.net", "stashdb.org")
+
+
+def apply_match_poster(target: object, match: Match) -> bool:
+    """Put the matched record's artwork on `target`, and take the old away.
+
+    THE POSTER GOES WITH THE ASSOCIATION THAT SUPPLIED IT.
+
+    The obvious form of this -- ``if match.poster: target.poster_path =
+    match.poster`` -- leaves the previous provider's artwork in place whenever
+    the new record happens to have none, at the exact moment the id beside it
+    changes to something else. That is how "Pirates" (Digital Playground, 2005)
+    sat in the library under the cover of "Butthole Pirates" (Heatwave) with
+    the right TPDB id attached: the matcher that confused the two was fixed
+    months earlier, and re-matching corrected the id and kept the picture.
+
+    So a provider poster the new record does not vouch for is CLEARED rather
+    than kept. The item then falls back to its storefront cover the next time
+    the Adult Empire indexer refreshes it, which is a poster for this exact
+    product id and right by construction. A non-provider poster is left alone
+    for the same reason -- it was never the match's to begin with.
+
+    The manual re-match endpoint (``POST /items/{id}/tpdb``) makes the same
+    decision by hand, and made it first; this is that rule applied to the
+    automatic path, which is the one that had been quietly getting it wrong.
+
+    Returns whether anything was written.
+    """
+
+    current = getattr(target, "poster_path", None)
+
+    if match.poster:
+        if current == match.poster:
+            return False
+
+        target.poster_path = match.poster
+        return True
+
+    if current and any(host in current for host in _METADATA_IMAGE_HOSTS):
+        target.poster_path = None
+        return True
+
+    return False
