@@ -929,7 +929,18 @@ three seconds, indefinitely, reporting itself **Completed** the whole time.
 release is the one now active: a pin naming a different release is a candidate
 fetch that has not happened yet, and clearing it would abandon the download.
 
-### Known and NOT fixed: only part 0 of a release is in the VFS
+### Known and NOT fixed: ordering, and only part 0 in the VFS
+
+Both are designed but unbuilt -- see `design/MULTIFILE-RELEASES.md`, which
+carries the part-ordering rules (measured over all 251 torrents in the TorBox
+account), the VFS naming proposal, upstream's status, and the one damaged
+title still awaiting repair (872, Island Fever 3, playing its trailer).
+
+`media_parts` orders by filename, and `parts[0]` is both what plays first and
+what the VFS mounts. Right for numbered scenes, wrong for a release with
+extras.
+
+#### Only part 0 of a release is in the VFS
 
 `RivenVFS.add()` registers `item.media_entry`, which is `media_parts[0]`, so
 the other parts are never mounted; and `naming.generate_clean_path()` builds
