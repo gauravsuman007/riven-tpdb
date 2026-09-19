@@ -914,6 +914,41 @@ declined to offer a playlist for a single-file title.
 - Tests: `src/tests/test_entry_selection.py` (stdlib only), which also asserts
   the downloader still calls the rule and no longer clears per file.
 
+### Re-pinning a release that is already active looped for ever
+
+Found while repairing item 874 with `queue_release`, and it is a trap for
+anyone doing the same repair. `downloading_stream_hash` means "a release is
+pending", and `db_functions.retry_library` hands any item carrying one back to
+the pipeline -- on purpose, so a pinned fetch survives a restart. Only the
+CANDIDATE branch of `Downloader.run` cleared it, and `candidate_mode` is False
+exactly when the pinned hash is already `active_stream.infohash`, which is what
+pinning the same release a second time produces. So the item downloaded, kept
+its pin, was handed straight back by that query, and downloaded again -- every
+three seconds, indefinitely, reporting itself **Completed** the whole time.
+`entry_selection.pin_satisfied()` now clears it, and only when the pinned
+release is the one now active: a pin naming a different release is a candidate
+fetch that has not happened yet, and clearing it would abandon the download.
+
+### Known and NOT fixed: only part 0 of a release is in the VFS
+
+`RivenVFS.add()` registers `item.media_entry`, which is `media_parts[0]`, so
+the other parts are never mounted; and `naming.generate_clean_path()` builds
+the filename from the ITEM, so all parts of one title would collide on a single
+path even if they were. Item 874 has four playable parts and one file under
+`/movies`.
+
+This does not affect playback. The stream endpoints resolve a part straight
+from the debrid provider (`playback_url.resolve(..., part=)`) and never consult
+the VFS, so the web player, `/stream/parts`, the parts panel and the `.m3u`
+hand-off all serve every part -- verified on 874: four parts, four distinct
+durations and sizes, all streaming 206.
+
+It is left alone deliberately. Naming per-part files means choosing a
+convention a media server will read, and Jellyfin's multi-part convention
+(`- part1`, `- cd1`) STACKS files as segments of one film, which a scene
+compilation is not. See "Media-server masquerade": scanning the debrid VFS is
+already the path this fork does not take.
+
 ## The request button: what the entry matcher was getting wrong
 Audited by resolving 50 matched `CollectionEntry` rows against the live TPDB
 record their `tpdb_id` names (2026-09-11). 47 of 50 landed on the right title.

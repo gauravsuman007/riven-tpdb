@@ -44,3 +44,31 @@ def stale_entries(entries, infohash: str | None, filename: str | None) -> list:
         if getattr(entry, "stream_infohash", None) != infohash
         or getattr(entry, "original_filename", None) == filename
     ]
+
+
+def pin_satisfied(downloading_hash: str | None, active_infohash: str | None) -> bool:
+    """Whether a pinned release has landed and its pin should be dropped.
+
+    `MediaItem.downloading_stream_hash` means "a release is pending for this
+    item", and `db_functions.retry_library` hands any item carrying one back to
+    the pipeline -- deliberately, so a pinned fetch survives a restart.
+
+    THE LOOP THIS PREVENTS
+    ----------------------
+    Only the candidate branch of `Downloader.run` ever cleared the pin, and
+    `candidate_mode` is False precisely when the pinned hash is ALREADY the
+    active stream -- which is what `queue_release` produces when the same
+    release is pinned a second time, the normal way to re-download a release
+    whose files an earlier bug dropped. The item downloaded, kept its pin, was
+    handed straight back by that query and downloaded again, every three
+    seconds, indefinitely, reporting itself Completed throughout. Observed on
+    item 874.
+
+    True only when the pinned release is the one now active. A pin naming a
+    DIFFERENT release is a candidate fetch that has genuinely not happened yet,
+    and clearing it would abandon the fetch instead of completing it.
+    """
+
+    return bool(
+        downloading_hash and active_infohash and downloading_hash == active_infohash
+    )

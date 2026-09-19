@@ -23,6 +23,7 @@ _spec = importlib.util.spec_from_file_location(
 _module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_module)
 stale_entries = _module.stale_entries
+pin_satisfied = _module.pin_satisfied
 
 PASSED: list[str] = []
 FAILED: list[tuple[str, Exception]] = []
@@ -136,6 +137,33 @@ def test_the_downloader_uses_this_rule_and_no_longer_clears():
     assert not any("filesystem_entries.clear()" in line for line in statements), (
         "clearing per file is what dropped three of four scenes"
     )
+
+
+# ------------------------------------------------- the pin that never cleared
+
+
+def test_a_pin_that_landed_is_dropped():
+    """Re-downloading the SAME release: the pin equals the active stream.
+
+    This is the infinite loop. `candidate_mode` is False here, so the only
+    code that cleared the pin never ran, and `retry_library` handed the item
+    back to the pipeline for as long as the pin stood -- a download every
+    three seconds, for ever, with the item reporting itself Completed.
+    """
+
+    assert pin_satisfied(RELEASE, RELEASE)
+
+
+def test_a_pin_for_another_release_is_still_pending():
+    """A real candidate fetch. Clearing it would abandon the download."""
+
+    assert not pin_satisfied(OTHER, RELEASE)
+
+
+def test_no_pin_and_no_active_stream_are_not_satisfied():
+    assert not pin_satisfied(None, RELEASE)
+    assert not pin_satisfied(RELEASE, None)
+    assert not pin_satisfied(None, None)
 
 
 for _name, _fn in sorted(list(globals().items())):

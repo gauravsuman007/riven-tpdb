@@ -15,7 +15,10 @@ from program.media.stream import Stream
 from program.media.media_entry import MediaEntry
 from program.utils.time import utcnow
 from program.media.models import ActiveStream, MediaMetadata
-from program.services.downloaders.entry_selection import stale_entries
+from program.services.downloaders.entry_selection import (
+    pin_satisfied,
+    stale_entries,
+)
 from program.services.downloaders.models import (
     DebridFile,
     DownloadedTorrent,
@@ -574,6 +577,29 @@ class Downloader(Runner[None, DownloaderBase]):
 
             if candidate_mode:
                 self._swap_active_filesystem_entry(item, previous_entry)
+            elif pin_satisfied(
+                item.downloading_stream_hash,
+                item.active_stream.infohash if item.active_stream else None,
+            ):
+                # THE PIN HAS BEEN SATISFIED, SO IT HAS TO GO.
+                #
+                # `downloading_stream_hash` says "a release is pending for this
+                # item", and `db_functions.retry_library` treats any item
+                # carrying one as owed work -- deliberately, so a pinned fetch
+                # survives a restart. Only the candidate branch above ever
+                # cleared it, and candidate_mode is False whenever the pinned
+                # hash is ALREADY the active stream, which is exactly what
+                # queue_release produces when the same release is pinned again
+                # (re-downloading a release to pick up files an earlier bug
+                # dropped, say). The item then downloaded successfully, kept
+                # the pin, was handed straight back to the pipeline by that
+                # query, and downloaded again -- every three seconds,
+                # indefinitely, while reporting itself Completed the whole
+                # time. Observed on item 874.
+                #
+                # Cleared only when the pinned release is the one now active:
+                # anything else is still genuinely pending.
+                item.downloading_stream_hash = None
 
             yield RunnerResult(media_items=[item])
 
