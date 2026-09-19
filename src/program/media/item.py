@@ -22,6 +22,7 @@ from program.media.subtitle_entry import SubtitleEntry
 from program.db.db import db_session
 from program.db.base_model import Base
 from program.media.media_entry import MediaEntry
+from program.media.part_ordering import order_parts
 from program.apis.tvdb_api import SeriesRelease
 from program.media.models import ActiveStream
 from program.utils.time import utcnow
@@ -739,10 +740,12 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         if not media_entries:
             return []
 
-        # Ordered by filename, which is how these releases number their parts
-        # ("Kristen Scott 1", "Kristen Scott 2"). There is no index column to
-        # order by and inventing one would be a claim the data cannot support.
-        media_entries.sort(key=lambda entry: (entry.original_filename or "").lower())
+        # Feature first, bonus material last, and numbered scenes in their
+        # own order rather than the filesystem's. There is no index column to
+        # order by, so the rule reads the filenames -- see `part_ordering`,
+        # which is measured and lives apart so it can be tested without a
+        # database.
+        media_entries = order_parts(media_entries)
 
         # An ActiveStream model, not a dict: the column is JSON but it comes
         # back through a TypeDecorator, so `.get` is not available on it
