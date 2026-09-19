@@ -1,8 +1,9 @@
 # Multi-file releases — part ordering and VFS registration
 
-Status: **design**, as of 2026-09-19. The bug that motivated it is fixed and
-deployed (`entry_selection.stale_entries`, commit 9d9041aa); everything below
-is the work that fix exposed and did not do.
+Status: **part 1 done, part 2 outstanding**, as of 2026-09-19. The bug that
+motivated it is fixed and deployed (`entry_selection.stale_entries`, commit
+9d9041aa). **Part 1 (ordering) shipped** as `program/media/part_ordering.py`
+and **item 872 is repaired**; part 2 (VFS registration) is still design.
 
 Prerequisite reading: "Only one file of a multi-file release reached the
 library" and "Multi-file releases (playlists)" in `AGENTS.md`.
@@ -40,7 +41,12 @@ feature-plus-sample. This fork hits it constantly because split-scene releases
 are the norm for adult content. Do not expect an upstream fix to arrive; do
 expect a merge conflict here at both sites.
 
-## Part 1 — ordering
+## Part 1 — ordering (DONE)
+
+Shipped as `program/media/part_ordering.py`, with `src/tests/test_part_ordering.py`
+covering every case below. It lives under `program/media` rather than beside
+`entry_selection` because importing the downloaders package pulls in
+`MediaItem` itself.
 
 Measured over all 251 torrents in the TorBox account (2026-09-19). 76 hold
 more than one video file; **30 are movie-shaped** (<= 12 video files, which
@@ -112,7 +118,7 @@ with `torrents/mylist?bypass_cache=true`.
 deliberately unified; splitting them means the file the VFS mounts and the
 file the player opens can disagree.
 
-## Part 2 — VFS registration
+## Part 2 — VFS registration (outstanding)
 
 Two changes, both small.
 
@@ -140,9 +146,9 @@ files do not have.
 
 Ordering (part 1) should land first, or `pt01` names the wrong file.
 
-## Outstanding repair: item 872, Island Fever 3
+## Repair: item 872, Island Fever 3 (DONE)
 
-The only damaged title not repaired. It holds `Trailer.mkv` (105 MB) of a
+Repaired 2026-09-19. It held `Trailer.mkv` (105 MB) of a
 4114 MB torrent whose video files are `Island.Fever.3.mkv` (3.1 GB),
 `BTS.mkv` (0.8 GB) and `Trailer.mkv` -- so it plays the trailer.
 
@@ -163,11 +169,20 @@ pinned release:
 update "MediaItem" set updated = false,
        preferred_stream_hash = (active_stream->>'infohash') where id = 872;
 delete from "FilesystemEntry" where media_item_id = 872;
+-- and this, or nothing happens: a Completed item is not "incomplete", so
+-- `retry_library` only sees it through the pending-candidate clause.
+update "MediaItem" set downloading_stream_hash = preferred_stream_hash
+       where id = 872;
 ```
+
+Then restart the backend, which runs `retry_library` at startup. The item came
+back with all three files and `pin_satisfied` cleared the pin on its own.
 
 ## Build order
 
-1. Part ordering (measurable, self-contained, no path changes).
-2. Repair item 872.
+1. ~~Part ordering~~ -- done.
+2. ~~Repair item 872~~ -- done, by the SQL above plus setting
+   `downloading_stream_hash` to the pinned hash, which is the one thing that
+   makes `retry_library` re-queue a Completed item. A restart then drove it.
 3. `update_attributes` accepting several files for a movie.
 4. VFS multi-part registration + naming.
