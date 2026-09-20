@@ -1871,3 +1871,31 @@ regardless of which process ran it: the container is bridge-networked, so LAN
 broadcast cannot reach it either way, and `network_mode: host` would collide
 with the real Jellyfin already on 7359/8096. Revisit only if that networking
 constraint changes.
+
+
+## Seeking is a rate problem, not a concurrency one
+
+The per-file connection cap shipped in September and the same file was
+throttled again on 2026-09-19 (item 869, "Drive", in MX Player) with the cap
+in force the whole time. The cap was never the thing being exceeded.
+
+An external player seeks by opening a new range request and abandoning the
+old one. Eight seeks in ten seconds are eight requests but never more than
+one or two live at once, so a concurrency cap sees nothing wrong while the
+CDN sees a burst for one file and starts refusing it. `RateLimiter` in
+`upstream_guard.py` is the missing half: a token bucket per file, BURST
+requests free and then one every two seconds.
+
+It waits rather than refusing. A seek that arrives half a second late is
+still a seek; a seek that gets a 503 is a stopped video, and a player that
+gets one retries immediately -- which is how the file was throttled in the
+first place.
+
+Normal playback is untouched: a file watched end to end is ONE upstream
+request that streams for an hour and spends a single token.
+
+**Diagnosing a repeat:** the cooldown clears itself, so by the time it is
+reported the file usually plays again. Probe `/api/v1/stream/file/{id}` with
+three ranges (head, middle, tail) from inside the container before assuming
+anything is still broken, and read the backend log for "not asking again" to
+find when the last refusal actually was.

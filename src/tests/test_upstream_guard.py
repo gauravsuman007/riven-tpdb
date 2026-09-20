@@ -169,6 +169,105 @@ def test_a_success_resets_the_backoff():
     assert throttle.refused("file.mkv") == guard.BASE_COOLDOWN
 
 
+
+# --- the rate limiter: the half that was missing -------------------------
+
+
+def test_normal_playback_spends_one_token():
+    """A file played through is ONE request. It must never wait."""
+
+    clock = Clock()
+    rate = guard.RateLimiter(clock=clock)
+
+    assert rate.delay("a.mkv") == 0.0
+
+
+def test_a_burst_is_allowed_before_spacing_kicks_in():
+    clock = Clock()
+    rate = guard.RateLimiter(clock=clock)
+
+    for _ in range(guard.BURST):
+        assert rate.delay("a.mkv") == 0.0
+
+
+def test_a_seek_storm_is_spaced_rather_than_refused():
+    """The measured failure: many requests, none concurrent, file throttled."""
+
+    clock = Clock()
+    rate = guard.RateLimiter(clock=clock)
+
+    for _ in range(guard.BURST):
+        rate.delay("a.mkv")
+
+    first = rate.delay("a.mkv")
+    second = rate.delay("a.mkv")
+
+    assert first > 0, "past the burst, a request must wait"
+    assert second > first, "and each further one must wait longer, not the same"
+
+
+def test_waiting_drains_so_a_pause_restores_the_burst():
+    clock = Clock()
+    rate = guard.RateLimiter(clock=clock)
+
+    for _ in range(guard.BURST):
+        rate.delay("a.mkv")
+
+    clock.now += guard.BURST / guard.REFILL_PER_SECOND
+
+    assert rate.delay("a.mkv") == 0.0
+
+
+def test_an_unreasonable_queue_is_told_so_rather_than_slept_on():
+    clock = Clock()
+    rate = guard.RateLimiter(clock=clock)
+
+    for _ in range(guard.BURST):
+        rate.delay("a.mkv")
+
+    raised = None
+    for _ in range(200):
+        try:
+            asyncio.run(rate.reserve("a.mkv"))
+        except guard.TooBusy as busy:
+            raised = busy
+            break
+
+    assert raised is not None, "a runaway player must eventually be refused"
+    assert raised.wait > guard.MAX_WAIT
+
+
+def test_a_refusal_does_not_charge_for_the_request_it_refused():
+    """Or every refusal would push the queue further out for everyone else."""
+
+    clock = Clock()
+    rate = guard.RateLimiter(clock=clock)
+
+    for _ in range(guard.BURST):
+        rate.delay("a.mkv")
+
+    while True:
+        before = rate._tokens["a.mkv"]
+
+        try:
+            asyncio.run(rate.reserve("a.mkv"))
+        except guard.TooBusy:
+            assert rate._tokens["a.mkv"] == before, (
+                "a request that was refused must not have spent a token"
+            )
+            return
+
+
+def test_one_file_being_paced_does_not_pace_another():
+    clock = Clock()
+    rate = guard.RateLimiter(clock=clock)
+
+    for _ in range(guard.BURST * 3):
+        rate.delay("a.mkv")
+
+    assert rate.delay("b.mkv") == 0.0
+
+
 def test_a_throttled_file_does_not_throttle_another():
     throttle = guard.Throttle(Clock())
     throttle.refused("file.mkv")

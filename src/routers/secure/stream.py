@@ -16,7 +16,12 @@ from pydantic import BaseModel
 from program.managers.sse_manager import sse_manager
 from program.media.media_entry import MediaEntry
 from program.services.streaming import playback_url, transcode
-from program.services.streaming.upstream_guard import limiter, throttle
+from program.services.streaming.upstream_guard import (
+    TooBusy,
+    limiter,
+    rate,
+    throttle,
+)
 from program.services.streaming.media_stream import PROXY_REQUIRED_PROVIDERS
 from program.services.streaming.transcode import PlaybackInfo, SessionManager
 from program.settings import settings_manager
@@ -162,6 +167,16 @@ async def stream_file(
     # time to cool off. Asking is how a short throttle becomes a long one.
     if cooling := throttle.remaining(key):
         raise _throttled(item_id, cooling)
+
+    # And it is not asked FASTER than it will tolerate. Seeking is a rate
+    # problem: each seek abandons one request and opens another, so the
+    # connection cap below never trips while the CDN still sees a burst.
+    # Waiting here costs a seek a fraction of a second; not waiting cost the
+    # file forty minutes.
+    try:
+        await rate.reserve(key)
+    except TooBusy as busy:
+        raise _throttled(item_id, busy.wait) from busy
 
     upstream_response: httpx.Response | None = None
 
