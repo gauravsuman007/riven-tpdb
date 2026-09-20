@@ -1959,3 +1959,24 @@ reported the file usually plays again. Probe `/api/v1/stream/file/{id}` with
 three ranges (head, middle, tail) from inside the container before assuming
 anything is still broken, and read the backend log for "not asking again" to
 find when the last refusal actually was.
+
+## The tunnel has a second consumer now
+
+`stremio-tv` routes its **live TV** through the same tailscaled, and depends
+on two things in this repo staying as they are:
+
+* **`/api/v1/vpn/status` and `/api/v1/vpn/exit-node`**, read and written with
+  the server's own API key. Changing either shape breaks live TV silently —
+  that surface treats an unreadable status as "no VPN configured" and draws
+  no panel, which looks like a deployment choice rather than a fault.
+* **`tailscale:1055` serving an HTTP proxy as well as SOCKS5.** Both
+  `TS_SOCKS5_SERVER` and `TS_OUTBOUND_HTTP_PROXY_LISTEN` point at it and
+  tailscaled multiplexes the two. This repo uses the SOCKS side; stremio-tv
+  uses the HTTP side, because it carries no `node_modules` and SOCKS would
+  need a package. **Do not drop `TS_OUTBOUND_HTTP_PROXY_LISTEN`** because
+  nothing here uses it.
+
+What it does **not** touch is `vpn.route_scraping` / `vpn.route_streaming`.
+Those stay scoped to this repo's add-ons and remain the owner's settings;
+live TV has its own switch, kept over there. A new consumer of the tunnel
+should do the same rather than widening one of these.
