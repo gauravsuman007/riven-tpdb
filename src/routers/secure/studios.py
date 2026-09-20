@@ -37,6 +37,7 @@ from program.services.recommendations.adultempire import (
 )
 from program.services.indexers.adultempire_indexer import parse_released
 from program.services.recommendations.studios import StudioService
+from program.utils import fuzzy
 from program.services.recommendations.tpdb_lookup import enrich_entry
 from program.utils.time import utcnow
 from routers.models.shared import MessageResponse
@@ -154,6 +155,10 @@ def list_studios(
 
     ``saved=true`` is what the brochure's studios section asks for; the
     unfiltered list is the picker used to add to it.
+
+    ``search`` is fuzzy (:mod:`program.utils.fuzzy`): it forgives a missing
+    space and a dropped letter, because "evilangel" and "brazers" both used
+    to return nothing at all and an empty page reads as "not carried".
     """
 
     with db_session() as session:
@@ -162,17 +167,18 @@ def list_studios(
         if saved is not None:
             query = query.where(Studio.saved.is_(saved))
 
+        # Biggest catalogues first: the directory is a hundred names with no
+        # other ordering that means anything to a reader. A SEARCH has a
+        # better one -- how well each name answers what was typed -- so the
+        # size only breaks ties between equally good matches.
+        order = [Studio.title_count.desc().nullslast()]
+
         if search:
-            query = query.where(Studio.name.ilike(f"%{search}%"))
+            query = query.where(fuzzy.matches(search, Studio.name, session=session))
+            order = fuzzy.ranking(search, Studio.name, session=session) + order
 
         studios = (
-            session.execute(
-                # Biggest catalogues first: the directory is a hundred names
-                # with no other ordering that means anything to a reader.
-                query.order_by(Studio.title_count.desc().nullslast()).limit(limit)
-            )
-            .scalars()
-            .all()
+            session.execute(query.order_by(*order).limit(limit)).scalars().all()
         )
 
         return [_response(studio) for studio in studios]

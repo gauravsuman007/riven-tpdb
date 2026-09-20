@@ -838,6 +838,66 @@ stack is a full checkout at `/home/hellonfire/Server/riven-tpdb`.
   "ri" can answer after "riley" and would otherwise overwrite it.
 - Tests: `src/tests/test_item_search.py` (SQLite, stdlib harness).
 
+## Search matches names fuzzily (`program/utils/fuzzy.py`)
+- `ilike('%term%')` is a substring test, not search. Measured against the live
+  directory before this existed: "brazzers" found Brazzers, **"brazers" found
+  nothing**, "evil angel" found twenty-two, **"evilangel" found nothing**. A
+  viewer who gets an empty page concludes the studio is not carried.
+- Two halves, and they are orthogonal. `matches()` widens the WHERE clause;
+  `ranking()` orders what comes back so widening never costs precision at the
+  top -- exact, then prefix, then substring, then merely-similar. Searching
+  "vixen" must still offer *Vixen* above *Exotic Vixen Films*, and a test
+  pins exactly that.
+- **COLLAPSING** (strip everything but letters and digits) is the cheap half
+  and catches more than trigrams do: it makes "evilangel", "Evil-Angel" and
+  "evil angel" one string, and being exact it cannot introduce a wrong match.
+  The OnlyFans index stores a collapsed form already -- the handle IS it --
+  so that column is passed as `collapsed=` rather than collapsed again in SQL.
+- **`word_similarity`, NOT `similarity`.** The plain form compares whole
+  strings and punishes a name for being longer than the query, which is the
+  normal case. Measured: "bangbross" vs "Bang Bros Productions" scores 0.24
+  whole-string and 0.50 word-wise; "vixn" vs "Vixen" 0.375 against 0.60.
+  Threshold is 0.5 -- pg_trgm's own 0.3 default starts returning names that
+  merely share a syllable.
+- Terms shorter than 4 characters skip the fuzzy clauses entirely. Two letters
+  is a prefix someone is still typing, and fuzzy-matching it hits everything.
+- **Trigrams are Postgres-only and the tests run on SQLite**, where those
+  clauses are simply omitted. That is deliberate: search stays CORRECT
+  everywhere and only gets cleverer where `pg_trgm` exists. Never make
+  behaviour depend on an index -- the same rule as the library's trigram
+  indexes above. `test_fuzzy_search.py` asserts SQLite has no trigrams and
+  still answers.
+- Indexes: `a7c4e9b21d38` (studio names) and the add-on's `0005_name_trgm`
+  (account names and handles). Performance only, `IF NOT EXISTS`, failures
+  swallowed -- and therefore **verify after deploying**, because a silent skip
+  looks exactly like success.
+- TRAP, in the add-on's account list: `order_by` APPENDS. The relevance
+  ranking has to go on BEFORE the rail's own ordering, or the rail leads and
+  relevance becomes a tiebreak nobody ever reaches.
+
+## Search returns three kinds of thing, in three rows
+- Titles, **studios** and **OnlyFans accounts**. A search box is asked for all
+  three and used to answer with only the first.
+- `/details/tpdb/movie/<uuid>` was being built for EVERY result including
+  performers and TPDB "sites", so clicking a studio answered **404 "Title not
+  found on TPDB"**. That is what "search is broken" looked like.
+- **TPDB sites and studio pages are different id spaces.** `/studios/[id]` is
+  keyed by Adult Empire's id; a TPDB site carries its own numeric id and a
+  uuid, and neither can be rewritten into the other. So the Studios ROW is
+  sourced from the studio DIRECTORY (`/api/v1/studios?search=`), which is the
+  thing that actually has a page, rather than from TPDB's site search.
+- Performers have no page in this app. Their honest destination is their work
+  in the library, which the `performer=` facet already serves.
+- The rows render ABOVE the titles and OUTSIDE the results branch, because
+  they must show when no title matched: searching a studio whose films are not
+  in the catalogue used to say "No results found" with the studio page one
+  click away. That state now says "No titles matched".
+- Frontend: `$lib/entity-search.ts` (hand-maintained, like `studios.ts` --
+  the add-on's routes are never in the generated OpenAPI spec) and
+  `components/search/entity-row.svelte`. Streamed, not awaited, so the title
+  results never wait behind it. `allSettled`, because the add-on is optional
+  and an empty studio directory is a normal state, not an error.
+
 ## Multi-file releases (playlists)
 - A scene compilation arrives as ONE torrent holding five or six separate
   scenes, each a `MediaEntry` against the same title. Playback used to resolve
