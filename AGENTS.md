@@ -2013,3 +2013,155 @@ What it does **not** touch is `vpn.route_scraping` / `vpn.route_streaming`.
 Those stay scoped to this repo's add-ons and remain the owner's settings;
 live TV has its own switch, kept over there. A new consumer of the tunnel
 should do the same rather than widening one of these.
+
+## Reverse engineering sources: capabilities and policies
+
+Imported 2026-10-08 from `stremio-tv-scrapers-live-tv`'s AGENTS.md (commit
+`e4e7fdd`), where these techniques were proven. They apply here to any source
+this repo or its add-ons scrape: TPDB/StashDB and Adult Empire, the indexers,
+the tube sites (riven-addon-tubescraper), the OnlyFans archive sites
+(riven-addon-onlyfans). That repo's `STRATEGIES.md` has the full technique
+list and the order of attack; read it before a hard source. What differs here:
+the backend is **Python**, so Node, `vm`, jsdom, Playwright and FlareSolverr
+are research tools, and what ships is a Python port.
+
+### Check what a source really serves before building on it
+
+- **Don't trust file names or content types.** Playlists without `.m3u8`,
+  served as `application/json`/`text/html`; segments named `.jpg` that are real
+  video. Check with the exact User-Agent and Referer the code will send:
+
+      ffmpeg -v error -rw_timeout 15000000 -user_agent "<browser UA>" \
+        -headers "Referer: R\r\n" -f hls -allowed_extensions ALL -extension_picky 0 \
+        -i "<url>" -t 8 -f null -
+
+- **A plausible answer is not a playable one.** A CDN can list fine and 403
+  every segment, or answer an outdated handshake with a looping decoy video.
+  Look at WHAT the address serves, not that it answered 200.
+- **Tokens expire and IPs matter.** An address bound to the resolving network
+  (`asn=`, an IP in the token) plays only from where it was resolved; resolve
+  at play time and test from the server, not a laptop. A site can also pick a
+  different CDN or player by caller IP: if it resolves in research and returns
+  nothing deployed, suspect this before the algorithm.
+- **A CDN that 403s one TLS stack.** Same URL 200 to curl/a browser and 403 to
+  `requests`/`httpx` regardless of headers: it is the handshake. Test from the
+  same client library the code uses, not from curl.
+
+### Run the site's code, don't hand-decode it
+
+Some sources gate the real URL behind client-side JavaScript -- WebAssembly,
+an obfuscated bundle, a signed or encrypted request body. Don't call one
+unscrapable until you have tried RUNNING the gate. **First check it needs
+running code at all**: several "browser-only" sources were a JSON API behind a
+click, or had the data inlined in the server-rendered page (Next.js flight
+data, an inline `window.x = {...}`). Log the real page's requests and grep the
+bundle for the endpoint before anything else.
+
+**Obfuscated bundle → recovered crypto/signing scheme** (how an AES-GCM
+envelope was found in one run):
+
+1. Download the bundle the page loads; confirm it is self-contained.
+2. Load it in `node:vm` with browser globals stubbed just enough: `window`/
+   `self`/`globalThis` as the sandbox, `TextEncoder`/`TextDecoder`, `crypto` as
+   Node's `require("crypto").webcrypto` (it has `.subtle`), no-op observer
+   classes, `URL`/`Headers`/`Request`/`Response`/`Blob` copied from Node, and a
+   `fetch` stub that **throws an error containing the full request**. Top-level
+   `function` declarations survive a later throw; `const`/`let` do not.
+3. Call the request-building function directly and print the thrown request:
+   that is the exact request, encrypted body included. Replay it with `curl
+   --data-binary @file` (shell quoting mangles base64 `+`/`/`).
+4. If the app's bootstrap throws first, accept the partial load or use `jsdom`
+   (installed in a scratch directory, never a dependency). jsdom's
+   `window.crypto` ignores plain assignment: use `Object.defineProperty(window,
+   "crypto", { value: webcrypto, configurable: true })`.
+5. **Instrument, don't decode**: wrap `crypto.subtle.digest`/`importKey`/
+   `encrypt` to log their real arguments. "Reverse-engineer the scheme" becomes
+   "read the log".
+6. Port the recovered algorithm into clean Python (`cryptography`, `hashlib`).
+   Never ship the obfuscated JS or the sandbox.
+
+**WASM-gated sources:**
+
+- Load the `.wasm` in Node with `WebAssembly.instantiate` and the site's own
+  glue, stubbing only the globals the glue touches. Disassemble
+  (`wasm2wat`) when the entry point is not obvious.
+- Reproduce one known input/output pair captured from a real browser before
+  trying to understand internals; then treat the module as a black box.
+- `instance.exports` is frozen. To see what an export takes and returns, wrap
+  `WebAssembly.instantiate` (Playwright `addInitScript`) and hand the page a
+  substitute `{ module, instance: { exports: { ...wrappers } } }`, dumping
+  linear memory at each pointer argument before and after.
+- An import table is not proof of fingerprinting: canvas/navigator/
+  `localStorage` imports often only feed an anti-bot check around a pure key
+  schedule. Run it until it decrypts once, then recover the algorithm: scan
+  linear memory for the key (every aligned 32-byte window against known
+  ciphertext), instrument an internal function by calling an unused import of
+  matching type with a sentinel.
+- Only a **zero-import** module may ever be used at runtime
+  (`WebAssembly.Module.imports(m).length === 0`; with Python, `wasmtime`), and
+  reimplementing what it computes is preferred. Never ship one with imports.
+- Record the date of a failed attempt; a dead end is worth retrying when the
+  bundle changes. When it genuinely cannot run standalone, skip the source and
+  write down exactly what was tried, in the scraper's docstring.
+
+**Running a site's own code at runtime (last resort, ask the maintainer
+first).** Only for a player sealed in a bytecode VM whose constants change per
+deploy, and only after the native routes are shown not to work. The rules: `vm`
+is not a security boundary -- run only the scraped site's own code, never a
+third party's; fetch same-origin scripts only, with count and byte caps and a
+timeout; whitelist the sandbox globals (never `process`, `require`, `fs`, the
+real `console`, or a main-realm `Function`), and have its `fetch` reject every
+other host; locate entry points by shape (stable anchors + small regexes on a
+short slice), returning empty when a shape is missing, never guessing;
+serialize resolves and cache the runtime per deploy; pass anti-automation
+checks only by presenting a normal browser surface, never by patching the
+site's checks; treat output as untrusted (`http(s)` URLs only, verified);
+document the exit in the docstring. Here this also means a Node runtime the
+Python image does not have -- part of what the maintainer is agreeing to.
+
+### Cloudflare/Turnstile: FlareSolverr, for research only
+
+[FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) (`docker run -p
+8191:8191 ghcr.io/flaresolverr/flaresolverr`, then `POST /v1` with
+`{"cmd":"request.get","url":"...","maxTimeout":60000}`) returns cleared
+cookies, its User-Agent and the page. Use them for research fetches -- finding
+the real endpoint. Shipped code must not depend on it: `cf_clearance` is
+short-lived and tied to the solving IP/UA, so it will not survive being used
+from the server. If only the page is gated and the resulting URLs are
+cookie-free (signed, token in the query), the source ships normally.
+
+**Permission:** you may bypass a Turnstile/Cloudflare challenge to reach a
+source whose content is gated for reasons beyond bot detection -- but
+FlareSolverr is for the challenge page only, not for defeating access controls
+the site owner put up for other reasons (paywalls, sign-in walls).
+
+Stock headless Chromium is not FlareSolverr: a legacy JS challenge clears in
+plain Playwright, a managed challenge or Turnstile never does. A proof-of-work
+gate (Anubis) can look cleared before it finishes; confirm the real page loaded.
+
+### Geoblocks: working around them is allowed
+
+Working around a geoblock is explicitly permitted, on any source, without
+asking the maintainer first, both in research and in shipped code: reach it
+through a VPN, a SOCKS/HTTP proxy or a remote shell in the right country, or
+send the country hint the site's own client sends (`X-Forwarded-For`/
+`CF-IPCountry`-style headers, a `?country=`/market parameter, a region cookie);
+use DoH for a DNS-level block. Proxy credentials come from settings, never
+hard-coded.
+
+Here the mechanism is the existing VPN seam (see "VPN routing" above): an
+add-on's routed session through a Tailscale exit node in that country. It still
+FAILS CLOSED -- a workaround never falls back to a direct connection. Decide
+deliverability by the server's own IP: a block lifted by a parameter ships
+normally; a block on the resolve only needs the routed session; a stream bound
+to the resolving IP plays only through that same route. Record how the block
+showed itself (status, body, the header it keyed on) and the date tried.
+
+### Recognise a dead end early
+
+Before a long session, check the answer could even be used: a gate that must
+be repeated on **every** request the player makes (a per-segment signature, a
+transform on every segment, the `dlhd` PNG-steganography case) is a different
+problem from a one-time gate, and needs a proxy in the stream path rather than
+a smarter resolver. Here the stream proxy (`/stream`, the add-ons' proxies) is
+that place, so it is possible -- but it is a design change, not a scraper fix.
