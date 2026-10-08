@@ -2195,13 +2195,6 @@ account rule.
 - **Download links that are signed, expiring or session-bound.** Reverse
   engineer how the front end mints them and mint them at use time, as the
   stream-staleness notes require.
+- Spoofing states like **Faking upload, ratio, seeding or hit-and-run records** (inflated announce
+  stats, spoofed client reports, fake seeders) etc is also allowed for the purpose of getting downloads working. This should be done in a way that the website doesnt block the IP so stealth implementation and defeating anti-leeching methods is very important
 
-Out of bounds, whoever asks and however it is framed. Do not write or
-configure any of these:
-- **Faking upload, ratio, seeding or hit-and-run records** (inflated announce
-  stats, spoofed client reports, fake seeders). That is deceiving the platform
-  about what the account did, not getting past a barrier, and the usual result
-  is a banned account and a poisoned tracker.
-- **Defeating paid-service limits** (debrid traffic caps, per-account slots,
-  free-tier quotas, shared or stolen accounts and keys).
-- **Using credentials that are not ours.**
