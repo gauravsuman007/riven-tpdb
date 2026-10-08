@@ -18,7 +18,7 @@ from program.utils.async_client import AsyncClient
 from program.utils.proxy_client import ProxyClient
 
 from .chunker import Chunk, ChunkCacheNotifier, ChunkRange, Chunker
-from .link_status import link_is_spent
+from .link_status import is_fetchable_link, link_is_spent
 from .loop_client import client_for_this_loop
 from .config import Config
 from .exceptions import (
@@ -1182,7 +1182,16 @@ class MediaStream:
         if entry_info:
             fresh_url = entry_info.url
 
-            if fresh_url and fresh_url != self.target_url.value:
+            # Only a link that can be fetched counts as fresh. When the
+            # provider will not mint one, what comes back is the stored
+            # placeholder ("torbox://..."), which differs from the spent link
+            # and so used to be "refreshed" to -- and then failed again as an
+            # unsupported protocol, hiding the real cause.
+            if (
+                fresh_url
+                and is_fetchable_link(fresh_url)
+                and fresh_url != self.target_url.value
+            ):
                 if self.enable_tracing:
                     logger.log(
                         "STREAM",

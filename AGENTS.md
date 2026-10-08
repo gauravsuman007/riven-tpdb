@@ -923,6 +923,12 @@ stack is a full checkout at `/home/hellonfire/Server/riven-tpdb`.
   through the API, which re-mints on any 4xx but 429. The rule is now one
   import-free set, `services/streaming/link_status.py` (400, 401, 404, 410,
   503); 403 and 429 still back off without minting. Test: `test_link_status.py`.
+- A re-mint the provider refuses hands back the stored placeholder
+  (`torbox://...`), which the VFS used to accept as "fresh" because it differed
+  from the spent link, then fail on as an unsupported protocol. Only an
+  http(s) link counts now (`is_fetchable_link`). Seen on item 12 (Alpha Male,
+  `Scene_02.mp4`), whose torrent TorBox will not mint at all -- the API path
+  hangs on it too; that title needs re-downloading, not code.
 - `_refresh_download_url` now runs its DB read + provider call through
   `trio.to_thread`, like `_get_stream` already did; on the loop it stalled
   every other read of the mount.

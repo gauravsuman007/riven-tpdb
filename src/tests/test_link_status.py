@@ -38,9 +38,15 @@ def test_rate_limits_and_refusals_are_not():
         assert not link_status.link_is_spent(status), status
 
 
+def test_a_placeholder_is_not_a_fresh_link():
+    assert not link_status.is_fetchable_link("torbox://12345/67")
+    assert link_status.is_fetchable_link("https://nexus-1.tb-cdn.st/dld/x?token=y")
+
+
 def test_the_vfs_uses_the_rule():
     source = (SRC / "program/services/streaming/media_stream.py").read_text()
     assert "link_is_spent(status_code)" in source
+    assert "is_fetchable_link(fresh_url)" in source
     assert "trio.to_thread.run_sync" in source.split("async def _refresh_download_url")[1].split("async def ")[0]
 
 

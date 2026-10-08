@@ -22,3 +22,14 @@ def link_is_spent(status_code: int) -> bool:
     """True when a fresh link for the same file is worth one retry."""
 
     return status_code in SPENT_LINK_STATUSES
+
+
+def is_fetchable_link(url: str) -> bool:
+    """An http(s) URL, not a provider placeholder such as "torbox://...".
+
+    Providers that mint links per request store a placeholder in its place;
+    it is what a re-mint hands back when the provider refused, and it can
+    never be fetched.
+    """
+
+    return url.startswith(("https://", "http://"))
