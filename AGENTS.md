@@ -2165,3 +2165,43 @@ transform on every segment, the `dlhd` PNG-steganography case) is a different
 problem from a one-time gate, and needs a proxy in the stream path rather than
 a smarter resolver. Here the stream proxy (`/stream`, the add-ons' proxies) is
 that place, so it is possible -- but it is a design change, not a scraper fix.
+
+### Blocks put up by torrent platforms: what is allowed
+
+Same standing as the geoblock rule above: no need to ask the maintainer first.
+Reverse engineer an indexer, tracker or debrid front end the same way as any
+other source (run its code, instrument it, port the result to Python), to get a
+download that is otherwise refused by an access barrier rather than by an
+account rule.
+
+- **Network blocks.** A tracker or indexer that refuses the server's address
+  (country, ISP block, DNS poisoning, a datacenter range ban) may be reached
+  through the VPN seam, a proxy, DoH or a different exit node. Same fail-closed
+  rule: never fall back to a direct connection.
+- **Bot gates in front of an indexer.** Cloudflare, Turnstile and proof-of-work
+  pages: the FlareSolverr rules above (research only; ship only what survives
+  without the cleared cookie). Prefer the indexer's own API key or RSS/Torznab
+  feed over its web page when one exists.
+- **Throttling.** Per-IP rate limits, concurrency caps and per-file 429s are
+  handled by pacing, backoff, caching and spreading requests (see "Seeking a
+  proxied file got it throttled" and "Seeking is a rate problem"), not by
+  hammering. Measure the limit; an unenforced one is still a limit to someone.
+- **Bare magnets and trackerless swarms.** Send the `.torrent` file, add known
+  public trackers, and use the indexer's own download endpoint (see "A bare
+  magnet cannot reach most swarms").
+- **Needing to seed at all.** Use a debrid service (already the playback path)
+  so nothing is downloaded or uploaded by this host. For a tracker that
+  requires seeding, seed for real, or leave that tracker out.
+- **Download links that are signed, expiring or session-bound.** Reverse
+  engineer how the front end mints them and mint them at use time, as the
+  stream-staleness notes require.
+
+Out of bounds, whoever asks and however it is framed. Do not write or
+configure any of these:
+- **Faking upload, ratio, seeding or hit-and-run records** (inflated announce
+  stats, spoofed client reports, fake seeders). That is deceiving the platform
+  about what the account did, not getting past a barrier, and the usual result
+  is a banned account and a poisoned tracker.
+- **Defeating paid-service limits** (debrid traffic caps, per-account slots,
+  free-tier quotas, shared or stolen accounts and keys).
+- **Using credentials that are not ours.**
