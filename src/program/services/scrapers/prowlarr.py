@@ -92,6 +92,33 @@ class ScrapeErrorResponse(BaseModel):
 ANIME_ONLY_INDEXERS = ("Nyaa.si", "SubsPlease", "Anidub", "Anidex")
 
 
+def studio_query(item: MediaItem) -> str | None:
+    """The title qualified by its studio, for an adult movie that has one.
+
+    Adult titles are often ordinary words, and every indexer caps what one
+    search returns (PornoLab at 50, most others at 100). Searched bare,
+    "Drive" (Deeper, 2019) drew 482 releases about sex drives, taxi drivers
+    and Big Butts Drive Me Nuts; the film's own 1080p and 720p packs were not
+    among them, and the only copy that survived was a 480p DVDRip. "Drive
+    Deeper" finds them at the top. The bare search still runs, because plenty
+    of releases omit the studio.
+
+    TPDB writes compound studios as "Deeper/Pulse"; release names carry the
+    first part, so only that is used.
+    """
+
+    if not isinstance(item, Movie) or not item.is_adult:
+        return None
+
+    studio = (getattr(item, "site_name", None) or "").split("/")[0].strip()
+    title = (item.title or "").strip()
+
+    if not studio or not title or studio.lower() in title.lower():
+        return None
+
+    return f"{title} {studio}"
+
+
 class Prowlarr(ScraperService[ProwlarrConfig]):
     """Scraper for `Prowlarr`"""
 
@@ -545,6 +572,41 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
             return {}
 
         data = ScrapeResponse.model_validate({"items": response.json()}).items
+
+        # A second, studio-qualified search for adult titles. See
+        # `studio_query` for why the bare title is not enough. A failure here
+        # costs only the extra results: the indexer already answered once.
+        if extra_query := studio_query(item):
+            try:
+                extra = self.session.get(
+                    "/search",
+                    params=params.model_copy(update={"query": extra_query}).model_dump(),
+                    timeout=self.timeout,
+                    headers=self.headers,
+                )
+
+                if extra.ok:
+                    # These go FIRST. Releases without an infohash are fetched
+                    # in this order inside a fixed time budget, and Prowlarr
+                    # serialises some indexers' downloads (PornoLab: one per
+                    # ~2s, so ~15 per 30s budget). Appended, the studio
+                    # matches were exactly the ones left unresolved. Both
+                    # searches overlap, so duplicates are dropped too: each
+                    # one would cost a fetch.
+                    studio_hits = ScrapeResponse.model_validate(
+                        {"items": extra.json()}
+                    ).items
+                    seen = {r.guid or r.download_url or r.title for r in studio_hits}
+                    data = studio_hits + [
+                        r
+                        for r in data
+                        if (r.guid or r.download_url or r.title) not in seen
+                    ]
+            except Exception as e:
+                logger.debug(
+                    f"Studio search '{extra_query}' failed on {indexer.name}: {e}"
+                )
+
         streams = dict[str, ScrapeResult]()
 
         def described(release: ReleaseResource, title: str) -> ScrapeResult:

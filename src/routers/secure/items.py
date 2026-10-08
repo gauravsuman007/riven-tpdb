@@ -2477,6 +2477,12 @@ async def reindex_item(
                 bubble_parents=True,
             )
 
+            # apply_item_mutation leaves the commit to its caller, and this
+            # was the one caller that never made it: every reindex logged
+            # success and wrote nothing. Found on "Drive", which had been
+            # indexed from a studio-less brochure row and stayed that way.
+            session.commit()
+
             logger.info(f"Successfully re-indexed {item.log_string}")
 
             di[Program].em.add_event(Event("RetryItem", item.id))

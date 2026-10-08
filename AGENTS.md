@@ -1080,6 +1080,39 @@ toolbar.
 - Toggling the checkbox RE-SCRAPES. The rejected set is built server-side and
   was never sent, so there is nothing on screen to filter.
 
+## Prowlarr searches an adult movie twice: bare title, then title + studio
+`studio_query()` in `scrapers/prowlarr.py`. Investigated on "Drive" (Deeper,
+2019), which only ever got a 480p DVDRip.
+
+- **The filters were not the cause.** `include_filtered=true` showed 170
+  rejects, every one a genuinely different release. Check that first; it is
+  cheap and it rules out the matcher.
+- **A common-word title drowns.** Bare "Drive" returned 482 releases across the
+  indexers, and each one caps a search (PornoLab 50, most others 100), so the
+  film's 1080p WEB-DL and 720p VOD packs were cut off the end. "Drive Deeper"
+  returns them first. The bare search still runs: plenty of releases omit
+  the studio.
+- **The studio results are fetched FIRST.** Releases without an infohash are
+  resolved in list order inside `infohash_fetch_timeout` (30s), and Prowlarr
+  serialises PornoLab downloads at ~2s each, so only ~15 fit. Appended, the
+  studio results were exactly the ones that timed out.
+- **PornoLab may be refusing downloads, and that looks like a timeout.**
+  On 2026-10-08 nearly every `dl.php` fetch returned a ~50 KB HTML page
+  (Prowlarr logs `Invalid torrent file contents` / HTTP 500) while search
+  worked fine. That is the account (download limit, ratio or session), not
+  this code, and nothing in Riven's log says so: look in
+  `/config/logs/prowlarr.debug.txt` for `Downloaded for release finished
+  (5xxxx bytes`.
+- **No studio, no second search.** The item's `site_name` is the only input.
+  Two titles (Drive, Natural Beauties) had been indexed from a studio-less
+  Adult Empire brochure row, which is also why the matcher could only weigh
+  title and year for them.
+- TRAP, fixed alongside: **`POST /items/reindex` never committed.**
+  `apply_item_mutation` leaves the commit to its caller, and reindex was the
+  only caller that skipped it, so it logged "Successfully re-indexed" and
+  wrote nothing. Any repair that "used reindex and it didn't help" predates
+  this fix and is worth retrying.
+
 ## Multi-part playback: two bugs, both outside the playlist code
 The playlist feature below was correct; these were URLs that forgot the part.
 
