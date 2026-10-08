@@ -916,6 +916,17 @@ stack is a full checkout at `/home/hellonfire/Server/riven-tpdb`.
   lifespan clients in `di`. `src/tests/test_loop_client.py` reproduces the
   failure with real httpx/httpcore/trio against a local server.
 
+## The VFS re-mints a spent link on 400 (TorBox)
+- TorBox answers an expired `/dld/` link with 400, not 404/410. The VFS only
+  re-minted on 404/410/503, so every file whose stored link had aged out was
+  an I/O error on the mount ("Unexpected HTTP 400"), while the same file played
+  through the API, which re-mints on any 4xx but 429. The rule is now one
+  import-free set, `services/streaming/link_status.py` (400, 401, 404, 410,
+  503); 403 and 429 still back off without minting. Test: `test_link_status.py`.
+- `_refresh_download_url` now runs its DB read + provider call through
+  `trio.to_thread`, like `_get_stream` already did; on the loop it stalled
+  every other read of the mount.
+
 ## Multi-file releases (playlists)
 - A scene compilation arrives as ONE torrent holding five or six separate
   scenes, each a `MediaEntry` against the same title. Playback used to resolve

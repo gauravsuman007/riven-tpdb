@@ -18,6 +18,7 @@ from program.utils.async_client import AsyncClient
 from program.utils.proxy_client import ProxyClient
 
 from .chunker import Chunk, ChunkCacheNotifier, ChunkRange, Chunker
+from .link_status import link_is_spent
 from .loop_client import client_for_this_loop
 from .config import Config
 from .exceptions import (
@@ -863,8 +864,9 @@ class MediaStream:
                         continue
 
                     raise DebridServiceForbiddenException(provider=self.provider) from e
-                elif status_code in (HTTPStatus.NOT_FOUND, HTTPStatus.GONE, HTTPStatus.SERVICE_UNAVAILABLE):
-                    # File can't be found at this URL; try refreshing the URL once
+                elif link_is_spent(status_code):
+                    # The link is spent (TorBox says so with a 400); mint a
+                    # fresh one once. See link_status.py.
                     if attempt == 0:
                         has_fresh_url = await self._refresh_download_url()
 
@@ -1164,10 +1166,17 @@ class MediaStream:
 
         from program.services.filesystem.vfs import VFSDatabase
 
-        # Query database by original_filename and force unrestrict
-        entry_info = di[VFSDatabase].get_entry_by_original_filename(
-            original_filename=self.file_metadata.original_filename,
-            force_resolve=True,
+        # Query database by original_filename and force unrestrict. In a
+        # worker thread, as _get_stream does: this is a database read and a
+        # provider API call, and on the trio loop it stalled every other read
+        # of the mount while it ran.
+        vfs_db = di[VFSDatabase]
+        original_filename = self.file_metadata.original_filename
+        entry_info = await trio.to_thread.run_sync(
+            lambda: vfs_db.get_entry_by_original_filename(
+                original_filename=original_filename,
+                force_resolve=True,
+            )
         )
 
         if entry_info:
