@@ -1103,6 +1103,16 @@ toolbar.
   this code, and nothing in Riven's log says so: look in
   `/config/logs/prowlarr.debug.txt` for `Downloaded for release finished
   (5xxxx bytes`.
+- **The real cause was the daily quota, and we were burning it.** PornoLab
+  allows 5 `.torrent` downloads per account per day (`dl.php` then answers an
+  HTML "limit reached" page; it resets, and works again the next day). Every
+  scrape fetched dozens. Tried 2026-10-08 and ruled out: a magnet/infohash
+  Prowlarr definition -- the topic page carries no magnet and no hash, so
+  `dl.php` is the only source; and faking ratio/seeding would not lift a
+  download-count cap. `scrapers/download_quota.py` now caches infohash by
+  release guid (persisted in `data/prowlarr_downloads.json`), skips 0-seeder
+  releases, and holds a rolling 24h budget of 4 (one kept for manual use) for
+  indexers listed in `DAILY_DOWNLOAD_LIMITS`. A refused fetch empties the day.
 - **No studio, no second search.** The item's `site_name` is the only input.
   Two titles (Drive, Natural Beauties) had been indexed from a studio-less
   Adult Empire brochure row, which is also why the matcher could only weigh

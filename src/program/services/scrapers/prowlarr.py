@@ -10,6 +10,7 @@ from requests import ReadTimeout, RequestException
 
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.services.scrapers.base import ScraperService
+from program.services.scrapers.download_quota import ledger
 from program.services.scrapers.results import ScrapeResult
 from program.services.scrapers.categories import is_adult_category, select_category_ids
 from program.settings import settings_manager
@@ -653,6 +654,31 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                 # We already have an infohash, add it directly
                 streams[infohash] = described(torrent, title)
 
+        # A tracker that caps .torrent downloads per day (PornoLab: 5) cannot
+        # afford one fetch per result. Answer what the ledger already knows,
+        # then spend the remaining budget on releases somebody is seeding.
+        budget_left = ledger.remaining(indexer.name)
+
+        if budget_left is not None and urls_to_fetch:
+            unresolved = list[tuple[ReleaseResource, str]]()
+
+            for torrent, title in urls_to_fetch:
+                if cached := ledger.infohash(torrent.guid):
+                    streams[cached] = described(torrent, title)
+                else:
+                    unresolved.append((torrent, title))
+
+            # Order is kept: studio matches were put first on purpose.
+            alive = [(t, n) for t, n in unresolved if t.seeders != 0]
+            urls_to_fetch = alive[:budget_left]
+            ledger.spend(indexer.name, len(urls_to_fetch))
+
+            logger.debug(
+                f"{indexer.name} caps daily downloads: {len(streams)} cached, "
+                f"{len(urls_to_fetch)} fetched, "
+                f"{len(unresolved) - len(urls_to_fetch)} skipped for {item.log_string}"
+            )
+
         # Fetch URLs in parallel.
         #
         # These are IO-bound, so the worker count is what decides how many
@@ -707,6 +733,13 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                             infohash = future.result()
                             if infohash:
                                 streams[infohash] = described(torrent, title)
+
+                                if budget_left is not None:
+                                    ledger.remember(torrent.guid, infohash)
+                            elif budget_left is not None:
+                                # Refused: the tracker's own count says the day's
+                                # quota is spent, whatever ours said.
+                                ledger.exhaust(indexer.name)
                         except Exception as e:
                             logger.debug(
                                 f"Failed to get infohash from downloadUrl for {title}: {e}"
