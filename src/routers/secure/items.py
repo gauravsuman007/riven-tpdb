@@ -1792,30 +1792,30 @@ async def get_item_streams(
             .scalar_one_or_none()
         )
 
-    if not item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Item not found"
+        if not item:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Item not found"
+            )
+
+        downloaded_hashes = {
+            entry.stream_infohash
+            for entry in item.filesystem_entries
+            if getattr(entry, "stream_infohash", None)
+        }
+        active_hash = item.active_stream.infohash if item.active_stream else None
+
+        def _annotate(stream: Stream) -> dict[str, Any]:
+            data = stream.to_dict()
+            data["is_active"] = stream.infohash == active_hash
+            data["is_downloaded"] = stream.infohash in downloaded_hashes
+            data["is_downloading"] = stream.infohash == item.downloading_stream_hash
+            return data
+
+        return StreamsResponse(
+            message=f"Retrieved streams for item {item_id}",
+            streams=[_annotate(stream) for stream in item.streams],
+            blacklisted_streams=[stream.to_dict() for stream in item.blacklisted_streams],
         )
-
-    downloaded_hashes = {
-        entry.stream_infohash
-        for entry in item.filesystem_entries
-        if getattr(entry, "stream_infohash", None)
-    }
-    active_hash = item.active_stream.infohash if item.active_stream else None
-
-    def _annotate(stream: Stream) -> dict[str, Any]:
-        data = stream.to_dict()
-        data["is_active"] = stream.infohash == active_hash
-        data["is_downloaded"] = stream.infohash in downloaded_hashes
-        data["is_downloading"] = stream.infohash == item.downloading_stream_hash
-        return data
-
-    return StreamsResponse(
-        message=f"Retrieved streams for item {item_id}",
-        streams=[_annotate(stream) for stream in item.streams],
-        blacklisted_streams=[stream.to_dict() for stream in item.blacklisted_streams],
-    )
 
 
 def _clear_download(item: MediaItem) -> None:
