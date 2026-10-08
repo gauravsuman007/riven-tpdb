@@ -898,6 +898,24 @@ stack is a full checkout at `/home/hellonfire/Server/riven-tpdb`.
   results never wait behind it. `allSettled`, because the add-on is optional
   and an empty studio directory is a normal state, not an error.
 
+## One HTTP client per event loop (direct streaming 502'd for every title)
+- Symptom: every `/stream/file/{id}` answered 502 ("Failed to proxy stream" in
+  the frontend) and the log said `Failed to connect to upstream ...: must be
+  called from async context`, for every CDN link, while remux, `/direct` and
+  `playback_info` all worked. Found 2026-10-08 right after a restart.
+- Cause: the API (asyncio) and the VFS (pyfuse3, trio, own thread) shared ONE
+  `httpx.AsyncClient` from `di`. httpcore creates the pool lock lazily for the
+  async library it detects on first use and keeps it, so whichever loop
+  requested first broke the pool for the other. A media server scanning the
+  mount after a restart is enough to make the VFS first.
+- TRAP: the `sniffio.current_async_library_cvar.set("asyncio")` override in
+  `AsyncClient.send` / `ProxyClient.send` looks like it handles this. It does
+  not: sniffio reads trio's per-THREAD marker before the context variable.
+- Fix: `services/streaming/loop_client.py` -- `MediaStream` takes its clients
+  from `client_for_this_loop(...)`, one per thread and kind; the API keeps the
+  lifespan clients in `di`. `src/tests/test_loop_client.py` reproduces the
+  failure with real httpx/httpcore/trio against a local server.
+
 ## Multi-file releases (playlists)
 - A scene compilation arrives as ONE torrent holding five or six separate
   scenes, each a `MediaEntry` against the same title. Playback used to resolve

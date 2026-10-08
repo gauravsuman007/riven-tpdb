@@ -36,6 +36,11 @@ class ProxyClient(httpx.AsyncClient):
         This override ensures that sniffio reports 'asyncio' as the current
         async library during the request, preventing runtime conflicts when
         trio is also imported in the process (e.g., by pyfuse3 for VFS).
+
+        It does NOT make one client safe to share with the VFS's trio loop:
+        sniffio reads trio's per-thread marker before this variable, and the
+        pool keeps whichever lock it was first used with. The VFS has its own
+        clients for that reason -- see services/streaming/loop_client.py.
         """
         token = sniffio.current_async_library_cvar.set("asyncio")
         try:

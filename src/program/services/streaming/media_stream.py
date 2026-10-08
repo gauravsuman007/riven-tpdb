@@ -18,6 +18,7 @@ from program.utils.async_client import AsyncClient
 from program.utils.proxy_client import ProxyClient
 
 from .chunker import Chunk, ChunkCacheNotifier, ChunkRange, Chunker
+from .loop_client import client_for_this_loop
 from .config import Config
 from .exceptions import (
     CacheDataNotFoundException,
@@ -136,14 +137,19 @@ class MediaStream:
                 "Cache thrashing may occur with concurrent reads, causing poor performance."
             )
 
-        # Use proxy client if provider requires it
-        if (
-            provider in PROXY_REQUIRED_PROVIDERS
-            and settings_manager.settings.downloaders.proxy_url
-        ):
-            self.async_client = di[ProxyClient]
+        # Use proxy client if provider requires it.
+        #
+        # The VFS's OWN clients, never the API's from `di`: this runs on trio
+        # and the API on asyncio, and a pool first used by one loop is broken
+        # for the other -- see loop_client.py for the 502s that caused.
+        proxy_url = settings_manager.settings.downloaders.proxy_url
+
+        if provider in PROXY_REQUIRED_PROVIDERS and proxy_url:
+            self.async_client = client_for_this_loop(
+                "proxy", lambda: ProxyClient(proxy_url=proxy_url)
+            )
         else:
-            self.async_client = di[AsyncClient]
+            self.async_client = client_for_this_loop("direct", AsyncClient)
 
     def __repr__(self) -> str:
         return (
