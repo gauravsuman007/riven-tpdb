@@ -485,6 +485,30 @@ class EventManager:
 
         return any(event.item_id == _id for event in self._running_events)
 
+    def bring_forward(self, item_id: int) -> bool:
+        """Make an item's waiting event due now instead of at its ``run_at``.
+
+        An item parked for a later re-check (a debrid fetch polled every few
+        minutes) is "already queued", so ``add_event`` refuses a second event
+        for it. A manual pick pinned during that wait was therefore ignored
+        until the poll came round. Pulling the existing event forward gets the
+        pick acted on at once without queuing a duplicate.
+
+        Returns True if a waiting event was moved. A job that is already
+        running is not touched: it re-reads the item when it next schedules.
+        """
+
+        now = utcnow()
+        moved = False
+
+        with self.mutex:
+            for event in self._queued_events:
+                if event.item_id == item_id and event.run_at > now:
+                    event.run_at = now
+                    moved = True
+
+        return moved
+
     def add_event(self, event: Event) -> bool:
         """
         Adds an event to the queue if it is not already present in the queue or running events.

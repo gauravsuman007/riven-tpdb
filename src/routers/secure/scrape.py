@@ -1181,6 +1181,17 @@ def queue_release(
     else:
         queued = di[Program].em.add_item(item, service="Manual")
 
+    if not queued and already_in_library and di[Program].em.bring_forward(resolved_id):
+        # The item was parked on a debrid poll (up to 10 minutes away), which
+        # made it "already queued" and the pick wait for the poll to come
+        # round. It is due now instead.
+        return QueueReleaseResponse(
+            message=f"Queued {title}. It was waiting on its next check; that check is now.",
+            item_id=resolved_id,
+            infohash=infohash,
+            cached=False,
+        )
+
     if not queued:
         # Reported rather than swallowed. A debug line claiming "the pick still
         # stands" behind a success message is how this stayed invisible.
