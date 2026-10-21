@@ -13,6 +13,7 @@ CDN URL on demand. That is exactly the contract the VFS wants -- it calls
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -34,6 +35,7 @@ from program.settings import settings_manager
 from program.utils import get_version
 from program.utils.request import CircuitBreakerOpen, SmartResponse, SmartSession
 
+from . import torbox_maintenance as maintenance
 from .shared import DownloaderBase, premium_days_left
 
 # Scheme for the synthetic reference stored as a file's download_url.
@@ -253,13 +255,15 @@ class TorBoxDownloader(DownloaderBase):
 
         body = response.data
 
-        found = (
-            body.get("detail")
-            if isinstance(body, dict)
-            else getattr(body, "detail", None)
-        )
+        # TorBox is inconsistent about which member carries the sentence: for
+        # some errors `detail` does ("Download already queued."), for others
+        # `error` does and `detail` is just a code ("NOT_OWNER").
+        parts = [
+            body.get(key) if isinstance(body, dict) else getattr(body, key, None)
+            for key in ("error", "detail")
+        ]
 
-        return str(found) if found else ""
+        return " - ".join(str(part) for part in parts if part)
 
     @staticmethod
     def _payload(response: SmartResponse):
@@ -439,6 +443,10 @@ class TorBoxDownloader(DownloaderBase):
 
         assert self.api
 
+        # A new download is about to need a slot: clear out what is only
+        # holding one.
+        self.maintain()
+
         payload = None
 
         if download_url:
@@ -615,7 +623,186 @@ class TorBoxDownloader(DownloaderBase):
                 f"finished torrent(s) to make room (files kept)."
             )
 
-        return stopped
+            return stopped
+
+        return self._pause_stalled_for_room()
+
+    # ------------------------------------------------------------ maintenance
+
+    MAINTENANCE_EVERY = 120.0  # seconds between passes unless a slot is needed
+
+    def _maintenance_state(self) -> maintenance.State:
+        if getattr(self, "_maint_state", None) is None:
+            from program.utils import data_dir_path
+
+            self._maint_state = maintenance.State.load(
+                data_dir_path / "torbox_maintenance.json"
+            )
+
+        return self._maint_state
+
+    def _plain_torrents(self) -> list[dict[str, Any]] | None:
+        assert self.api
+
+        response = self.api.session.get(
+            "torrents/mylist", params={"bypass_cache": "true"}
+        )
+
+        self._maybe_backoff(response)
+
+        if not response.ok:
+            return None
+
+        data = self._payload(response)
+
+        return [self._to_plain(t) for t in data] if isinstance(data, list) else None
+
+    def _control(self, torrent_id: int | str, operation: str) -> tuple[bool, str]:
+        """One ``controltorrent`` call; never raises. Returns (ok, why not)."""
+
+        assert self.api
+
+        try:
+            response = self.api.session.post(
+                "torrents/controltorrent",
+                json={"torrent_id": torrent_id, "operation": operation},
+            )
+
+            if response.ok:
+                return True, ""
+
+            return False, self._handle_error(response)
+        except Exception as exc:
+            return False, str(exc)
+
+    def maintain(self, need_slot: bool = False) -> None:
+        """Delete dead torrents, stop long-stalled ones, resume paused ones.
+
+        Runs when a download is requested and when one is polled, never on a
+        timer of its own. Throttled, because the poll path is frequent; a
+        caller that needs a slot right now skips the throttle. Never raises:
+        housekeeping must not be what fails a download.
+        """
+
+        now_mono = time.monotonic()
+
+        if not need_slot and now_mono - getattr(self, "_maint_at", -1e9) < self.MAINTENANCE_EVERY:
+            return
+
+        self._maint_at = now_mono
+
+        try:
+            torrents = self._plain_torrents()
+
+            if torrents is None:
+                return
+
+            now = datetime.now(timezone.utc)
+            state = self._maintenance_state()
+
+            state.observe(torrents, now)
+            decided = maintenance.plan(torrents, state, now)
+
+            for torrent in decided.delete:
+                ok, why = self._control(torrent["id"], "delete")
+
+                logger.log(
+                    "DEBRID",
+                    f"TorBox: removed '{str(torrent.get('name'))[:60]}' -- its metadata "
+                    f"never resolved in {int(maintenance.UNRESOLVED_AFTER.total_seconds() // 60)} minutes"
+                    if ok
+                    else f"TorBox: could not remove {torrent.get('hash')}: {why}",
+                )
+
+            for torrent in decided.stop:
+                ok, why = self._control(torrent["id"], "stop_seeding")
+
+                state.paused.pop(str(torrent.get("hash")).lower(), None)
+
+                logger.log(
+                    "DEBRID",
+                    f"TorBox: stopped '{str(torrent.get('name'))[:60]}' -- stalled for "
+                    f"{int(maintenance.STOP_AFTER.total_seconds() // 3600)}h+ (files kept)"
+                    if ok
+                    else f"TorBox: could not stop {torrent.get('hash')}: {why}",
+                )
+
+            if not need_slot and state.paused and not maintenance.in_flight(torrents):
+                self._resume_paused(torrents, state)
+
+            state.save()
+        except Exception as exc:
+            logger.warning(f"TorBox maintenance skipped: {exc}")
+
+    def _resume_paused(
+        self, torrents: list[dict[str, Any]], state: maintenance.State
+    ) -> None:
+        """Bring back what was stopped to make room, now that the room is free."""
+
+        by_hash = {str(t.get("hash") or "").lower(): t for t in torrents}
+
+        for key in list(state.paused):
+            torrent = by_hash.get(key)
+
+            if torrent is None or torrent.get("active"):
+                state.paused.pop(key, None)
+                continue
+
+            ok, why = self._control(torrent["id"], "resume")
+
+            if ok:
+                state.paused.pop(key, None)
+                logger.log("DEBRID", f"TorBox: resumed '{str(torrent.get('name'))[:60]}'")
+                continue
+
+            if "active download limit" in why.lower():
+                return
+
+            attempts = state.paused[key].get("attempts", 0) + 1
+            state.paused[key]["attempts"] = attempts
+
+            if attempts >= maintenance.MAX_RESUME_ATTEMPTS:
+                state.paused.pop(key, None)
+                logger.warning(
+                    f"TorBox would not resume '{str(torrent.get('name'))[:60]}' "
+                    f"({why}); leaving it stopped. Its files and progress are kept."
+                )
+
+    def _pause_stalled_for_room(self) -> int:
+        """Stop the longest-stalled torrent, if any has earned it; returns 1 or 0.
+
+        One at a time: a single slot is all the queued download needs, and every
+        extra stop is one more torrent to bring back later.
+        """
+
+        try:
+            torrents = self._plain_torrents() or []
+            now = datetime.now(timezone.utc)
+            state = self._maintenance_state()
+            candidates = maintenance.pause_candidates(torrents, state, now)
+
+            for torrent in candidates:
+                ok, _ = self._control(torrent["id"], "stop_seeding")
+
+                if ok:
+                    state.paused[str(torrent.get("hash")).lower()] = {
+                        "id": torrent["id"],
+                        "attempts": 0,
+                    }
+                    state.save()
+
+                    logger.log(
+                        "DEBRID",
+                        f"TorBox is full; stopped '{str(torrent.get('name'))[:60]}' "
+                        f"(stalled {int(state.stalled_for(torrent, now).total_seconds() // 3600)}h) "
+                        f"to make room. It will be resumed when there is room.",
+                    )
+
+                    return 1
+        except Exception as exc:
+            logger.warning(f"Could not stop a stalled TorBox torrent for room: {exc}")
+
+        return 0
 
     def _find_queued_id(self, infohash: str) -> int | str | None:
         """The queue id TorBox holds for this infohash, if it is queued."""
@@ -689,6 +876,10 @@ class TorBoxDownloader(DownloaderBase):
 
         if not torrent_id:
             raise TorBoxError("No torrent ID provided")
+
+        # The 10-minute poll of an uncached fetch is the natural moment to bring
+        # back anything that was stopped to make room for it.
+        self.maintain()
 
         try:
             response = self.api.session.get(

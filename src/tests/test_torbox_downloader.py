@@ -9,6 +9,7 @@ needed.
 """
 
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -73,6 +74,8 @@ def make_downloader(responses):
     dl = TorBoxDownloader.__new__(TorBoxDownloader)
     dl.key = "torbox"
     dl.api = SimpleNamespace(api_key="test-key", session=StubSession(responses))
+    # Housekeeping has its own tests; here it must not eat the stubbed replies.
+    dl._maint_at = time.monotonic()
     return dl
 
 
@@ -302,6 +305,58 @@ def _test_full_account_stops_seeding_then_starts():
     assert len(stopped) == 1 and stopped[0][2]["json"]["torrent_id"] == 1
 
 
+def _register_debrid_level():
+    # Registered by the app at start-up; absent when a test runs alone.
+    from loguru import logger
+
+    try:
+        logger.level("DEBRID")
+    except ValueError:
+        logger.level("DEBRID", no=25)
+
+
+def _test_maintain_deletes_unresolved_and_pauses_for_room():
+    from datetime import datetime, timedelta, timezone
+
+    from program.services.downloaders import torbox_maintenance as m
+
+    _register_debrid_level()
+    now = datetime.now(timezone.utc)
+    dead = {
+        "id": 1, "hash": "aa", "name": "aa", "owner": "me", "auth_id": "me",
+        "active": True, "download_finished": False, "progress": 0,
+        "download_state": "checking",
+        "created_at": (now - timedelta(minutes=9)).isoformat(),
+    }
+    slow = {
+        "id": 2, "hash": "bb", "name": "Slow", "owner": "me", "auth_id": "me",
+        "active": True, "download_finished": False, "progress": 0.5,
+        "download_state": "stalled (no seeds)",
+        "created_at": (now - timedelta(days=9)).isoformat(),
+    }
+    dl = make_downloader(
+        [
+            StubResponse({"data": [dead, slow]}),  # maintain: list
+            StubResponse({"success": True}),       # delete the dead one
+            StubResponse({"data": [slow]}),        # pause-for-room: list
+            StubResponse({"success": True}),       # stop_seeding the slow one
+        ]
+    )
+    dl._maint_state = m.State()
+    dl._maint_state.stalled_since["bb"] = (now - timedelta(hours=7)).isoformat()
+
+    dl.maintain(need_slot=True)
+    assert dl._pause_stalled_for_room() == 1
+
+    ops = [
+        (c[2]["json"]["torrent_id"], c[2]["json"]["operation"])
+        for c in dl.api.session.calls
+        if c[1] == "torrents/controltorrent"
+    ]
+    assert ops == [(1, "delete"), (2, "stop_seeding")], ops
+    assert "bb" in dl._maint_state.paused
+
+
 TESTS = [
     ("torbox: link round trip", _test_link_roundtrip),
     ("torbox: link round trip with int id", _test_link_roundtrip_int_id),
@@ -321,6 +376,7 @@ TESTS = [
     ("torbox: error carries TorBox's detail", _test_error_carries_torbox_detail),
     ("torbox: already queued is found and started", _test_already_queued_is_found_and_started),
     ("torbox: full account stops seeding then starts", _test_full_account_stops_seeding_then_starts),
+    ("torbox: maintain deletes dead and pauses stalled for room", _test_maintain_deletes_unresolved_and_pauses_for_room),
 ]
 
 
