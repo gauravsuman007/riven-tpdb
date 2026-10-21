@@ -108,6 +108,9 @@ class Stream(Base):
     #: time. The instance attribute set in `__init__` shadows it.
     filtered: ClassVar[bool] = False
     filter_reason: ClassVar[str | None] = None
+    #: A manual-scrape candidate whose infohash has not been fetched yet; see
+    #: `ScrapeResult.unresolved`. Transient, so ClassVar for the same reason.
+    unresolved: ClassVar[bool] = False
 
     def __init__(self, torrent: Torrent, result: "ScrapeResult | None" = None):
         self.raw_title = torrent.raw_title
@@ -129,6 +132,7 @@ class Stream(Base):
         # by definition not filtered out.
         self.filtered = False
         self.filter_reason = None
+        self.unresolved = False
 
         # `result` is optional so existing callers that only have a ranked
         # Torrent keep working; they simply get a stream with no indexer
@@ -140,6 +144,7 @@ class Stream(Base):
             self.indexer = result.indexer
             self.privacy = result.privacy
             self.download_url = result.download_url
+            self.unresolved = bool(getattr(result, "unresolved", False))
 
     def __hash__(self):
         return hash(self.infohash)
@@ -172,4 +177,5 @@ class Stream(Base):
             # them is fixable by waiting.
             "debrid_reachable": self.privacy in (None, "public"),
             "is_cached": self.is_cached,
+            "unresolved": self.unresolved,
         }

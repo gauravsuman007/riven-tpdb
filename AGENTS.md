@@ -1144,10 +1144,28 @@ toolbar.
   scrape fetched dozens. Tried 2026-10-08 and ruled out: a magnet/infohash
   Prowlarr definition -- the topic page carries no magnet and no hash, so
   `dl.php` is the only source; and faking ratio/seeding would not lift a
-  download-count cap. `scrapers/download_quota.py` now caches infohash by
-  release guid (persisted in `data/prowlarr_downloads.json`), skips 0-seeder
-  releases, and holds a rolling 24h budget of 4 (one kept for manual use) for
-  indexers listed in `DAILY_DOWNLOAD_LIMITS`. A refused fetch empties the day.
+  download-count cap.
+- **A SEARCH NEVER SPENDS A DOWNLOAD** (owner's rule, 2026-10-21). For an
+  indexer in `download_quota.DAILY_DOWNLOAD_LIMITS`, `scrape_indexer` fetches
+  nothing: hashes already in the ledger (`data/prowlarr_downloads.json`, by
+  release guid) are used, and every other live release is listed as a
+  PLACEHOLDER candidate -- `ScrapeResult.unresolved`, keyed by
+  `pending_key(guid)` (a sha1 of the guid, hash-shaped so RTN accepts it).
+  Placeholders must never reach a debrid service. A download is spent in
+  exactly two places, both in `scrapers/pending.py`:
+  * a person picks one: `queue_release` calls `resolve_pending(manual=True)`,
+    which may use the reserved slot; the frontend skips `start_session` for
+    these because the debrid service has never heard of the placeholder;
+  * the auto-picker's best choice is one: `settle_unresolved` (called from
+    `Scraping.scrape` when not manual) fetches placeholders ranked ABOVE the
+    best resolved release, stops after one success, and drops the rest
+    unfetched. It may not use the reserve.
+  The downloaded file is kept in `data/torrent_files/` and `TorBoxDownloader.
+  _torrent_file` reads it first -- before this, a pick cost a second download
+  for the debrid upload, or was refused and fell back to a trackerless magnet
+  that a private torrent never finds peers for. The ledger is keyed by indexer
+  NAME, so renaming the indexer in Prowlarr starts a fresh (empty) count while
+  the tracker's real count carries on; a refusal re-syncs it (`exhaust`).
 - **No studio, no second search.** The item's `site_name` is the only input.
   Two titles (Drive, Natural Beauties) had been indexed from a studio-less
   Adult Empire brochure row, which is also why the matcher could only weigh

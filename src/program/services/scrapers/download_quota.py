@@ -12,6 +12,7 @@ rule; this module keeps within it rather than around it:
   can still fetch a torrent by hand.
 """
 
+import hashlib
 import json
 import threading
 import time
@@ -28,6 +29,17 @@ DAILY_DOWNLOAD_LIMITS: dict[str, int] = {"pornolab": 5}
 RESERVE = 1
 
 WINDOW_SECONDS = 24 * 3600
+
+
+def pending_key(guid: str) -> str:
+    """Stable placeholder for a release whose real infohash is not known.
+
+    40 hex characters because everything downstream validates an infohash by
+    shape. It is a hash of the guid, not of any torrent, so it must never reach
+    a debrid service -- `queue_release` swaps it for the real one first.
+    """
+
+    return hashlib.sha1(f"pending:{guid}".encode()).hexdigest()
 
 
 def daily_limit(indexer_name: str | None) -> int | None:
@@ -48,6 +60,9 @@ class DownloadLedger:
         self._lock = threading.Lock()
         self._hashes: dict[str, str] = {}
         self._spent: dict[str, list[float]] = {}
+        # Placeholder key -> what is needed to fetch the real thing. In memory
+        # only: it holds the download URL, which carries the Prowlarr API key.
+        self._pending: dict[str, dict] = {}
         self._load()
 
     def _load(self) -> None:
@@ -85,6 +100,53 @@ class DownloadLedger:
         recent = [t for t in self._spent.get(key, []) if now - t < WINDOW_SECONDS]
         self._spent[key] = recent
         return recent
+
+    def register_pending(self, key: str, **details) -> None:
+        with self._lock:
+            self._pending.pop(key, None)
+            self._pending[key] = details
+
+            while len(self._pending) > 2000:
+                self._pending.pop(next(iter(self._pending)))
+
+    def pending(self, key: str) -> dict | None:
+        with self._lock:
+            return self._pending.get(key)
+
+    def manual_remaining(self, indexer_name: str | None, now: float | None = None) -> int | None:
+        """Like `remaining`, but including the reserve kept for manual use."""
+
+        limit = daily_limit(indexer_name)
+
+        if limit is None:
+            return None
+
+        with self._lock:
+            used = len(self._recent((indexer_name or "").lower(), now or time.time()))
+
+        return max(0, limit - used)
+
+    def torrent_file(self, url: str) -> bytes | None:
+        """A .torrent already downloaded for this URL, if we kept it."""
+
+        try:
+            return self._torrent_path(url).read_bytes()
+        except OSError:
+            return None
+
+    def keep_torrent_file(self, url: str, content: bytes) -> None:
+        """Keep a downloaded .torrent so the debrid upload does not need a
+        second download, which on a capped tracker is a second slot spent."""
+
+        try:
+            path = self._torrent_path(url)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        except OSError as e:
+            logger.warning(f"Could not keep the torrent file: {e}")
+
+    def _torrent_path(self, url: str) -> Path:
+        return self.path.parent / "torrent_files" / (hashlib.sha1(url.encode()).hexdigest() + ".torrent")
 
     def remaining(self, indexer_name: str | None, now: float | None = None) -> int | None:
         """Downloads this indexer may still be asked for, or None if uncapped."""

@@ -49,6 +49,7 @@ from program.services.downloaders.models import (
 )
 from program.services.scrapers import Scraping
 from program.services.scrapers.categories import is_adult_category
+from program.services.scrapers.pending import PendingResolveError, resolve_pending
 from program.services.scrapers.prowlarr import sync_indexer_selection
 from program.services.scrapers.shared import get_ranking_overrides
 from program.settings import settings_manager
@@ -81,6 +82,9 @@ class Stream(BaseModel):
     filtered: bool = False
     #: What the matcher weighed, when it turned the release down.
     filter_reason: str | None = None
+    #: Found without an infohash and not yet downloaded: the tracker caps
+    #: .torrent downloads, so picking this release is what spends one.
+    unresolved: bool = False
 
 
 class ScrapeStreamEvent(BaseModel):
@@ -143,6 +147,9 @@ def _remember_manual_streams(streams: dict[str, ItemStream]) -> None:
             "leechers": stream.leechers,
             "size": stream.size,
             "indexer": stream.indexer,
+            "privacy": stream.privacy,
+            "download_url": stream.download_url,
+            "unresolved": stream.unresolved,
         }
 
     while len(_manual_streams) > _MANUAL_STREAM_CACHE_SIZE:
@@ -176,6 +183,8 @@ def _rebuild_stream(remembered: dict[str, Any]) -> ItemStream:
         leechers=remembered["leechers"],
         size=remembered["size"],
         indexer=remembered["indexer"],
+        privacy=remembered.get("privacy"),
+        download_url=remembered.get("download_url"),
     )
 
     stream = ItemStream(torrent, result)  # pyright: ignore[reportArgumentType]
@@ -908,6 +917,7 @@ def scrape_item(
                                         leechers=s.leechers,
                                         size=s.size,
                                         indexer=s.indexer,
+                                        unresolved=getattr(s, "unresolved", False),
                                         filtered=getattr(s, "filtered", False),
                                         filter_reason=getattr(
                                             s, "filter_reason", None
@@ -998,6 +1008,7 @@ def scrape_item(
                     size=s.size,
                     indexer=s.indexer,
                     is_cached=s.is_cached,
+                    unresolved=getattr(s, "unresolved", False),
                     filtered=getattr(s, "filtered", False),
                     filter_reason=getattr(s, "filter_reason", None),
                 )
@@ -1097,6 +1108,19 @@ def queue_release(
                     "scrape again and pick it from the fresh results."
                 ),
             )
+
+        # A release listed without a hash (PornoLab caps .torrent downloads):
+        # this pick is what spends the download. After it the release is
+        # ordinary, so everything below runs on the real infohash.
+        if remembered.get("unresolved"):
+            try:
+                real = resolve_pending(infohash, manual=True)
+            except PendingResolveError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+            remembered = {**remembered, "infohash": real, "unresolved": False}
+            _manual_streams[real] = remembered
+            infohash = real
 
         # A brochure title picked from the candidate list has never been
         # requested, so it exists only as a transient Movie built from the

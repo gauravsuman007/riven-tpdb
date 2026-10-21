@@ -49,3 +49,13 @@ class ScrapeResult:
     tracker it cannot use. Measured on a real pick: PornoLab reported 19
     seeders, TorBox found 0 and stayed at "stalled (no seeds)" indefinitely.
     """
+    unresolved: bool = False
+    """True for a release found WITHOUT an infohash that could not be fetched.
+
+    Some trackers cap how many .torrent files an account may download per day
+    (see `download_quota`), and the file is the only place their results carry
+    a hash. Such a release is still a perfectly good candidate to show, so it
+    is listed under a placeholder id and only costs a download if someone
+    picks it. Never persisted, never auto-downloaded: `parse_results` drops
+    these unless the scrape is manual.
+    """

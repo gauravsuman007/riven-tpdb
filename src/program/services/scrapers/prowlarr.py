@@ -10,7 +10,7 @@ from requests import ReadTimeout, RequestException
 
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.services.scrapers.base import ScraperService
-from program.services.scrapers.download_quota import ledger
+from program.services.scrapers.download_quota import ledger, pending_key
 from program.services.scrapers.results import ScrapeResult
 from program.services.scrapers.categories import is_adult_category, select_category_ids
 from program.settings import settings_manager
@@ -717,30 +717,28 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                 # We already have an infohash, add it directly
                 streams[infohash] = described(torrent, title)
 
-        # A tracker that caps .torrent downloads per day (PornoLab: 5) cannot
-        # afford one fetch per result. Answer what the ledger already knows,
-        # then spend the remaining budget on releases somebody is seeding.
+        # A tracker that caps .torrent downloads per day (PornoLab: 5) is
+        # never fetched from during a SEARCH: every download is a slot spent on
+        # a release nobody chose. Answer what the ledger already knows; the
+        # rest are listed as placeholder candidates below, and a download only
+        # happens when one is picked (by a person, or by the auto-picker) --
+        # see `scrapers/pending.py`.
         budget_left = ledger.remaining(indexer.name)
+        deferred = list[tuple[ReleaseResource, str]]()
 
         if budget_left is not None and urls_to_fetch:
-            unresolved = list[tuple[ReleaseResource, str]]()
-
             for torrent, title in urls_to_fetch:
                 if cached := ledger.infohash(torrent.guid):
                     streams[cached] = described(torrent, title)
-                else:
-                    unresolved.append((torrent, title))
-
-            # Order is kept: studio matches were put first on purpose.
-            alive = [(t, n) for t, n in unresolved if t.seeders != 0]
-            urls_to_fetch = alive[:budget_left]
-            ledger.spend(indexer.name, len(urls_to_fetch))
+                elif torrent.seeders != 0:
+                    deferred.append((torrent, title))
 
             logger.debug(
                 f"{indexer.name} caps daily downloads: {len(streams)} cached, "
-                f"{len(urls_to_fetch)} fetched, "
-                f"{len(unresolved) - len(urls_to_fetch)} skipped for {item.log_string}"
+                f"{len(deferred)} left unfetched for {item.log_string}"
             )
+
+            urls_to_fetch = []
 
         # Fetch URLs in parallel.
         #
@@ -826,6 +824,26 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                         )
             finally:
                 fetch_session.close()
+
+        # Whatever a capped tracker would not let us fetch is still a real
+        # release, so list it rather than pretend the search found nothing.
+        # Keyed by a placeholder, and flagged so only a MANUAL scrape ever
+        # keeps it (see `parse_results`); the hash is fetched if it is picked.
+        for torrent, title in deferred:
+            if not torrent.guid or ledger.infohash(torrent.guid) in streams:
+                continue
+
+            key = pending_key(torrent.guid)
+            ledger.register_pending(
+                key,
+                guid=torrent.guid,
+                download_url=torrent.download_url,
+                indexer=indexer.name,
+                privacy=indexer.privacy,
+            )
+            result = described(torrent, title)
+            result.unresolved = True
+            streams[key] = result
 
         logger.debug(
             f"Indexer {indexer.name} found {len(streams)} streams for {item.log_string} in {time.time() - start_time:.2f} seconds"

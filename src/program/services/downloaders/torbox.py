@@ -369,6 +369,15 @@ class TorBoxDownloader(DownloaderBase):
         not to fail the whole download.
         """
 
+        # One already downloaded when the release was picked. On a tracker
+        # that caps .torrent downloads per day, fetching it again would spend
+        # a second slot on the same file -- or be refused, and fall back to a
+        # trackerless magnet that a private torrent never finds peers for.
+        from program.services.scrapers.download_quota import ledger
+
+        if kept := ledger.torrent_file(download_url):
+            return kept
+
         try:
             response = requests.get(download_url, timeout=30, allow_redirects=True)
         except Exception as e:

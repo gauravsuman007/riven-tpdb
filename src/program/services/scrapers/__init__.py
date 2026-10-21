@@ -15,6 +15,7 @@ from program.media.state import States
 from program.media.stream import Stream
 from program.services.scrapers.base import ScraperService
 from program.services.scrapers.jackett import Jackett
+from program.services.scrapers.pending import settle_unresolved
 from program.services.scrapers.prowlarr import Prowlarr
 from program.services.scrapers.results import ScrapeResult
 from program.services.scrapers.shared import parse_results
@@ -194,6 +195,11 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
         sorted_streams = parse_results(
             item, results, manual=manual, include_filtered=include_filtered
         )
+
+        if not manual:
+            # Candidates that never had a hash exist to be looked at. Only the
+            # one the picker would choose is worth a download.
+            sorted_streams = settle_unresolved(sorted_streams)
 
         if sorted_streams and (verbose_logging and settings_manager.settings.log_level):
             top_results = list(sorted_streams.values())[:10]
