@@ -1145,27 +1145,46 @@ toolbar.
   Prowlarr definition -- the topic page carries no magnet and no hash, so
   `dl.php` is the only source; and faking ratio/seeding would not lift a
   download-count cap.
-- **A SEARCH NEVER SPENDS A DOWNLOAD** (owner's rule, 2026-10-21). For an
-  indexer in `download_quota.DAILY_DOWNLOAD_LIMITS`, `scrape_indexer` fetches
-  nothing: hashes already in the ledger (`data/prowlarr_downloads.json`, by
-  release guid) are used, and every other live release is listed as a
-  PLACEHOLDER candidate -- `ScrapeResult.unresolved`, keyed by
-  `pending_key(guid)` (a sha1 of the guid, hash-shaped so RTN accepts it).
-  Placeholders must never reach a debrid service. A download is spent in
-  exactly two places, both in `scrapers/pending.py`:
-  * a person picks one: `queue_release` calls `resolve_pending(manual=True)`,
-    which may use the reserved slot; the frontend skips `start_session` for
-    these because the debrid service has never heard of the placeholder;
-  * the auto-picker's best choice is one: `settle_unresolved` (called from
+- **A SEARCH NEVER SPENDS A DOWNLOAD** (owner's rule, 2026-10-21). For a capped
+  indexer (`quota.tracker.is_capped`), `scrape_indexer` fetches nothing: hashes
+  already in the ledger (`data/prowlarr_downloads.json`, by release guid) are
+  used, and every other live release is listed as a PLACEHOLDER candidate --
+  `ScrapeResult.unresolved`, keyed by `pending_key(guid)` (a sha1 of the guid,
+  hash-shaped so RTN accepts it). Placeholders must never reach a debrid
+  service. A download is spent in exactly two places, both in
+  `scrapers/pending.py`:
+  * a person picks one: `queue_release` calls `resolve_pending(manual=True)`;
+    the frontend skips `start_session` for these because the debrid service
+    has never heard of the placeholder;
+  * the auto-picker's best choice is one: `settle_unresolved` (from
     `Scraping.scrape` when not manual) fetches placeholders ranked ABOVE the
     best resolved release, stops after one success, and drops the rest
-    unfetched. It may not use the reserve.
+    unfetched. It keeps `quota.RESERVE` (1) slot back.
   The downloaded file is kept in `data/torrent_files/` and `TorBoxDownloader.
-  _torrent_file` reads it first -- before this, a pick cost a second download
-  for the debrid upload, or was refused and fell back to a trackerless magnet
-  that a private torrent never finds peers for. The ledger is keyed by indexer
-  NAME, so renaming the indexer in Prowlarr starts a fresh (empty) count while
-  the tracker's real count carries on; a refusal re-syncs it (`exhaust`).
+  _torrent_file` reads it first -- a pick used to cost a second download for the
+  debrid upload, or was refused and fell back to a trackerless magnet.
+- **The allowance is read live, not counted** (`scrapers/quota.py`). The PornoLab
+  sidecar adds ONE FAKE RELEASE to every Prowlarr search that includes it and
+  category 6000: title `PornoLab quota: ... left=48 limit=50 used=2 ...`,
+  `seeders`=left, `leechers`=limit, `grabs`=used, `size`=bytes downloaded.
+  `_take_quota_row` removes it before anything ranks or shows results (its
+  download link 404s), and `tracker` keeps the latest. Numbers come from the
+  numeric fields; the title is read only for `next_slot_s` and the
+  unlimited/unavailable markers. The limit is now 50/day for this account's tier,
+  not the 5 this section was first written for.
+  * Gate (`begin_grab`): left > 0 (auto needs left > RESERVE); a LOCAL
+    reservation per in-flight/just-finished grab stops a burst overshooting and
+    is dropped when a newer row already includes it; a row older than 120s is
+    re-read first.
+  * ANY failed grab pauses that indexer (5 min, doubling to 1h) and re-reads the
+    row. Prowlarr's status for a sidecar 429 is unconfirmed and not parsed.
+  * "Unavailable" (cookies lapsed in Prowlarr) allows one cautious attempt per 5
+    min; `GET /scrape/indexers` reports `quota.unavailable_since` -- alert on it.
+  * TRAP: a NONSENSE query returns no row at all (the sidecar only adds it when
+    the tracker search returned results), so the refresh probe is the word `xxx`
+    (`quota.PROBE_QUERY`). Its releases are discarded.
+  * Not visible from here: downloads made elsewhere with the account, and group
+    membership (unlimited on the site). Hence the reserve slot.
 - **No studio, no second search.** The item's `site_name` is the only input.
   Two titles (Drive, Natural Beauties) had been indexed from a studio-less
   Adult Empire brochure row, which is also why the matcher could only weigh

@@ -19,6 +19,7 @@ try:
 
     from program.services.scrapers import download_quota as dq
     from program.services.scrapers import pending
+    from program.services.scrapers import quota as q
 except ImportError as exc:  # pragma: no cover - dependency-light local runs
     print(f"SKIP: {exc}")
     sys.exit(0)
@@ -43,9 +44,18 @@ REAL = hashlib.sha1(bencodepy.encode(INFO)).hexdigest()
 FETCHES = []
 
 
-def fresh(body=TORRENT, ok=True):
+NAME = "PornoLab"
+
+
+def fresh(body=TORRENT, ok=True, left=40):
     dq.ledger = dq.DownloadLedger(Path(tempfile.mkdtemp()) / "l.json")
     pending.ledger = dq.ledger
+    pending.tracker = q.QuotaTracker()
+    pending.tracker.record(
+        NAME,
+        q.QuotaRow(left=left, limit=50, used=50 - left, downloaded_bytes=0,
+                   next_slot_s=0, unavailable=False, unlimited=False),
+    )
     FETCHES.clear()
 
     def get(url, **kw):
@@ -55,7 +65,7 @@ def fresh(body=TORRENT, ok=True):
     pending.requests = SimpleNamespace(get=get)
     key = dq.pending_key("g1")
     dq.ledger.register_pending(
-        key, guid="g1", download_url="http://x/dl", indexer="PornoLab", privacy="private"
+        key, guid="g1", download_url="http://x/dl", indexer=NAME, privacy="private"
     )
     return key
 
@@ -66,11 +76,11 @@ def stream(unresolved, key="k"):
     )
 
 
-def t_resolving_returns_the_real_hash_and_spends_one():
+def t_resolving_returns_the_real_hash_and_reserves_one():
     key = fresh()
     assert pending.resolve_pending(key, manual=True) == REAL
     assert len(FETCHES) == 1
-    assert dq.ledger.manual_remaining("PornoLab") == 4
+    assert pending.tracker.left_effective(NAME) == 39
     assert dq.ledger.infohash("g1") == REAL
 
 
@@ -87,20 +97,36 @@ def t_second_resolve_costs_nothing():
     assert len(FETCHES) == 1
 
 
-def t_refusal_empties_the_day_and_reports_it():
+def t_refusal_pauses_the_indexer_and_is_not_retried():
     key = fresh(body=b"<html>limit</html>")
     try:
         pending.resolve_pending(key, manual=True)
     except pending.PendingResolveError as e:
-        assert "quota" in str(e)
+        assert "paused" in str(e), str(e)
     else:
         raise AssertionError("expected a refusal")
-    assert dq.ledger.manual_remaining("PornoLab") == 0
+    FETCHES.clear()
+    try:
+        pending.resolve_pending(key, manual=True)
+    except pending.PendingResolveError:
+        assert not FETCHES, "retried during the pause"
+    else:
+        raise AssertionError("retried during the pause")
+
+
+def t_no_downloads_left_means_no_attempt():
+    key = fresh(left=0)
+    try:
+        pending.resolve_pending(key, manual=True)
+    except pending.PendingResolveError as e:
+        assert "0 download" in str(e), str(e)
+        assert not FETCHES
+    else:
+        raise AssertionError("fetched with none left")
 
 
 def t_auto_may_not_use_the_reserve_but_manual_may():
-    key = fresh()
-    dq.ledger.spend("PornoLab", 4)
+    key = fresh(left=1)
     try:
         pending.resolve_pending(key, manual=False)
     except pending.PendingResolveError:
@@ -124,7 +150,7 @@ def t_auto_fetches_only_the_pick_above_the_best_resolved():
     key = fresh()
     other = dq.pending_key("g2")
     dq.ledger.register_pending(
-        other, guid="g2", download_url="http://x/2", indexer="PornoLab", privacy=None
+        other, guid="g2", download_url="http://x/2", indexer=NAME, privacy=None
     )
     streams = {key: stream(True, key), other: stream(True, other), "a" * 40: stream(False, "a" * 40)}
     out = pending.settle_unresolved(streams)
@@ -140,8 +166,7 @@ def t_auto_drops_placeholders_below_a_resolved_pick():
 
 
 def t_auto_drops_the_pick_when_the_budget_is_gone():
-    key = fresh()
-    dq.ledger.spend("PornoLab", 4)
+    key = fresh(left=1)
     streams = {key: stream(True, key), "a" * 40: stream(False, "a" * 40)}
     out = pending.settle_unresolved(streams)
     assert list(out) == ["a" * 40] and not FETCHES

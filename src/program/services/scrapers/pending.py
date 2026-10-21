@@ -18,7 +18,8 @@ import requests
 from loguru import logger
 
 from program.media.stream import Stream
-from program.services.scrapers.download_quota import daily_limit, ledger
+from program.services.scrapers.download_quota import ledger
+from program.services.scrapers.quota import QuotaStop, tracker
 
 
 class PendingResolveError(Exception):
@@ -47,19 +48,27 @@ def resolve_pending(key: str, *, manual: bool) -> str:
     if known := ledger.infohash(guid):
         return known
 
-    left = ledger.manual_remaining(indexer) if manual else ledger.remaining(indexer)
+    # Already downloaded once (and kept): nothing to spend.
+    if (kept := ledger.torrent_file(url)) is not None:
+        try:
+            return hashlib.sha1(
+                bencodepy.encode(bencodepy.decode(kept)[b"info"])
+            ).hexdigest()
+        except Exception:
+            pass
 
-    if left is not None and left <= 0:
-        raise PendingResolveError(
-            f"{indexer} limits .torrent downloads per day and today's are used "
-            f"up (limit {daily_limit(indexer)}). Try again later, once the "
-            "earliest of today's downloads is more than 24 hours old."
-        )
+    # Gate on the tracker's live allowance. Anything that goes wrong after this
+    # point pauses the indexer (`end_grab(ok=False)`) rather than being retried.
+    try:
+        reservation = tracker.begin_grab(indexer, manual=manual)
+    except QuotaStop as e:
+        raise PendingResolveError(str(e)) from e
 
     try:
         response = requests.get(url, timeout=30, allow_redirects=True)
         content = response.content if response.ok else b""
     except Exception as e:
+        tracker.end_grab(indexer, reservation, ok=False)
         raise PendingResolveError(f"Could not reach {indexer}: {e}") from e
 
     try:
@@ -70,15 +79,15 @@ def resolve_pending(key: str, *, manual: bool) -> str:
             bencodepy.encode(bencodepy.decode(content)[b"info"])
         ).hexdigest()
     except Exception:
-        # The tracker answered with a page instead of a file: its own count
-        # says the day's quota is gone, whatever ours said.
-        ledger.exhaust(indexer)
+        # A page instead of a file: the tracker refused, whatever its count
+        # said. Not worth parsing why -- pause, and re-read the allowance.
+        tracker.end_grab(indexer, reservation, ok=False)
         raise PendingResolveError(
-            f"{indexer} refused the download, which means today's quota is "
-            "used up. Try again later."
+            f"{indexer} refused the download, so downloads from it are paused "
+            "for a while. Try again later."
         ) from None
 
-    ledger.spend(indexer)
+    tracker.end_grab(indexer, reservation, ok=True)
     ledger.remember(guid, infohash)
     ledger.keep_torrent_file(url, content)
 

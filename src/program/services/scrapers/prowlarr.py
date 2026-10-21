@@ -12,6 +12,12 @@ from requests import ReadTimeout, RequestException
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.services.scrapers.base import ScraperService
 from program.services.scrapers.download_quota import ledger, pending_key
+from program.services.scrapers.quota import (
+    PROBE_QUERY,
+    QuotaRow,
+    split_quota,
+    tracker,
+)
 from program.services.scrapers.results import ScrapeResult
 from program.services.scrapers.categories import is_adult_category, select_category_ids
 from program.settings import settings_manager
@@ -199,6 +205,8 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
         self.session = None
         self.last_indexer_scan = None
         self._initialize()
+
+        tracker.register_refresher(self.refresh_quota)
 
     def _create_session(self) -> SmartSession:
         """Create a session for Prowlarr"""
@@ -591,6 +599,60 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
             limit=limit,
         )
 
+    def _take_quota_row(self, indexer: Indexer, releases: list[ReleaseResource]):
+        """Remove the indexer's fake quota release, and remember what it says.
+
+        Before anything ranks or shows results: it is not a release, and its
+        download link is refused.
+        """
+
+        releases, row = split_quota(releases, indexer.name)
+
+        if row is not None:
+            tracker.record(indexer.name, row)
+
+        return releases
+
+    def refresh_quota(self, indexer_name: str) -> QuotaRow | None:
+        """Re-read an indexer's allowance with a cheap search.
+
+        The row rides along on any search that includes the indexer and the XXX
+        category, and there is no separate endpoint. The query must be a word
+        the tracker has results for: a nonsense one returns no row at all.
+        """
+
+        assert self.session
+
+        indexer = next((i for i in self.indexers if i.name == indexer_name), None)
+
+        if indexer is None:
+            return None
+
+        params = Params(
+            query=PROBE_QUERY,
+            type="search",
+            categories=[6000],
+            indexer_ids=indexer.id,
+            limit=1,
+        )
+
+        response = self.session.get(
+            "/search",
+            params=params.model_dump(),
+            timeout=self.timeout,
+            headers=self.headers,
+        )
+
+        if not response.ok:
+            return None
+
+        _, row = split_quota(
+            ScrapeResponse.model_validate({"items": response.json()}).items,
+            indexer.name,
+        )
+
+        return row
+
     def scrape_indexer(self, indexer: Indexer, item: MediaItem) -> dict[str, ScrapeResult]:
         """Scrape from a single indexer"""
 
@@ -637,6 +699,7 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
             return {}
 
         data = ScrapeResponse.model_validate({"items": response.json()}).items
+        data = self._take_quota_row(indexer, data)
 
         # A second, studio-qualified search for adult titles. See
         # `studio_query` for why the bare title is not enough. A failure here
@@ -658,9 +721,10 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                     # matches were exactly the ones left unresolved. Both
                     # searches overlap, so duplicates are dropped too: each
                     # one would cost a fetch.
-                    studio_hits = ScrapeResponse.model_validate(
-                        {"items": extra.json()}
-                    ).items
+                    studio_hits = self._take_quota_row(
+                        indexer,
+                        ScrapeResponse.model_validate({"items": extra.json()}).items,
+                    )
                     seen = {r.guid or r.download_url or r.title for r in studio_hits}
                     data = studio_hits + [
                         r
@@ -724,10 +788,10 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
         # rest are listed as placeholder candidates below, and a download only
         # happens when one is picked (by a person, or by the auto-picker) --
         # see `scrapers/pending.py`.
-        budget_left = ledger.remaining(indexer.name)
+        capped = tracker.is_capped(indexer.name)
         deferred = list[tuple[ReleaseResource, str]]()
 
-        if budget_left is not None and urls_to_fetch:
+        if capped and urls_to_fetch:
             for torrent, title in urls_to_fetch:
                 if cached := ledger.infohash(torrent.guid):
                     streams[cached] = described(torrent, title)
@@ -796,12 +860,6 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                             if infohash:
                                 streams[infohash] = described(torrent, title)
 
-                                if budget_left is not None:
-                                    ledger.remember(torrent.guid, infohash)
-                            elif budget_left is not None:
-                                # Refused: the tracker's own count says the day's
-                                # quota is spent, whatever ours said.
-                                ledger.exhaust(indexer.name)
                         except Exception as e:
                             logger.debug(
                                 f"Failed to get infohash from downloadUrl for {title}: {e}"

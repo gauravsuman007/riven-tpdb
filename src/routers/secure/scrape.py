@@ -50,6 +50,7 @@ from program.services.downloaders.models import (
 from program.services.scrapers import Scraping
 from program.services.scrapers.categories import is_adult_category
 from program.services.scrapers.pending import PendingResolveError, resolve_pending
+from program.services.scrapers.quota import tracker
 from program.services.scrapers.prowlarr import sync_indexer_selection
 from program.services.scrapers.shared import get_ranking_overrides
 from program.settings import settings_manager
@@ -1887,6 +1888,33 @@ class ProwlarrIndexer(BaseModel):
         str | None, Field(description="public, semiPrivate or private")
     ] = None
     language: Annotated[str | None, Field(description="Language it reports")] = None
+    quota: Annotated[
+        dict | None,
+        Field(
+            description="Daily .torrent download allowance, for indexers that "
+            "report one: left, limit, used, next_slot_s, unavailable, unlimited"
+        ),
+    ] = None
+
+
+def _quota_summary(name: str | None) -> dict | None:
+    """What the last quota row said, for the picker. None if it never had one."""
+
+    row = tracker.row(name)
+
+    if row is None:
+        return None
+
+    return {
+        "left": tracker.left_effective(name),
+        "limit": row.limit,
+        "used": row.used,
+        "next_slot_s": row.next_slot_s,
+        "unavailable": row.unavailable,
+        "unlimited": row.unlimited,
+        "unavailable_since": tracker.unavailable_since(name),
+        "read_at": row.fetched_at,
+    }
 
 
 def _top_level_categories(entry: dict) -> list[str]:
@@ -2016,6 +2044,7 @@ def list_prowlarr_indexers() -> ProwlarrIndexersResponse:
             ],
             privacy=entry.get("privacy"),
             language=entry.get("language"),
+            quota=_quota_summary(entry.get("name")),
         )
         for entry in payload
         if entry.get("id") is not None
