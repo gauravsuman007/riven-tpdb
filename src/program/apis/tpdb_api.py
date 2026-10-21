@@ -25,8 +25,10 @@ Endpoints used here:
 import hashlib
 import json
 import os
+import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -159,6 +161,15 @@ class TpdbMovie(_TpdbModel):
     posters: TpdbImage | None = None
 
 
+# What a 404 is stored as. TPDB takes 5-9s to say "no such record", and a uuid
+# names either a scene or a movie, so the detail page's wrong-kind probe paid
+# that on EVERY load: a 404 was the one answer that was never cached.
+_MISSING_KEY = "__tpdb_missing__"
+
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_NUMERIC_PARAM = re.compile(r"[?&]scene_id=(\d+)")
+
+
 class TpdbApi:
     """Handles ThePornDB API communication."""
 
@@ -210,6 +221,19 @@ class TpdbApi:
         # disk entry written by an earlier process can be aged consistently.
         self._memory: dict[str, tuple[float, dict[str, Any]]] = {}
         self._cache_lock = threading.Lock()
+
+        # Library titles: their responses are PINNED -- kept in their own
+        # directory, which size eviction never walks, so a title you own is
+        # never re-fetched just because the catalogue browsing pushed it out.
+        # Holds TPDB uuids and the numeric ids collection status is keyed on.
+        self.pinned: set[str] = set()
+
+        # Expired entries are served at once and refreshed here, one at a
+        # time (TPDB allows 2 requests a second for the whole process).
+        self._refreshing: set[str] = set()
+        self._refresher = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="tpdb-refresh"
+        )
         self._cache_dir: Path | None = None
 
         if self.cache_enabled and cache_dir:
@@ -238,9 +262,25 @@ class TpdbApi:
 
         return (time.time() - stored_at) <= self.cache_ttl
 
-    def _cache_path(self, url: str) -> Path:
+    def _is_pinned(self, url: str) -> bool:
+        if not self.pinned:
+            return False
+
+        ids = set(_UUID.findall(url)) | set(_NUMERIC_PARAM.findall(url))
+
+        return not ids.isdisjoint(self.pinned)
+
+    def _cache_path(self, url: str, *, pinned: bool | None = None) -> Path:
         digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
-        return self._cache_dir / f"{digest}.json"
+
+        if pinned is None:
+            pinned = self._is_pinned(url)
+
+        # A subdirectory, so `_enforce_size_limit`'s non-recursive glob never
+        # sees these and can never evict a library title's record.
+        directory = self._cache_dir / "pinned" if pinned else self._cache_dir
+
+        return directory / f"{digest}.json"
 
     def _cache_get(
         self, url: str, *, allow_stale: bool = False
@@ -269,29 +309,48 @@ class TpdbApi:
         if self._cache_dir is None:
             return None
 
-        path = self._cache_path(url)
+        # Both tiers, always. Which ids are pinned is only known once the
+        # library warmer has run, and a restart must not make a pinned answer
+        # look absent in the meantime; equally, a title pinned after it was
+        # first cached still has its answer in the shared tier until rewritten.
+        candidates = [
+            self._cache_path(url, pinned=True),
+            self._cache_path(url, pinned=False),
+        ]
+        path = candidates[0]
+
+        entry = None
+
+        for candidate in candidates:
+            try:
+                with candidate.open("r", encoding="utf-8") as handle:
+                    entry = json.load(handle)
+
+                path = candidate
+                break
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError) as exc:
+                logger.debug(f"Discarding unreadable TPDB cache entry {candidate.name}: {exc}")
+                self._discard(candidate)
+
+        if entry is None:
+            return None
 
         try:
-            with path.open("r", encoding="utf-8") as handle:
-                entry = json.load(handle)
-
             stored_at = float(entry["stored_at"])
             body = entry["body"]
-        except FileNotFoundError:
-            return None
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             # A truncated or hand-edited entry is not worth failing a page for.
             logger.debug(f"Discarding unreadable TPDB cache entry {path.name}: {exc}")
             self._discard(path)
             return None
 
-        if not self._is_fresh(stored_at):
-            # Keep the file when a stale read was asked for -- it is the only
-            # copy of the answer, and discarding it would turn the next outage
-            # into a hard failure.
-            if not allow_stale:
-                self._discard(path)
-                return None
+        if not self._is_fresh(stored_at) and not allow_stale:
+            # Kept, never discarded: an expired copy is still what `_get` serves
+            # while it refreshes in the background, and the only answer there
+            # is during an outage. Size eviction is what removes old entries.
+            return None
 
         if not isinstance(body, dict):
             self._discard(path)
@@ -330,6 +389,8 @@ class TpdbApi:
         payload = {"url": url, "stored_at": stored_at, "body": body}
 
         try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+
             # Write via a temporary file so a crash mid-write cannot leave a
             # half-written entry that every later read has to discard.
             tmp = path.with_suffix(".tmp")
@@ -406,7 +467,56 @@ class TpdbApi:
         cached = self._cache_get(url)
 
         if cached is not None:
-            return cached
+            return self._unwrap(url, cached)
+
+        # Expired but present: answer now, refresh behind the response. TPDB
+        # takes 5-15s per call, and a title record that is a few hours old is
+        # indistinguishable from a fresh one -- blocking a page on that is the
+        # slowness this exists to remove.
+        stale = self._cache_get(url, allow_stale=True)
+
+        if stale is not None:
+            self._refresh_later(url)
+            return self._unwrap(url, stale)
+
+        return self._fetch(url)
+
+    @staticmethod
+    def _unwrap(url: str, body: dict[str, Any]) -> dict[str, Any]:
+        if body.get(_MISSING_KEY):
+            raise TpdbApiError(f"TPDB has no record at {url} (cached)", status_code=404)
+
+        return body
+
+    def _refresh_later(self, url: str) -> None:
+        with self._cache_lock:
+            if url in self._refreshing:
+                return
+
+            self._refreshing.add(url)
+
+        def run() -> None:
+            try:
+                self._fetch(url)
+            except Exception as exc:
+                logger.debug(f"Background TPDB refresh of {url} failed: {exc}")
+            finally:
+                with self._cache_lock:
+                    self._refreshing.discard(url)
+
+        try:
+            self._refresher.submit(run)
+        except RuntimeError:
+            with self._cache_lock:
+                self._refreshing.discard(url)
+
+    def refresh(self, url_or_path: str) -> None:
+        """Re-fetch one entry now, ignoring the cache (used after a write)."""
+
+        self._fetch(url_or_path)
+
+    def _fetch(self, url: str) -> dict[str, Any]:
+        """The live call, which also writes the answer into the cache."""
 
         def stale_or_raise(exc: Exception) -> dict[str, Any]:
             """Fall back to an expired entry when the live call fails."""
@@ -447,8 +557,10 @@ class TpdbApi:
             )
 
             # A 404 is a real answer -- the title does not exist -- so it must
-            # propagate. Only outages fall back to stale data.
+            # propagate, and is remembered like any other answer. Only outages
+            # fall back to stale data.
             if response.status_code == 404:
+                self._cache_put(url, {_MISSING_KEY: True})
                 raise error
 
             return stale_or_raise(error)
@@ -669,17 +781,40 @@ class TpdbApi:
         )
         return self._parse_many(data, TpdbScene)
 
-    def invalidate_cache(self) -> None:
-        """Drop every cached read. Called after a write that changes them."""
+    @staticmethod
+    def _collection_derived(url: str) -> bool:
+        """Answers that change when the user's collection does."""
+
+        return url.startswith("user/collection") or "is_collected=" in url
+
+    def invalidate_cache(self, everything: bool = False) -> None:
+        """Drop the cached reads a collection write changes.
+
+        It used to drop EVERY cached read -- titles, similar lists, searches --
+        and adding to a collection syncs to TPDB automatically, so each add sent
+        every page back to TPDB's 5-15s answers. Only the collection lists and
+        collected flags actually move; ``everything`` remains for a full reset.
+        """
 
         with self._cache_lock:
-            self._memory.clear()
+            for url in [u for u in self._memory if everything or self._collection_derived(u)]:
+                self._memory.pop(url, None)
 
         if self._cache_dir is None:
             return
 
         try:
-            for path in self._cache_dir.glob("*.json"):
+            for path in [*self._cache_dir.glob("*.json"), *self._cache_dir.glob("pinned/*.json")]:
+                if not everything:
+                    try:
+                        with path.open("r", encoding="utf-8") as handle:
+                            url = str(json.load(handle).get("url") or "")
+                    except (OSError, ValueError, AttributeError):
+                        continue
+
+                    if not self._collection_derived(url):
+                        continue
+
                 self._discard(path)
         except OSError as exc:
             logger.debug(f"Could not clear TPDB cache directory: {exc}")
@@ -736,19 +871,21 @@ class TpdbApi:
                 status_code=response.status_code,
             )
 
-            # A 404 is a real answer -- the title does not exist -- so it must
-            # propagate. Only outages fall back to stale data.
-            if response.status_code == 404:
-                raise error
+            # A write has no cached answer to fall back on. This used to call
+            # a `stale_or_raise` that only exists inside `_fetch`, so any TPDB
+            # error here surfaced as a NameError.
+            raise error
 
-            return stale_or_raise(error)
-
-        # Adding invalidates every cached read: the collection lists change,
-        # `is_collected` flips, and recommendations are derived from both. A
-        # stale hit would show the title as uncollected immediately after the
-        # user collected it. Cleared after the write lands, not before, so a
-        # concurrent read cannot repopulate the old value.
+        # Adding changes the collection lists and flips `is_collected`, and
+        # recommendations are derived from both. A stale hit would show the
+        # title as uncollected immediately after the user collected it.
+        # Cleared after the write lands, not before, so a concurrent read
+        # cannot repopulate the old value.
         self.invalidate_cache()
+
+        # The answer is known: write it rather than leave the next page load to
+        # ask TPDB for it again.
+        self._cache_put(f"user/collection?{urlencode({'scene_id': numeric_id})}", {"value": True})
 
         return True
 

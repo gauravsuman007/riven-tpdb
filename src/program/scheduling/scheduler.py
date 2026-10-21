@@ -181,6 +181,12 @@ class ProgramScheduler:
                 "cron": {"day_of_week": "sun", "hour": 4, "minute": 30}
             }
 
+        # Library titles' TPDB data, fetched ahead of anyone opening them. Every
+        # half hour picks up newly added titles; existing ones cost a cache read.
+        from program.services.tpdb_warm import warm_library_tpdb
+
+        scheduled_functions[warm_library_tpdb] = {"interval": 30 * 60}
+
         # Add scheduler processing and monitoring
         scheduled_functions[self._process_scheduled_tasks] = {"interval": 60}
         scheduled_functions[self._monitor_ongoing_schedules] = {"interval": 15 * 60}
