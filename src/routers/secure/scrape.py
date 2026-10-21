@@ -48,6 +48,7 @@ from program.services.downloaders.models import (
     TorrentInfo,
 )
 from program.services.scrapers import Scraping
+from program.services.scrapers.categories import is_adult_category
 from program.services.scrapers.shared import get_ranking_overrides
 from program.settings import settings_manager
 from program.utils.request import SmartSession
@@ -1847,6 +1848,49 @@ class ProwlarrIndexer(BaseModel):
     name: Annotated[str, Field(description="Indexer name")]
     enabled: Annotated[bool, Field(description="Whether Prowlarr has it enabled")]
     protocol: Annotated[str, Field(description="usenet or torrent")]
+    categories: Annotated[
+        list[str],
+        Field(
+            description="Top-level categories it carries (XXX, Movies, TV...), "
+            "adult first"
+        ),
+    ] = []
+    tags: Annotated[
+        list[str], Field(description="Labels attached to it in Prowlarr")
+    ] = []
+    privacy: Annotated[
+        str | None, Field(description="public, semiPrivate or private")
+    ] = None
+    language: Annotated[str | None, Field(description="Language it reports")] = None
+
+
+def _top_level_categories(entry: dict) -> list[str]:
+    """The Newznab top-level categories an indexer carries, adult first.
+
+    Prowlarr's own tags are free-form labels and say nothing about content;
+    "XXX" is a category the indexer advertises. Top-level ids are the
+    thousands below 10000 (2000 Movies, 5000 TV, 6000 XXX...). Everything else
+    is the indexer's own sub-category tree, which for PornoLab is a hundred
+    Russian forum names, so it is left out.
+    """
+
+    names: list[str] = []
+
+    for category in (entry.get("capabilities") or {}).get("categories") or []:
+        category_id = category.get("id")
+        name = category.get("name")
+
+        if (
+            isinstance(category_id, int)
+            and 1000 <= category_id < 10000
+            and category_id % 1000 == 0
+            and name
+            and name not in names
+        ):
+            names.append(name)
+
+    # Stable sort: adult first, otherwise the order the indexer listed them.
+    return sorted(names, key=lambda name: not is_adult_category(name))
 
 
 class ProwlarrIndexersResponse(BaseModel):
@@ -1893,6 +1937,24 @@ def list_prowlarr_indexers() -> ProwlarrIndexersResponse:
             )
 
         payload = response.json()
+
+        # Tags come as bare ids on each indexer. Losing the labels only makes
+        # the list less informative, so this must never fail the request.
+        tag_labels: dict[int, str] = {}
+
+        try:
+            tag_response = session.get(
+                "/tag", timeout=15, headers={"X-Api-Key": settings.api_key}
+            )
+
+            if tag_response.ok:
+                tag_labels = {
+                    tag["id"]: tag["label"]
+                    for tag in tag_response.json()
+                    if tag.get("id") is not None and tag.get("label")
+                }
+        except Exception as exc:
+            logger.debug(f"Could not read Prowlarr tags: {exc}")
     except HTTPException:
         raise
     except Exception as exc:
@@ -1915,6 +1977,14 @@ def list_prowlarr_indexers() -> ProwlarrIndexersResponse:
             name=entry.get("name") or f"Indexer {entry.get('id')}",
             enabled=bool(entry.get("enable")),
             protocol=entry.get("protocol") or "unknown",
+            categories=_top_level_categories(entry),
+            tags=[
+                tag_labels[tag_id]
+                for tag_id in entry.get("tags") or []
+                if tag_id in tag_labels
+            ],
+            privacy=entry.get("privacy"),
+            language=entry.get("language"),
         )
         for entry in payload
         if entry.get("id") is not None

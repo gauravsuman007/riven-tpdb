@@ -1158,6 +1158,13 @@ toolbar.
   wrote nothing. Any repair that "used reindex and it didn't help" predates
   this fix and is worth retrying.
 
+- The indexer picker (`GET /scrape/indexers`) shows each indexer's top-level
+  categories, privacy, language and Prowlarr tags. "XXX" there is a CATEGORY the
+  indexer advertises (Newznab 6000), not a Prowlarr tag: this instance's tags are
+  unrelated labels (`flare`, `spv`). Indexer ids are NOT stable across Prowlarr
+  rebuilds -- PornoLab went from 23 to 25 -- so a saved `indexer_ids` can point at
+  nothing; check the picker after any Prowlarr change.
+
 ## Multi-part playback: two bugs, both outside the playlist code
 The playlist feature below was correct; these were URLs that forgot the part.
 
