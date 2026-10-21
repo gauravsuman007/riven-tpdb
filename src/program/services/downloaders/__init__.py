@@ -188,7 +188,10 @@ class Downloader(Runner[None, DownloaderBase]):
                     # torrent the provider has never seen, not a failure.
                     pass
                 except Exception as e:
-                    logger.debug(
+                    # Warning, not debug: at debug this was the whole of an
+                    # item that retried every ten minutes for hours and never
+                    # reached the provider, with nothing to say why.
+                    logger.warning(
                         f"Could not ask {service.key} to fetch {stream.infohash} "
                         f"for {item.log_string}: {e}"
                     )
@@ -229,6 +232,18 @@ class Downloader(Runner[None, DownloaderBase]):
                         item.blacklist_stream(stream)
                         self._uncached_since.pop(key, None)
                         self._uncached_stalled.pop(key, None)
+
+                        # A dead torrent left on the account keeps counting
+                        # against its active-download cap, and with the cap
+                        # full nothing newer can start.
+                        if torrent_id is not None:
+                            try:
+                                service.delete_torrent(torrent_id)
+                            except Exception as e:
+                                logger.warning(
+                                    f"Could not remove dead torrent {stream.infohash} "
+                                    f"from {service.key}: {e}"
+                                )
 
                         # Move on to the next candidate in this same pass
                         # rather than waiting another poll interval.

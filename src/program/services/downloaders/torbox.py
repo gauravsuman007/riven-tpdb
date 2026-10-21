@@ -212,6 +212,13 @@ class TorBoxDownloader(DownloaderBase):
 
         code = response.status_code
 
+        # TorBox reports a full account as HTTP 500 ("You have reached your
+        # active download limit of 3."). That is the plan talking, not an
+        # outage: tripping the breaker on it made the service look down for a
+        # minute at a time and stopped the caller reading the message.
+        if "active download limit" in self._detail(response).lower():
+            return
+
         if code == 429 or 500 <= code < 600:
             raise CircuitBreakerOpen("api.torbox.app")
 
@@ -229,9 +236,30 @@ class TorBoxDownloader(DownloaderBase):
             503: "[503] Service unavailable",
         }
 
-        return messages.get(
+        label = messages.get(
             response.status_code, response.reason or f"HTTP {response.status_code}"
         )
+        detail = self._detail(response)
+
+        # TorBox says what is actually wrong ("Download already queued.", "You
+        # have reached your active download limit of 3."). The fixed label alone
+        # reported every 400 as a bad torrent file, which hid a full account
+        # behind an error about the file for as long as nobody looked.
+        return f"{label}: {detail}" if detail else label
+
+    @staticmethod
+    def _detail(response: SmartResponse) -> str:
+        """TorBox's own explanation from an error envelope, or an empty string."""
+
+        body = response.data
+
+        found = (
+            body.get("detail")
+            if isinstance(body, dict)
+            else getattr(body, "detail", None)
+        )
+
+        return str(found) if found else ""
 
     @staticmethod
     def _payload(response: SmartResponse):
@@ -430,6 +458,18 @@ class TorBoxDownloader(DownloaderBase):
         self._maybe_backoff(response)
 
         if not response.ok:
+            # Added on an earlier pass and still waiting in TorBox's queue.
+            # Every retry is refused with this, so treating it as a failure
+            # meant a queued torrent was never started and never reported.
+            if (
+                response.status_code == 400
+                and "already queued" in self._detail(response).lower()
+            ):
+                queued_id = self._find_queued_id(infohash)
+
+                if queued_id is not None:
+                    return self._promote_queued(queued_id, infohash)
+
             raise TorBoxError(self._handle_error(response))
 
         data = self._payload(response)
@@ -457,19 +497,24 @@ class TorBoxDownloader(DownloaderBase):
                 # cooldown, and nothing here used to touch it -- the queue id
                 # was raised, caught, and discarded -- so a request could be
                 # accepted and then silently never download at all.
-                if self._start_queued(queued_id):
-                    started = self._find_torrent_id(infohash)
-
-                    if started is not None:
-                        return started
-
-                # Still queued: the caller's existing handling is right, it
-                # just should not be the FIRST thing tried.
-                raise TorBoxQueued(queued_id)
+                return self._promote_queued(queued_id, infohash)
 
             raise TorBoxError("No torrent ID returned by TorBox")
 
         return str(torrent_id)
+
+    def _promote_queued(self, queued_id: int | str, infohash: str) -> int | str:
+        """Start a queued torrent and return its id, or report it as queued."""
+
+        if self._start_queued(queued_id):
+            started = self._find_torrent_id(infohash)
+
+            if started is not None:
+                return started
+
+        # Still queued: the caller's existing handling is right, it just
+        # should not be the FIRST thing tried.
+        raise TorBoxQueued(queued_id)
 
     def _start_queued(self, queued_id: int | str) -> bool:
         """Ask TorBox to promote a queued torrent into a real download.
@@ -478,33 +523,123 @@ class TorBoxDownloader(DownloaderBase):
         `add_torrent`'s queued path, where the fallback (report it as queued)
         is already a correct outcome -- a failure here should cost the
         promotion, not the add.
+
+        The usual reason it is refused is the plan's cap on ACTIVE downloads
+        (3 here). A torrent that has finished still counts while it seeds, and
+        nothing here wants it to, so one is stopped to make room and the start
+        is tried once more.
         """
 
         assert self.api
 
+        freed = False
+
+        for _ in range(2):
+            try:
+                response = self.api.session.post(
+                    "queued/controlqueued",
+                    json={
+                        "queued_id": queued_id,
+                        "operation": "start",
+                        "type": "torrent",
+                    },
+                )
+
+                self._maybe_backoff(response)
+
+                if response.ok:
+                    return True
+
+                reason = self._handle_error(response)
+
+                if not freed and "active download limit" in reason.lower():
+                    freed = True
+
+                    if self._free_active_slots():
+                        continue
+
+                logger.warning(
+                    f"TorBox would not start queued download {queued_id}: {reason}"
+                )
+                return False
+            except Exception as exc:
+                logger.warning(
+                    f"Could not start queued TorBox download {queued_id}: {exc}"
+                )
+                return False
+
+        return False
+
+    def _free_active_slots(self) -> int:
+        """Stop seeding torrents that have finished; returns how many.
+
+        TorBox counts a finished torrent that is still seeding against the
+        active-download cap. Stopping it keeps every file (playback is
+        unaffected) and gives the slot back. Nothing is deleted here: a torrent
+        that is merely stuck is not provably dead, and a deletion cannot be
+        taken back.
+        """
+
+        assert self.api
+
+        stopped = 0
+
         try:
-            response = self.api.session.post(
-                "queued/controlqueued",
-                json={
-                    "queued_id": queued_id,
-                    "operation": "start",
-                    "type": "torrent",
-                },
+            response = self.api.session.get(
+                "torrents/mylist", params={"bypass_cache": "true"}
             )
 
             self._maybe_backoff(response)
 
-            if not response.ok:
-                logger.debug(
-                    f"TorBox would not start queued download {queued_id}: "
-                    f"{self._handle_error(response)}"
-                )
-                return False
+            data = self._payload(response) if response.ok else None
 
-            return True
+            for entry in data if isinstance(data, list) else []:
+                plain = self._to_plain(entry)
+
+                if not (plain.get("active") and plain.get("download_finished")):
+                    continue
+
+                control = self.api.session.post(
+                    "torrents/controltorrent",
+                    json={"torrent_id": plain.get("id"), "operation": "stop_seeding"},
+                )
+
+                if control.ok:
+                    stopped += 1
         except Exception as exc:
-            logger.debug(f"Could not start queued TorBox download {queued_id}: {exc}")
-            return False
+            logger.warning(f"Could not free TorBox download slots: {exc}")
+
+        if stopped:
+            logger.info(
+                f"TorBox is at its active download limit; stopped seeding {stopped} "
+                f"finished torrent(s) to make room (files kept)."
+            )
+
+        return stopped
+
+    def _find_queued_id(self, infohash: str) -> int | str | None:
+        """The queue id TorBox holds for this infohash, if it is queued."""
+
+        assert self.api
+
+        try:
+            response = self.api.session.get("queued/getqueued", params={"type": "torrent"})
+
+            self._maybe_backoff(response)
+
+            data = self._payload(response) if response.ok else None
+
+            wanted = infohash.lower()
+
+            for entry in data if isinstance(data, list) else []:
+                plain = self._to_plain(entry)
+
+                if str(plain.get("hash") or "").lower() == wanted:
+                    return plain.get("id")
+        except Exception as exc:
+            logger.warning(f"Could not read TorBox's queue for {infohash}: {exc}")
+
+        return None
 
     def _find_torrent_id(self, infohash: str) -> str | None:
         """The torrent id TorBox gave this infohash, if it now has one.

@@ -247,6 +247,61 @@ def _test_user_info_survives_bad_expiry():
     assert info.premium_expires_at is None
 
 
+def _err(detail, status=400):
+    return StubResponse(
+        {"success": False, "detail": detail, "data": None},
+        ok=False,
+        status_code=status,
+        reason="Bad Request",
+    )
+
+
+def _test_error_carries_torbox_detail():
+    dl = make_downloader([])
+    msg = dl._handle_error(_err("You have reached your active download limit of 3."))
+    assert "active download limit" in msg, msg
+
+
+def _test_already_queued_is_found_and_started():
+    # createtorrent refuses ("already queued"), the queue holds it, start works,
+    # then mylist gives the new id.
+    dl = make_downloader(
+        [
+            _err("Download already queued."),
+            StubResponse({"data": [{"id": 77, "hash": "ABC"}]}),
+            StubResponse({"success": True}),
+            StubResponse({"data": [{"id": 900, "hash": "abc"}]}),
+        ]
+    )
+    assert dl.add_torrent("abc") == "900"
+
+
+def _test_full_account_stops_seeding_then_starts():
+    dl = make_downloader(
+        [
+            _err("Download already queued."),
+            StubResponse({"data": [{"id": 77, "hash": "abc"}]}),
+            _err("You have reached your active download limit of 3.", 500),
+            StubResponse(
+                {
+                    "data": [
+                        {"id": 1, "active": True, "download_finished": True},
+                        {"id": 2, "active": True, "download_finished": False},
+                    ]
+                }
+            ),
+            StubResponse({"success": True}),
+            StubResponse({"success": True}),
+            StubResponse({"data": [{"id": 900, "hash": "abc"}]}),
+        ]
+    )
+    assert dl.add_torrent("abc") == "900"
+    stopped = [
+        c for c in dl.api.session.calls if c[1] == "torrents/controltorrent"
+    ]
+    assert len(stopped) == 1 and stopped[0][2]["json"]["torrent_id"] == 1
+
+
 TESTS = [
     ("torbox: link round trip", _test_link_roundtrip),
     ("torbox: link round trip with int id", _test_link_roundtrip_int_id),
@@ -263,6 +318,9 @@ TESTS = [
     ("torbox: user info premium", _test_user_info_premium),
     ("torbox: free plan is not premium", _test_user_info_free_plan_is_not_premium),
     ("torbox: survives unparseable expiry", _test_user_info_survives_bad_expiry),
+    ("torbox: error carries TorBox's detail", _test_error_carries_torbox_detail),
+    ("torbox: already queued is found and started", _test_already_queued_is_found_and_started),
+    ("torbox: full account stops seeding then starts", _test_full_account_stops_seeding_then_starts),
 ]
 
 
