@@ -152,6 +152,16 @@ def t_placeholder_key_is_hash_shaped_and_stable():
     assert len(k) == 40 and int(k, 16) >= 0 and k == dq.pending_key("abc")
 
 
+def t_scrape_result_can_be_flagged_unresolved():
+    from dataclasses import replace
+
+    from program.services.scrapers.results import ScrapeResult
+
+    flagged = replace(ScrapeResult(raw_title="x", seeders=3), unresolved=True)
+    assert flagged.unresolved and flagged.seeders == 3
+    assert not ScrapeResult(raw_title="x").unresolved
+
+
 for name, fn in list(globals().items()):
     if name.startswith("t_") and callable(fn):
         check(name, fn)

@@ -1,6 +1,7 @@
 """Prowlarr scraper module"""
 
 import concurrent.futures
+from dataclasses import replace
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -841,9 +842,8 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                 indexer=indexer.name,
                 privacy=indexer.privacy,
             )
-            result = described(torrent, title)
-            result.unresolved = True
-            streams[key] = result
+            # Frozen dataclass: a copy, not an assignment.
+            streams[key] = replace(described(torrent, title), unresolved=True)
 
         logger.debug(
             f"Indexer {indexer.name} found {len(streams)} streams for {item.log_string} in {time.time() - start_time:.2f} seconds"
