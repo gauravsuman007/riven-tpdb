@@ -1038,6 +1038,15 @@ class ProwlarrConfig(Observable):
         description="Prowlarr indexer ids to search. Empty means search all of "
         "them, which is slow when many are configured.",
     )
+    # Maintained by the scraper, not by hand: the ids Prowlarr listed the last
+    # time the selection was reconciled. An id missing from here is NEW, which
+    # is the only way to tell "added to Prowlarr since" from "deliberately left
+    # unticked" -- both are simply absent from `indexer_ids`.
+    known_indexer_ids: list[int] = Field(
+        default_factory=list,
+        description="Indexer ids Prowlarr had when the selection was last "
+        "reconciled. Maintained automatically.",
+    )
 
 
 class RarbgConfig(Observable):

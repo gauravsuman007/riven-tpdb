@@ -49,6 +49,7 @@ from program.services.downloaders.models import (
 )
 from program.services.scrapers import Scraping
 from program.services.scrapers.categories import is_adult_category
+from program.services.scrapers.prowlarr import sync_indexer_selection
 from program.services.scrapers.shared import get_ranking_overrides
 from program.settings import settings_manager
 from program.utils.request import SmartSession
@@ -1970,6 +1971,12 @@ def list_prowlarr_indexers() -> ProwlarrIndexersResponse:
                 close()
             except Exception:
                 pass
+
+    # The picker is the one place a person sees the selection, so it must not
+    # show ids the scraper would drop on its next scan.
+    sync_indexer_selection(
+        settings, {entry["id"] for entry in payload if entry.get("id") is not None}
+    )
 
     indexers = [
         ProwlarrIndexer(

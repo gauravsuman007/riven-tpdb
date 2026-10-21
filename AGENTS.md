@@ -1163,7 +1163,13 @@ toolbar.
   indexer advertises (Newznab 6000), not a Prowlarr tag: this instance's tags are
   unrelated labels (`flare`, `spv`). Indexer ids are NOT stable across Prowlarr
   rebuilds -- PornoLab went from 23 to 25 -- so a saved `indexer_ids` can point at
-  nothing; check the picker after any Prowlarr change.
+  nothing. This is now reconciled automatically (`sync_indexer_selection` in
+  `scrapers/prowlarr.py`, on every scan and every picker load): ids Prowlarr no
+  longer lists are dropped, and ids not in `known_indexer_ids` are added. An empty
+  selection ("search all") is left alone. TRAPS: it writes `config.__dict__`
+  directly, because assigning through the model notifies the settings observers
+  and re-validates this scraper from inside its own scan; and an empty Prowlarr
+  answer must change nothing, or one failed response wipes the selection.
 
 ## Multi-part playback: two bugs, both outside the playlist code
 The playlist feature below was correct; these were URLs that forgot the part.

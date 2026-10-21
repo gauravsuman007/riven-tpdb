@@ -93,6 +93,67 @@ class ScrapeErrorResponse(BaseModel):
 ANIME_ONLY_INDEXERS = ("Nyaa.si", "SubsPlease", "Anidub", "Anidex")
 
 
+def sync_indexer_selection(config: ProwlarrConfig, current_ids: set[int]) -> bool:
+    """Keep the saved indexer selection true to what Prowlarr has.
+
+    Prowlarr hands out ids that do not survive a rebuild (PornoLab went from 23
+    to 25), and a new indexer is never in a saved selection, so left alone the
+    selection quietly rots: dead ids that match nothing, and every indexer
+    added later never searched. Both are fixed here, on every scan:
+
+    * ids Prowlarr no longer lists are dropped;
+    * ids that were not there last time (`known_indexer_ids`) are added.
+
+    An indexer the user unticked stays unticked, because it was already known.
+    An EMPTY selection means "search all" and is left empty -- it needs no
+    help. The first run has no baseline, so it adopts the current set without
+    adding anything: those were all there when the user chose.
+
+    An empty `current_ids` is treated as "Prowlarr told us nothing" and changes
+    nothing; otherwise one failed response would wipe the whole selection.
+
+    Writes the fields directly and saves the file itself: assigning through the
+    model notifies the settings observers, which would re-validate this very
+    scraper from inside its own scan.
+
+    Returns whether anything changed.
+    """
+
+    if not current_ids:
+        return False
+
+    selected = list(config.indexer_ids or [])
+    known = set(config.known_indexer_ids or [])
+
+    new_ids = (current_ids - known) if known else set()
+
+    if selected:
+        kept = [i for i in selected if i in current_ids]
+        added = sorted(new_ids - set(kept))
+        updated = kept + added
+    else:
+        kept, added, updated = [], [], []
+
+    if updated == selected and known == current_ids:
+        return False
+
+    if updated != selected:
+        logger.info(
+            f"Prowlarr indexer selection updated: dropped "
+            f"{sorted(set(selected) - set(kept))}, added {added}"
+        )
+
+    config.__dict__["indexer_ids"] = updated
+    config.__dict__["known_indexer_ids"] = sorted(current_ids)
+
+    try:
+        settings_manager.save()
+    except Exception as e:
+        logger.warning(f"Could not save the reconciled indexer selection: {e}")
+
+    return True
+
+
 def studio_query(item: MediaItem) -> str | None:
     """The title qualified by its studio, for an adult movie that has one.
 
@@ -198,6 +259,8 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
         ).statuses
 
         indexers = list[Indexer]()
+
+        sync_indexer_selection(self.settings, {i.id for i in data if i.id is not None})
 
         # An explicit selection restricts the search; empty means "all of them",
         # which is the upstream behaviour and is slow once many are configured.
