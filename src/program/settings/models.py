@@ -1387,10 +1387,11 @@ class TpdbModel(Observable):
         "storage; it holds small JSON files, not media.",
     )
     cache_max_size_mb: int = Field(
-        default=250,
+        default=5 * 1024,
         ge=0,
         description="Maximum size of the TPDB response cache in MB. Least "
-        "recently used entries are evicted once this is exceeded.",
+        "recently used entries are evicted once this is exceeded. Titles in "
+        "your library are kept regardless and do not count towards it.",
     )
     cache_ttl_seconds: int = Field(
         default=6 * 60 * 60,

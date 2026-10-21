@@ -214,7 +214,7 @@ class TpdbApi:
         self.cache_enabled = cache_enabled
         self.cache_ttl = 300.0 if cache_ttl is None else float(cache_ttl)
         self.cache_max_bytes = (
-            250 if cache_max_size_mb is None else cache_max_size_mb
+            5 * 1024 if cache_max_size_mb is None else cache_max_size_mb
         ) * 1024 * 1024
 
         # url -> (wall-clock stored_at, body). Wall clock, not monotonic, so a
