@@ -103,3 +103,16 @@ def test_a_real_outage_still_raises_without_a_copy(tmp_path):
 
     with pytest.raises(TpdbApiError):
         api.get_movie(UUID)
+
+
+def test_an_answer_cached_before_pinning_moves_to_the_pinned_tier(tmp_path):
+    api = make(tmp_path, {f"movies/{UUID}": (200, {"data": {"id": UUID}})})
+    api.get_movie(UUID)
+
+    api.pinned.add(UUID)
+    api._memory.clear()
+    api.get_movie(UUID)
+
+    assert list((tmp_path / "pinned").glob("*.json"))
+    assert not list(tmp_path.glob("*.json"))
+    assert api.session.calls == [f"movies/{UUID}"]

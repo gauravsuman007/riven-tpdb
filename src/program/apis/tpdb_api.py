@@ -337,6 +337,17 @@ class TpdbApi:
         if entry is None:
             return None
 
+        # A pinned title's answer still sitting in the shared tier, where size
+        # eviction can take it: move it across now. Waiting for a re-write
+        # would leave every answer that is already fresh exposed for hours.
+        if path == candidates[1] and self._is_pinned(url):
+            try:
+                candidates[0].parent.mkdir(parents=True, exist_ok=True)
+                os.replace(path, candidates[0])
+                path = candidates[0]
+            except OSError as exc:
+                logger.debug(f"Could not pin TPDB cache entry {path.name}: {exc}")
+
         try:
             stored_at = float(entry["stored_at"])
             body = entry["body"]
