@@ -770,7 +770,17 @@ class Downloader(Runner[None, DownloaderBase]):
 
         found = False
 
-        if isinstance(item, Movie) and file_data.type == "movie":
+        # A bare number ("1.mkv", "2.mkv") is how a debrid service names the
+        # parts of a split release, and the parser reads it as episode N of a
+        # show. For a Movie there is no episode to be, so it is a part. Left
+        # alone, every file was rejected and a fully downloaded release was
+        # reported as "none were cached" while the item stayed on the old file.
+        bare_number_part = (
+            file_data.type != "movie"
+            and file.filename.rsplit(".", 1)[0].strip().isdigit()
+        )
+
+        if isinstance(item, Movie) and (file_data.type == "movie" or bare_number_part):
             logger.debug("match_file_to_item: movie match -> updating attributes")
 
             self._update_attributes(
