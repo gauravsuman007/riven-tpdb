@@ -2585,6 +2585,60 @@ class TpdbAssociationBody(BaseModel):
     tpdb_id: str | None = None
 
 
+
+def _apply_tpdb_record(item: MediaItem) -> bool:
+    """Fill a movie's details from its TPDB record. Never raises: TPDB being
+    slow or down must not stop the association itself from saving."""
+
+    from program.apis.tpdb_api import TpdbApi
+    from program.services.indexers.tpdb_mapping import (
+        movie_to_movie_dict,
+        scene_to_movie_dict,
+    )
+
+    try:
+        api = di[TpdbApi]
+
+        if record := api.get_movie(item.tpdb_id):
+            data = movie_to_movie_dict(record.model_dump())
+        elif record := api.get_scene(item.tpdb_id):
+            data = scene_to_movie_dict(record.model_dump())
+        else:
+            return False
+
+        # Keep what TPDB leaves blank rather than blanking what we had.
+        data = {k: v for k, v in data.items() if v not in (None, "", [])}
+        data.setdefault("tpdb_id", item.tpdb_id)
+
+        for key, value in data.items():
+            if hasattr(item, key):
+                setattr(item, key, value)
+
+        return True
+    except Exception as exc:
+        logger.warning(f"Linked {item.log_string} to TPDB but could not fetch its details: {exc}")
+        return False
+
+
+def _warm_in_background(tpdb_id: str) -> None:
+    """Pin the title and fetch its related row and collected flag now, so its
+    page opens from local data instead of waiting for the half-hourly warm."""
+
+    import threading
+
+    from program.apis.tpdb_api import TpdbApi
+    from program.services.tpdb_warm import warm_title
+
+    try:
+        api = di[TpdbApi]
+    except Exception:
+        return
+
+    threading.Thread(
+        target=warm_title, args=(api, tpdb_id), daemon=True, name="tpdb-warm-one"
+    ).start()
+
+
 @router.post(
     "/{item_id}/tpdb",
     summary="Set or clear an item's TPDB association",
@@ -2655,6 +2709,13 @@ async def set_item_tpdb(
                 if fallback:
                     item.poster_path = fallback.poster_path
 
+            # A link is a request for that record's details, not just an id
+            # beside the title: apply it the way the indexer does. Before this
+            # the id was stored and nothing visible changed -- no poster, no
+            # cast, the storefront's title -- until some later re-index that a
+            # manually locked item never gets.
+            enriched = _apply_tpdb_record(item) if item.tpdb_id else False
+
             session.commit()
             logger.info(
                 f"TPDB association for {item.log_string} changed: "
@@ -2662,10 +2723,14 @@ async def set_item_tpdb(
                 + (" (dropped its TPDB poster)" if cleared_poster else "")
             )
 
+        if item.tpdb_id:
+            _warm_in_background(item.tpdb_id)
+
         return {
             "item_id": item_id,
             "tpdb_id": item.tpdb_id,
             "previous": previous,
             "cleared_poster": cleared_poster,
+            "enriched": locals().get("enriched", False),
             "locked": True,
         }

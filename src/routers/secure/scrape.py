@@ -1,3 +1,4 @@
+import threading
 from collections import OrderedDict
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -1023,6 +1024,13 @@ class QueueReleaseResponse(MessageResponse):
     infohash: str
     # False when the release still has to be fetched by the debrid service.
     cached: bool
+    # True when this pick is what added the title to the library -- the page
+    # it came from (a storefront entry) has no view of its download.
+    created: bool = False
+    tpdb_id: str | None = None
+
+
+_queue_release_lock = threading.Lock()
 
 
 @router.post(
@@ -1056,7 +1064,11 @@ def queue_release(
     to finish caching.
     """
 
-    with db_session() as session:
+    # One pick at a time. Fetching a capped tracker's .torrent below takes a
+    # few seconds, and a second click in that window resolved the title before
+    # the first had saved it -- so each click minted its own library row
+    # (observed: two "After Dark" items five seconds apart).
+    with _queue_release_lock, db_session() as session:
         item = resolve_media_item(
             session,
             item_id=item_id,
@@ -1165,10 +1177,16 @@ def queue_release(
         if replacing_existing:
             item.downloading_stream_hash = infohash
 
+        # The state was stored when the row was created, before it had a
+        # release, so it read Indexed -- which routes to a fresh scrape rather
+        # than to the downloader. With the pick attached it is Scraped.
+        item.store_state()
+
         session.commit()
 
         resolved_id = item.id
         title = item.log_string
+        resolved_tpdb = item.tpdb_id
 
     # An item already in the library must be handed to the Downloader
     # DIRECTLY. `add_item` exists to admit NEW content -- it is a no-op when
@@ -1176,10 +1194,16 @@ def queue_release(
     # library it returned False and queued nothing, while this endpoint
     # cheerfully reported the release as queued. That is the other half of the
     # bug above: even once the pin persisted, nothing acted on it.
-    if already_in_library:
-        queued = di[Program].em.add_event(Event("Downloader", resolved_id))
-    else:
-        queued = di[Program].em.add_item(item, service="Manual")
+    #
+    # A title that was NOT in the library is a row by now as well (saved above
+    # so the release could attach to it), and `add_item` -- which only admits
+    # what does not exist yet -- refused it. Nothing was queued, the response
+    # said "already queued", and the pick waited for the daily library retry.
+    # So both go in by id; a new row's Scraped state routes it to the
+    # downloader.
+    queued = di[Program].em.add_event(
+        Event("Downloader" if already_in_library else "Manual", resolved_id)
+    )
 
     if not queued and already_in_library and di[Program].em.bring_forward(resolved_id):
         # The item was parked on a debrid poll (up to 10 minutes away), which
@@ -1190,6 +1214,8 @@ def queue_release(
             item_id=resolved_id,
             infohash=infohash,
             cached=False,
+            created=not already_in_library,
+            tpdb_id=resolved_tpdb,
         )
 
     if not queued:
@@ -1205,6 +1231,8 @@ def queue_release(
             item_id=resolved_id,
             infohash=infohash,
             cached=False,
+            created=not already_in_library,
+            tpdb_id=resolved_tpdb,
         )
 
     return QueueReleaseResponse(
@@ -1216,6 +1244,8 @@ def queue_release(
         item_id=resolved_id,
         infohash=infohash,
         cached=False,
+        created=not already_in_library,
+        tpdb_id=resolved_tpdb,
     )
 
 

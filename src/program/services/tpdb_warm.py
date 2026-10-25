@@ -47,39 +47,45 @@ def warm_library_tpdb() -> None:
     ids = library_tpdb_ids()
     api.pinned.update(ids)
 
-    warmed = 0
-
-    for uuid in ids:
-        try:
-            # Movie first, scene second: both lookups are cached either way
-            # (404s included), so the detail page's own probe for the other
-            # kind is also answered locally from now on.
-            record = api.get_movie(uuid)
-            kind = "movie"
-
-            if record is None:
-                record = api.get_scene(uuid)
-                kind = "scene"
-
-            if record is None:
-                continue
-
-            # Read from the cached payload: the parsed model cannot carry `_id`.
-            numeric = api.numeric_id(uuid, kind)
-
-            if kind == "movie":
-                api.get_similar_movies(uuid)
-            else:
-                api.get_similar_scenes(uuid)
-
-            if numeric:
-                api.pinned.add(str(numeric))
-                api.is_collected(numeric)
-
-            warmed += 1
-        except TpdbApiError as exc:
-            # One title failing (or TPDB having a bad minute) is no reason to
-            # stop warming the rest; the next run picks it up.
-            logger.debug(f"Could not warm TPDB data for {uuid}: {exc}")
+    warmed = sum(1 for uuid in ids if warm_title(api, uuid))
 
     logger.debug(f"TPDB data ready for {warmed} of {len(ids)} library titles")
+
+
+def warm_title(api: TpdbApi, uuid: str) -> bool:
+    """Pin one title and fill its record, related row and collected flag."""
+
+    api.pinned.add(uuid)
+
+    try:
+        # Movie first, scene second: both lookups are cached either way (404s
+        # included), so the detail page's own probe for the other kind is also
+        # answered locally from now on.
+        record = api.get_movie(uuid)
+        kind = "movie"
+
+        if record is None:
+            record = api.get_scene(uuid)
+            kind = "scene"
+
+        if record is None:
+            return False
+
+        # Read from the cached payload: the parsed model cannot carry `_id`.
+        numeric = api.numeric_id(uuid, kind)
+
+        if kind == "movie":
+            api.get_similar_movies(uuid)
+        else:
+            api.get_similar_scenes(uuid)
+
+        if numeric:
+            api.pinned.add(str(numeric))
+            api.is_collected(numeric)
+
+        return True
+    except TpdbApiError as exc:
+        # One title failing (or TPDB having a bad minute) is no reason to stop
+        # warming the rest; the next run picks it up.
+        logger.debug(f"Could not warm TPDB data for {uuid}: {exc}")
+        return False
