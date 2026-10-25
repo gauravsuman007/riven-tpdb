@@ -380,6 +380,22 @@ class Downloader(Runner[None, DownloaderBase]):
                     item.downloading_stream_hash = None
                     candidate_mode = False
 
+            # A pinned release is the ONLY candidate. Without this the
+            # downloader tried the pin, found it uncached, and carried on down
+            # the list to whatever the debrid service already held -- so a
+            # hand-picked 20 GB release lost to a cached 560 MB scene of a
+            # different title, and the pick was never even sent to the
+            # provider. The uncached fetch below handles the pin on its own.
+            pinned = item.preferred_stream_hash
+
+            if not candidate_mode and pinned and (
+                not item.active_stream or item.active_stream.infohash != pinned
+            ):
+                only = [s for s in sorted_streams if s.infohash == pinned]
+
+                if only:
+                    sorted_streams = only
+
             previous_entry = item.media_entry if candidate_mode else None
 
             for stream in sorted_streams:
