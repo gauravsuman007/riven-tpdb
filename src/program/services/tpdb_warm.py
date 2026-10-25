@@ -9,6 +9,12 @@ and expired ones are served at once while they refresh) and fetches whatever
 is missing, here in the background rather than in a page load. Measured before
 this: 8.8s for the record, 8.6s for the related row and 7.7s for the collected
 flag on a cold library title; after, each is a cache read.
+
+It also fills a library title's missing cast and studio from that record. A
+title requested from the Adult Empire storefront is built from the storefront
+row, which often has neither; matching it to TPDB later set its ``tpdb_id``
+and nothing else. "After Dark" sat in the library with no cast at all, so
+clicking Mia Malkova on its own page listed her other titles but not it.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ from sqlalchemy import select
 
 from program.apis.tpdb_api import TpdbApi, TpdbApiError
 from program.db.db import db_session
+from program.services.indexers.tpdb_mapping import _performer_names, _site
 from program.settings import settings_manager
 
 
@@ -71,6 +78,8 @@ def warm_title(api: TpdbApi, uuid: str) -> bool:
         if record is None:
             return False
 
+        fill_gaps(uuid, record.model_dump())
+
         # Read from the cached payload: the parsed model cannot carry `_id`.
         numeric = api.numeric_id(uuid, kind)
 
@@ -89,3 +98,51 @@ def warm_title(api: TpdbApi, uuid: str) -> bool:
         # warming the rest; the next run picks it up.
         logger.debug(f"Could not warm TPDB data for {uuid}: {exc}")
         return False
+
+
+def fill_gaps(uuid: str, record: dict) -> int:
+    """Give library titles with this TPDB id the cast and studio they lack.
+
+    Gaps only, never a replacement: a cast or studio already present came
+    from somewhere deliberate (the indexer, a manual match), and the same
+    restraint keeps a wrong match from overwriting good data -- see "A wrong
+    match must not be able to destroy correct artwork" in AGENTS.md.
+
+    Loaded and assigned through the ORM rather than a bulk UPDATE: the
+    library's cast search table (``ItemPerformer``) is kept in step by mapper
+    events, which a bulk statement skips.
+    """
+
+    from program.media.item import MediaItem
+
+    performers = _performer_names(record)
+    _, site_name = _site(record)
+
+    if not performers and not site_name:
+        return 0
+
+    filled = 0
+
+    with db_session() as session:
+        items = session.execute(
+            select(MediaItem).where(MediaItem.tpdb_id == uuid)
+        ).scalars().all()
+
+        for item in items:
+            changed = False
+
+            if performers and not item.performers:
+                item.performers = performers
+                changed = True
+
+            if site_name and not item.site_name:
+                item.site_name = site_name
+                changed = True
+
+            filled += changed
+
+        if filled:
+            session.commit()
+            logger.debug(f"Filled cast/studio from TPDB for {filled} item(s) of {uuid}")
+
+    return filled

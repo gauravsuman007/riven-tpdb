@@ -290,6 +290,8 @@ def test_movie_categories_are_kept():
         "Best MILF Movie or Limited Series",
         "Best Female Mixed-Age Movie or Series",
         "Best Picture",
+        "Best Epic",
+        "Best Epic Movie",
     ):
         assert avn.awards_a_work(category), category
 
@@ -325,6 +327,8 @@ def test_non_media_categories_are_rejected():
         "Best Boutique",
         "Best CD-ROM",
         "Hottest Ass",
+        "Most Epic Ass",
+        "Fan Award: Most Epic Ass",
         "Favorite Adult Podcast",
         "Best Affiliate Program",
         "Best Body",

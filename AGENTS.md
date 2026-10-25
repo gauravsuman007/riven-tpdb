@@ -861,6 +861,14 @@ stack is a full checkout at `/home/hellonfire/Server/riven-tpdb`.
   "ri" can answer after "riley" and would otherwise overwrite it.
 - Tests: `src/tests/test_item_search.py` (SQLite, stdlib harness).
 
+- A storefront-requested title can sit in the library with NO cast and no
+  studio: `build_movie` copies the Adult Empire row, which often has neither,
+  and matching it to TPDB afterwards set only `tpdb_id`. The `performer=` facet
+  then silently omits it ("After Dark" was missing from Mia Malkova's titles,
+  clicked from its own page). `tpdb_warm.fill_gaps` fills cast and studio from
+  the TPDB record on every warm run -- gaps only, via the ORM so the
+  `ItemPerformer` mapper events fire.
+
 ## Search matches names fuzzily (`program/utils/fuzzy.py`)
 - `ilike('%term%')` is a substring test, not search. Measured against the live
   directory before this existed: "brazzers" found Brazzers, **"brazers" found
@@ -1972,6 +1980,13 @@ Consequences worth remembering:
   `"collections"` and survives; so does anything already downloaded, which is
   media they now own. The `CollectionEntry` always survives -- it is a catalogue
   row, so the title stays browsable and re-requestable.
+
+- `WORK_CATEGORY` once counted "epic" anywhere as a film noun, so "Most Epic
+  Ass" (a fan award to a performer) was treated as a film, matched TPDB scenes
+  merely TITLED with the winner's name (Naughty America's "Abella Danger") and
+  auto-requested them. "epic" now counts only as a category's last word. The
+  prune removes such ENTRIES, never the MediaItems -- downloaded mistakes stay
+  in the library until removed by hand.
 
 ## Direct-scrape matching and scraper plugins: moved
 

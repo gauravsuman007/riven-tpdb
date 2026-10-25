@@ -112,7 +112,11 @@ WORK_CATEGORY = re.compile(
     r"movies?|films?|videos?|features?|featurettes?|releases?|series|"
     r"scenes?|tapes?|dvds?|blu-?rays?|productions?|titles?|channels?|"
     r"vignettes?|compilations?|anthology|parod(?:y|ies)|shows?|specialty|"
-    r"comedy|drama|epic|pictures?|thriller"
+    r"comedy|drama|pictures?|thriller|"
+    # "Best Epic" is a film; "Most Epic Ass" is a fan award to a performer,
+    # which matched as a work and auto-requested a scene merely named after
+    # her. So "epic" counts only as the category's last word.
+    r"epic(?=\s*$)"
     r")\b"
 )
 
