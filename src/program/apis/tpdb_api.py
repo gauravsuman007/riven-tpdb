@@ -433,7 +433,13 @@ class TpdbApi:
             entries = list[tuple[float, int, Path]]()
             total = 0
 
-            for path in self._cache_dir.glob("*.json"):
+            # Performer pictures (`tpdb_images`) share the budget and the LRU
+            # order with the responses: one setting bounds the whole cache.
+            for path in [
+                *self._cache_dir.glob("*.json"),
+                *self._cache_dir.glob("images/*.webp"),
+                *self._cache_dir.glob("images/*.miss"),
+            ]:
                 try:
                     stat = path.stat()
                 except OSError:

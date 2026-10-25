@@ -582,10 +582,17 @@ Whisparr dependency. Regular movies/TV must never appear.
   "lookup" and 422. Guarded by a test.
 - No match is a 404 and the title page falls back to `/studios?q=<name>`,
   which pre-fills the directory's search box.
-- Cast headshots on the title page come from the frontend's
-  `/performers/face?u=` cache (see that repo's `performer-faces.ts`). A
-  scene's performer record is the SITE's copy and lacks `face` 62% of the
-  time; `parent.face` covers 96%, so the fallback order matters.
+- Cast pictures on the title page are served by `GET /tpdb/performer-image
+  ?url=` (`program/apis/tpdb_images.py`): fetched once from TPDB's image hosts
+  only (https, no redirects -- the URL comes from the request), downscaled by
+  ffmpeg to 200px-wide WebP (~5-8 KB; never enlarged, never cropped), stored
+  in `<tpdb cache_dir>/images/`. `_enforce_size_limit` walks that folder too,
+  so pictures and responses share ONE size limit and one LRU order. No imaging
+  library: ffmpeg is already in the image for the remuxer.
+- Prefer the full poster (`image`, then `parent.image`) over `face`: TPDB's
+  `face` is a square "smart" crop that is often a torso. A scene's performer
+  record is the SITE's copy and lacks a picture 62% of the time; `parent`
+  covers 96%.
 
 ## Resolving brochure entries to TPDB (the "old detail page" bug)
 - `/brochure/[id]` picks its view from `entry.tpdb_id`: set means redirect to

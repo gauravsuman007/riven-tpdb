@@ -32,7 +32,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException, Path, Query
+from fastapi import APIRouter, HTTPException, Path, Query, Response
 from kink import di
 from loguru import logger
 from pydantic import BaseModel
@@ -40,6 +40,7 @@ from sqlalchemy import select
 
 from program.utils.search_ranking import rank
 
+from program.apis import tpdb_images
 from program.apis.tpdb_api import (
     TpdbApiError,
     TpdbApi,
@@ -466,6 +467,31 @@ def get_site(site_id: Annotated[str, Path()]) -> TpdbSite:
         raise HTTPException(status_code=404, detail="Site not found")
 
     return site
+
+
+@router.get(
+    "/performer-image",
+    operation_id="tpdb_performer_image",
+    response_class=Response,
+    responses={200: {"content": {"image/webp": {}}}},
+)
+def performer_image(url: Annotated[str, Query()]) -> Response:
+    """A performer's picture, downscaled and cached (see ``tpdb_images``)."""
+
+    if not tpdb_images.is_allowed(url):
+        raise HTTPException(status_code=404, detail="Not a TPDB image")
+
+    image = tpdb_images.performer_image(_api(), url)
+
+    if image is None:
+        raise HTTPException(status_code=404, detail="No picture")
+
+    return Response(
+        content=image,
+        media_type="image/webp",
+        # Keyed by the source URL, so a changed picture is a new address.
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @router.get("/performers/{performer_id}", operation_id="tpdb_get_performer")

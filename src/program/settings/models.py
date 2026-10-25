@@ -1383,15 +1383,16 @@ class TpdbModel(Observable):
     )
     cache_dir: Path = Field(
         default=Path("/riven/data/tpdb_cache"),
-        description="Directory for the TPDB response cache. Put it on fast local "
-        "storage; it holds small JSON files, not media.",
+        description="Directory for the TPDB cache. Put it on fast local "
+        "storage; it holds small JSON files and performer pictures, not media.",
     )
     cache_max_size_mb: int = Field(
         default=5 * 1024,
         ge=0,
-        description="Maximum size of the TPDB response cache in MB. Least "
-        "recently used entries are evicted once this is exceeded. Titles in "
-        "your library are kept regardless and do not count towards it.",
+        description="Maximum size of the TPDB cache in MB, responses and "
+        "performer pictures together. Least recently used entries are evicted "
+        "once this is exceeded. Titles in your library are kept regardless and "
+        "do not count towards it.",
     )
     cache_ttl_seconds: int = Field(
         default=6 * 60 * 60,
