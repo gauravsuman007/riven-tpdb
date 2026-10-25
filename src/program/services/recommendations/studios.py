@@ -345,3 +345,37 @@ def pick_site(results, name: str):
 
 def _normalise(name: str) -> str:
     return "".join(ch for ch in name.casefold() if ch.isalnum())
+
+
+def pick_studio(studios, candidates):
+    """The directory studio a TPDB title's site belongs to, or None.
+
+    ``candidates`` is ``(tpdb_site_id, name)`` pairs, most specific first: the
+    title's own site, then its parent, then its network. The order is the
+    point. A scene's site is often a sub-brand ("Brazzers Exxtra") that the
+    storefront never carries, while its network ("Brazzers") is a studio page;
+    stopping at the first site would leave most scenes unlinked, and starting
+    at the network would send a sub-brand that DOES have a page to its owner.
+
+    Per candidate, the stored TPDB id wins over the name: it is the match the
+    artwork pass already made, and two studios may share a normalised name
+    where only one was ever matched. The name comparison is the same exact-on-
+    normalised rule as :func:`pick_site`, for the same reason -- a near
+    namesake is a different studio, and a wrong link is worse than none.
+    """
+
+    by_site = {str(s.tpdb_site_id): s for s in studios if s.tpdb_site_id}
+    by_name: dict = {}
+
+    for studio in studios:
+        if studio.name:
+            by_name.setdefault(_normalise(studio.name), studio)
+
+    for site_id, name in candidates:
+        if site_id is not None and str(site_id) in by_site:
+            return by_site[str(site_id)]
+
+        if name and _normalise(name) in by_name:
+            return by_name[_normalise(name)]
+
+    return None

@@ -571,6 +571,22 @@ Whisparr dependency. Regular movies/TV must never appear.
   runs once immediately when the table is empty, so enabling it does not leave
   the section blank until Sunday.
 
+### Linking a title to its studio page
+- `GET /studios/lookup?tpdb_site_id=..&name=..` (positional pairs: the
+  title's site, its parent, its network) -> `pick_studio`. Most specific
+  first: a scene's site is often a sub-brand the storefront never carries
+  ("Brazzers Exxtra") while its network is a studio page. Per pair the stored
+  `tpdb_site_id` (the numeric TPDB id, as a string) beats the name; the name
+  rule is `pick_site`'s exact-on-normalised one, never fuzzy.
+- It must stay declared BEFORE `/{studio_id}`, whose int path would claim
+  "lookup" and 422. Guarded by a test.
+- No match is a 404 and the title page falls back to `/studios?q=<name>`,
+  which pre-fills the directory's search box.
+- Cast headshots on the title page come from the frontend's
+  `/performers/face?u=` cache (see that repo's `performer-faces.ts`). A
+  scene's performer record is the SITE's copy and lacks `face` 62% of the
+  time; `parent.face` covers 96%, so the fallback order matters.
+
 ## Resolving brochure entries to TPDB (the "old detail page" bug)
 - `/brochure/[id]` picks its view from `entry.tpdb_id`: set means redirect to
   the full TPDB page, null means render the storefront page. So an entry that

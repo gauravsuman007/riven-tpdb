@@ -284,6 +284,46 @@ def test_the_studio_sync_is_cron_not_interval():
     assert '"cron"' in body and "studio_sync_hour" in body
 
 
+
+# ------------------------------------------------- title site -> studio page
+
+
+class _Dir:
+    def __init__(self, name, tpdb_site_id=None):
+        self.name = name
+        self.tpdb_site_id = tpdb_site_id
+
+
+def test_a_title_links_to_its_sites_studio_by_tpdb_id():
+    # The id the artwork pass stored beats a differently-spelled name.
+    wanted = _Dir("Naughty America (Studio)", "130")
+    found = studios.pick_studio([_Dir("Other"), wanted], [(130, "Naughty America")])
+    assert found is wanted
+
+
+def test_a_sub_brand_falls_back_to_its_network():
+    brazzers = _Dir("Brazzers")
+    candidates = [(9001, "Brazzers Exxtra"), (None, ""), (7, "Brazzers")]
+    assert studios.pick_studio([brazzers], candidates) is brazzers
+
+
+def test_the_most_specific_site_wins_over_its_network():
+    own, network = _Dir("Brazzers Exxtra"), _Dir("Brazzers")
+    candidates = [(9001, "Brazzers Exxtra"), (7, "Brazzers")]
+    assert studios.pick_studio([network, own], candidates) is own
+
+
+def test_a_namesake_studio_is_not_linked():
+    candidates = [(None, "Evil Angel")]
+    assert studios.pick_studio([_Dir("Mylf X Evil Angel")], candidates) is None
+    assert studios.pick_studio([_Dir("EVIL-ANGEL")], candidates) is not None
+
+
+def test_the_lookup_route_is_declared_before_the_id_route():
+    text = (SRC / "routers/secure/studios.py").read_text()
+    assert text.index('"/lookup"') < text.index('"/{studio_id}"')
+
+
 for _name, _fn in sorted(list(globals().items())):
     if _name.startswith("test_") and callable(_fn):
         check(_name, _fn)

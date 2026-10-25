@@ -36,7 +36,7 @@ from program.services.recommendations.adultempire import (
     RankedTitle,
 )
 from program.services.indexers.adultempire_indexer import parse_released
-from program.services.recommendations.studios import StudioService
+from program.services.recommendations.studios import StudioService, pick_studio
 from program.utils import fuzzy
 from program.services.recommendations.tpdb_lookup import enrich_entry
 from program.utils.time import utcnow
@@ -208,6 +208,43 @@ def _set_saved(studio_id: int, saved: bool) -> StudioResponse:
         studio.saved = saved
         studio.saved_at = utcnow() if saved else None
         session.commit()
+
+        return _response(studio)
+
+
+@router.get("/lookup", operation_id="lookup_studio")
+def lookup_studio(
+    tpdb_site_id: Annotated[list[int], Query()] = [],
+    name: Annotated[list[str], Query()] = [],
+) -> StudioResponse:
+    """The studio page for a TPDB title's site, so a title can link to it.
+
+    Both lists are positional pairs, most specific first -- the title's site,
+    its parent, its network; see :func:`pick_studio` for why that order. A
+    pair whose id is unknown sends ``0``.
+
+    Declared before ``/{studio_id}``: that route's int path would claim
+    "lookup" and answer 422 instead of falling through to here.
+    """
+
+    if len(tpdb_site_id) != len(name):
+        raise HTTPException(
+            status_code=422, detail="tpdb_site_id and name must pair up"
+        )
+
+    candidates = [
+        (site_id or None, label) for site_id, label in zip(tpdb_site_id, name)
+    ]
+
+    with db_session() as session:
+        # The whole directory: ~1,200 small rows, and the name rule has to be
+        # the same Python normalisation `pick_site` uses, which SQL cannot
+        # reproduce exactly for non-ASCII names.
+        directory = session.execute(select(Studio)).scalars().all()
+        studio = pick_studio(directory, candidates)
+
+        if studio is None:
+            raise HTTPException(status_code=404, detail="No studio page for that site")
 
         return _response(studio)
 
