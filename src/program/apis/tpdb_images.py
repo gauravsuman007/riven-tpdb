@@ -33,12 +33,18 @@ if TYPE_CHECKING:
     from program.apis.tpdb_api import TpdbApi
 
 WIDTH = 200
+#: Wide art (TMDB backdrops, scene stills): the player's loading screen, the
+#: home hero and the title page banner. 1280 is sharp full-width on a laptop
+#: and ~60-120 KB as WebP, against 300 KB+ for TMDB's original JPEG.
+WIDE_WIDTH = 1280
 QUALITY = 78
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
 FAILURE_TTL_SECONDS = 6 * 60 * 60
 # `cdn.` serves the full posters; `thumb.` is TPDB's resizing proxy, which
 # the `face` field points at.
-ALLOWED_HOSTS = frozenset({"cdn.theporndb.net", "thumb.theporndb.net"})
+ALLOWED_HOSTS = frozenset(
+    {"cdn.theporndb.net", "thumb.theporndb.net", "image.tmdb.org"}
+)
 SUBDIR = "images"
 
 _locks: dict[str, threading.Lock] = {}
@@ -54,8 +60,11 @@ def is_allowed(url: str) -> bool:
     return parsed.scheme == "https" and parsed.hostname in ALLOWED_HOSTS
 
 
-def _key(url: str) -> str:
-    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+def _key(url: str, width: int = WIDTH) -> str:
+    # The performer size keeps its original key, so pictures cached before
+    # wide art existed stay valid.
+    material = url if width == WIDTH else f"{width}:{url}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def downscale(source: bytes, width: int = WIDTH) -> bytes:
@@ -115,6 +124,18 @@ def _fetch(url: str) -> bytes:
 
 
 def performer_image(api: TpdbApi, url: str) -> bytes | None:
+    """A performer's picture, 200px wide."""
+
+    return cached_image(api, url, WIDTH)
+
+
+def wide_image(api: TpdbApi, url: str) -> bytes | None:
+    """A backdrop or scene still, 1280px wide."""
+
+    return cached_image(api, url, WIDE_WIDTH)
+
+
+def cached_image(api: TpdbApi, url: str, width: int) -> bytes | None:
     """The downscaled picture for ``url``: cached, or fetched and stored.
 
     None when the URL is not TPDB's or the picture cannot be had; a failure
@@ -126,7 +147,7 @@ def performer_image(api: TpdbApi, url: str) -> bytes | None:
         return None
 
     directory: Path | None = api._cache_dir / SUBDIR if api._cache_dir else None
-    key = _key(url)
+    key = _key(url, width)
 
     with _locks_guard:
         lock = _locks.setdefault(key, threading.Lock())
@@ -150,7 +171,7 @@ def performer_image(api: TpdbApi, url: str) -> bytes | None:
                     pass
 
             try:
-                image = downscale(_fetch(url))
+                image = downscale(_fetch(url), width)
             except Exception as exc:  # noqa: BLE001 -- any failure is a miss
                 logger.debug(f"Performer picture {url} unavailable: {exc}")
 

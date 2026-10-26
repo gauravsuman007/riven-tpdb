@@ -40,7 +40,7 @@ from sqlalchemy import select
 
 from program.utils.search_ranking import rank
 
-from program.apis import tpdb_images
+from program.apis import imdb_ratings, title_extras, tpdb_images
 from program.apis.tpdb_api import (
     TpdbApiError,
     TpdbApi,
@@ -491,6 +491,142 @@ def performer_image(url: Annotated[str, Query()]) -> Response:
         media_type="image/webp",
         # Keyed by the source URL, so a changed picture is a new address.
         headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
+class TitleExtras(BaseModel):
+    """What TPDB lacks for a title; see ``program.apis.title_extras``."""
+
+    kind: str | None = None
+    tmdb_id: int | None = None
+    imdb_id: str | None = None
+    imdb_rating: float | None = None
+    imdb_votes: int | None = None
+    #: The cast in billing order (TMDB), empty when unknown.
+    cast_order: list[str] = []
+    #: The source URL of a 16:9 image; serve it through ``/tpdb/wide-image``.
+    wide: str | None = None
+
+
+def _extras_response(api: TpdbApi, data: dict) -> TitleExtras:
+    response = TitleExtras(**{k: v for k, v in data.items() if k in TitleExtras.model_fields})
+    rating = imdb_ratings.get(api, response.imdb_id)
+
+    if rating:
+        response.imdb_rating, response.imdb_votes = rating
+
+    return response
+
+
+@router.get("/extras", operation_id="tpdb_title_extras_batch")
+def title_extras_batch(
+    ids: Annotated[list[str], Query(max_length=50)],
+) -> dict[str, TitleExtras]:
+    """Extras already worked out, for a page that must not wait on TMDB.
+
+    Answers from the cache only and works the misses out in the background,
+    so the next visit has them. The home hero uses this.
+    """
+
+    api = _api()
+    found: dict[str, TitleExtras] = {}
+    missing: list[str] = []
+
+    for uuid in dict.fromkeys(ids):
+        hit = title_extras.cached(api, uuid)
+
+        if hit is None:
+            missing.append(uuid)
+        else:
+            found[uuid] = _extras_response(api, hit)
+
+    if missing:
+        title_extras.ensure_in_background(api, missing)
+
+    return found
+
+
+@router.get("/extras/{uuid}", operation_id="tpdb_title_extras")
+def get_title_extras(uuid: Annotated[str, Path()]) -> TitleExtras:
+    """One title's extras, working them out now if they are not cached."""
+
+    api = _api()
+
+    try:
+        data = title_extras.extras(api, uuid)
+    except Exception as exc:  # noqa: BLE001 -- the page renders without them
+        logger.debug(f"Title extras for {uuid} unavailable: {exc}")
+        return TitleExtras()
+
+    return _extras_response(api, data)
+
+
+def _image_response(image: bytes | None) -> Response:
+    if image is None:
+        raise HTTPException(status_code=404, detail="No picture")
+
+    return Response(
+        content=image,
+        media_type="image/webp",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
+@router.get(
+    "/wide-image",
+    operation_id="tpdb_wide_image",
+    response_class=Response,
+    responses={200: {"content": {"image/webp": {}}}},
+)
+def wide_image(url: Annotated[str, Query()]) -> Response:
+    """A backdrop or scene still, 1280px wide, cached (see ``tpdb_images``)."""
+
+    if not tpdb_images.is_allowed(url):
+        raise HTTPException(status_code=404, detail="Not a TPDB or TMDB image")
+
+    return _image_response(tpdb_images.wide_image(_api(), url))
+
+
+@router.get(
+    "/items/{item_id}/wide-image",
+    operation_id="tpdb_item_wide_image",
+    response_class=Response,
+    responses={200: {"content": {"image/webp": {}}}},
+)
+def item_wide_image(item_id: Annotated[int, Path()]) -> Response:
+    """A library item's wide art, for the player's loading screen.
+
+    By item id because that is all the player holds, whichever page opened it.
+    Not cacheable like the URL-keyed routes: the art behind an id can change.
+    """
+
+    from program.db.db import db_session
+    from program.media.item import MediaItem
+
+    with db_session() as session:
+        tpdb_id = session.execute(
+            select(MediaItem.tpdb_id).where(MediaItem.id == item_id)
+        ).scalar_one_or_none()
+
+    if not tpdb_id:
+        raise HTTPException(status_code=404, detail="No TPDB title")
+
+    api = _api()
+
+    try:
+        source = title_extras.extras(api, tpdb_id).get("wide")
+    except Exception:  # noqa: BLE001
+        source = None
+
+    image = tpdb_images.wide_image(api, source) if source else None
+
+    if image is None:
+        raise HTTPException(status_code=404, detail="No wide art")
+
+    return Response(
+        content=image,
+        media_type="image/webp",
+        headers={"Cache-Control": "private, max-age=86400"},
     )
 
 

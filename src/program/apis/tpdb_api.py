@@ -439,6 +439,9 @@ class TpdbApi:
                 *self._cache_dir.glob("*.json"),
                 *self._cache_dir.glob("images/*.webp"),
                 *self._cache_dir.glob("images/*.miss"),
+                # IMDb's ratings file and the map built from it
+                # (`imdb_ratings`); either is re-made on the next refresh.
+                *self._cache_dir.glob("imdb/*"),
             ]:
                 try:
                     stat = path.stat()

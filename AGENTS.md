@@ -1742,6 +1742,36 @@ Tests: `src/tests/test_upstream_guard.py` (stdlib-only).
   plain `urllib` with 403 "error code: 1010" on browser fingerprint, which
   reads exactly like a revoked key.
 
+## Title extras: TMDB billing order, wide art, IMDb rating
+
+TPDB has no billing order (women A-Z then men A-Z) and a TPDB MOVIE has no
+wide art (`background` is the front box cover, `background_back` the back).
+`program/apis/title_extras.py` fills both from TMDB, which carries adult
+features: measured on the library, 40 of 48 movies match, all with cast in
+credit order, 31 with a backdrop, 18 with an IMDb id. Scenes need none of it:
+a TPDB scene's `background` IS the 16:9 still.
+
+- Matching: exact title (alphanumerics), adult only, year as a SEARCH FILTER
+  (`year=`) for year, year-1, year+1 -- without it "Drive" (2019) and
+  "Pirates" (2005) never reach the first page under the mainstream films. A
+  candidate whose cast shares nobody with TPDB's is refused. Do NOT add a
+  studio check: TMDB credits Drive to "Deeper", TPDB to Vixen; both right.
+- Kind comes from the record's `type`, never from which endpoint answered.
+- Cached in the TPDB cache as `extras/<uuid>` (pinned for library titles,
+  misses cached too; a TMDB outage raises instead of caching a miss).
+  Warmed for library titles by `tpdb_warm`.
+- Wide art goes through `tpdb_images.wide_image` (1280px WebP, ~60-80 KB);
+  `image.tmdb.org` is on its host allowlist.
+- Routes: `/tpdb/extras/{uuid}` (computes), `/tpdb/extras?ids=` (cache only,
+  fills misses in the background -- for the home hero, which must not wait on
+  TMDB), `/tpdb/wide-image?url=`, `/tpdb/items/{id}/wide-image` (the player
+  holds only an item id).
+- IMDb rating: `imdb_ratings.py` downloads IMDb's own daily
+  `title.ratings.tsv.gz` and STREAMS it keeping only wanted ids -- never load
+  it whole (1.5M rows, ~150 MB of Python on a memory-starved host). Scraping
+  imdb.com is against its terms. Files live in `<cache>/imdb/`, which size
+  eviction walks.
+
 ## Running the tests
 These suites are plain scripts with a local `check(name, cond)` harness, not
 pytest. On the server:

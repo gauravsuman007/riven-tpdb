@@ -58,6 +58,14 @@ def warm_library_tpdb() -> None:
 
     logger.debug(f"TPDB data ready for {warmed} of {len(ids)} library titles")
 
+    # After the titles, so ids matched on this run are rated on this run.
+    try:
+        from program.apis import imdb_ratings
+
+        imdb_ratings.refresh(api)
+    except Exception as exc:  # noqa: BLE001 -- ratings are decoration
+        logger.debug(f"IMDb ratings refresh failed: {exc}")
+
 
 def warm_title(api: TpdbApi, uuid: str) -> bool:
     """Pin one title and fill its record, related row and collected flag."""
@@ -79,6 +87,15 @@ def warm_title(api: TpdbApi, uuid: str) -> bool:
             return False
 
         fill_gaps(uuid, record.model_dump())
+
+        # Billing order, wide art and IMDb id from TMDB (`title_extras`),
+        # cached and pinned with the rest. Its own failure is not this one's.
+        try:
+            from program.apis import title_extras
+
+            title_extras.extras(api, uuid)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Title extras for {uuid} not ready: {exc}")
 
         # Read from the cached payload: the parsed model cannot carry `_id`.
         numeric = api.numeric_id(uuid, kind)
