@@ -51,6 +51,8 @@ from program.services.awards.avn import (
     CEREMONY_YEAR_OFFSET,
     USER_AGENT,
     AwardEntry,
+    is_craft,
+    split_credit,
 )
 
 BASE_URL = "https://awards.avn.com/winners"
@@ -210,6 +212,14 @@ def winners_for_year(year: int) -> list[AwardEntry]:
             continue
 
         title, studio, performers = split_entry(entry_html)
+
+        # Craft awards read "Person, Title, Studio" here: the person is the
+        # credit, not part of the film's name.
+        if is_craft(category):
+            title, person = split_credit(title)
+
+            if person:
+                performers = [person] + performers
 
         entries.append(
             AwardEntry(

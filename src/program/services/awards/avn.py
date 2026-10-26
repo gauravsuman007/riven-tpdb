@@ -146,6 +146,44 @@ _NOT_CRAFT = re.compile(
 )
 
 
+def is_craft(category: str | None) -> bool:
+    """A craft award: given to a person, for one film."""
+
+    return bool(
+        category and CRAFT_AWARD.search(category) and not _NOT_CRAFT.search(category)
+    )
+
+
+# A comma or an en/em dash; never a plain hyphen, which titles use ("Star
+# Wars: The Last Temptation - A Digital Playground XXX Parody").
+_CREDIT = re.compile(r"^\s*([^,\u2013\u2014]+?)\s*(?:,|\s[\u2013\u2014]\s)\s*(\S.*)$")
+
+
+def split_credit(title: str | None) -> tuple[str | None, str | None]:
+    """("Matt Holder, Strip") -> ("Strip", "Matt Holder").
+
+    For craft winners from awards.avn.com, which writes "Person, Title,
+    Studio" (or "Person \u2013 Title, Studio"); the studio is already gone by
+    the time this runs. Never applied to Wikipedia rows, whose craft titles
+    are already split and whose film titles contain commas of their own
+    ("Face Dance, Parts 1 & 2").
+    """
+
+    match = _CREDIT.match(title or "")
+
+    # The credit must look like a name: short, no digits, no colon.
+    if not match or len(match.group(1).split()) > 4 or re.search(r"[\d:]", match.group(1)):
+        return title, None
+
+    return match.group(2).strip() or title, match.group(1).strip()
+
+
+def credited_people(corpus) -> set[str]:
+    """Every name the corpus credits as cast or crew, normalised."""
+
+    return {norm_name(p) for entry in corpus for p in (entry.performers or []) if p}
+
+
 def awards_a_work(category: str | None) -> bool:
     """Whether this category's award names a film rather than only a person."""
 
@@ -155,7 +193,7 @@ def awards_a_work(category: str | None) -> bool:
     if NON_MEDIA_CATEGORY.search(category):
         return False
 
-    if CRAFT_AWARD.search(category) and not _NOT_CRAFT.search(category):
+    if is_craft(category):
         return True
 
     if PERSON_AWARD.search(category):

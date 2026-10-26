@@ -176,7 +176,12 @@ class AwardsService:
                 collection.refreshed_at = utcnow()
 
             removed = self._prune_nominees(session) if not keep_nominees else 0
-            demoted = self._prune_person_awards(session, people)
+            demoted = self._prune_person_awards(
+                session,
+                people,
+                avn.credited_people(corpus),
+                {(e.year, e.category, e.title) for e in corpus},
+            )
             session.commit()
 
         scope = "winners and nominees" if keep_nominees else "winners only"
@@ -281,7 +286,12 @@ class AwardsService:
         return len(nominees)
 
     @staticmethod
-    def _prune_person_awards(session, people: set[str] = frozenset()) -> int:
+    def _prune_person_awards(
+        session,
+        people: set[str] = frozenset(),
+        credited: set[str] = frozenset(),
+        current: set[tuple] | None = None,
+    ) -> int:
         """Delete stored entries whose category awards a person, not a film.
 
         Needed because the category gates were tightened after the corpus had
@@ -312,6 +322,18 @@ class AwardsService:
             if not avn.awards_a_work(entry.category)
             # ...or whose title is a person's name (see `avn.person_titles`).
             or avn.norm_name(entry.title) in people
+            # ...or a craft winner stored as "Person, Title" before
+            # `avn.split_credit` existed; the sync re-adds it as "Title".
+            # Only when the fresh corpus no longer has the row verbatim: a
+            # Wikipedia title that merely starts with a name ("Diva, The
+            # Series") would otherwise be deleted and re-added on every sync,
+            # losing its TPDB match each time.
+            or (
+                current is not None
+                and avn.is_craft(entry.category)
+                and (entry.year, entry.category, entry.title) not in current
+                and avn.norm_name(avn.split_credit(entry.title)[1]) in credited
+            )
         ]
 
         for entry in stale:

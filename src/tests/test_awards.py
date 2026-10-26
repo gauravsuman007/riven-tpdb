@@ -438,6 +438,26 @@ def test_directing_portfolio_honours_a_person():
     assert avn.awards_a_work("Outstanding Directing \u2013 Individual Work")
 
 
+def test_a_craft_credit_is_split_from_the_film():
+    assert avn.split_credit("Matt Holder, Strip") == ("Strip", "Matt Holder")
+    assert avn.split_credit("Kayden Kross \u2013 Psychosexual") == ("Psychosexual", "Kayden Kross")
+    assert avn.split_credit("Alis Locanta, Rebecca, An Indecent Story") == (
+        "Rebecca, An Indecent Story",
+        "Alis Locanta",
+    )
+    assert avn.split_credit("Strip") == ("Strip", None)
+    # A title is not a credit: hyphens and colons belong to titles.
+    title = "Star Wars: The Last Temptation - A Digital Playground XXX Parody"
+    assert avn.split_credit(title) == (title, None)
+    assert avn.split_credit("Star Wars: The Last Temptation \u2013 A Parody")[1] is None
+
+
+def test_craft_is_not_acting():
+    assert avn.is_craft("Best Cinematography")
+    assert not avn.is_craft("Best Actress")
+    assert not avn.is_craft("Best Directing Portfolio \u2013 Narrative")
+
+
 def test_a_title_alone_is_not_enough():
     """`is_media` used to be `bool(title)`, which let every person award in.
 

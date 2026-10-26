@@ -1843,6 +1843,14 @@ prints `SKIP:` and exits 0 if a dependency is missing.
      ("Escape From Camp Conversion", 5 credits, 1 title).
   3. The endpoint re-applies the gate and drops a title equal to one of its
      own credited people, so an un-resynced database cannot show a person.
+- awards.avn.com writes craft winners as "Person, Title, Studio" (or "Person
+  \u2013 Title"); `avn.split_credit` strips the person for THAT source only --
+  Wikipedia rows are already split and have real commas ("Face Dance, Parts 1
+  & 2"). The credit must look like a name (<=4 words, no digit/colon) and a
+  plain hyphen is never a separator ("Star Wars: ... - A ... Parody").
+  Stored "Person, Title" rows are pruned only when the fresh corpus no longer
+  has them verbatim, or a Wikipedia title starting with a name would be
+  deleted and re-added (losing its TPDB match) on every sync.
 - Companies are not titles either: production company/brand/banner, service
   bureau, VOD interface, and "Video Branch" (Hall of Fame inductee lists) are
   in `NON_MEDIA_CATEGORY`.
