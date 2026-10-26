@@ -17,6 +17,8 @@ click. Minting an entry for all forty-eight rows of every studio anyone
 glanced at is how a catalogue turns into a library by accident.
 """
 
+import re
+import time
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Path, Query
@@ -265,80 +267,103 @@ def studio_detail(studio_id: Annotated[int, Path()]) -> StudioResponse:
         return _response(studio)
 
 
-@router.get("/{studio_id}/rows", operation_id="get_studio_rows")
-def studio_rows(
-    studio_id: Annotated[int, Path()],
-    per_row: Annotated[int, Query(ge=1, le=48)] = 12,
-) -> StudioRows:
-    """A studio's ranked rows.
+# Live reads of an unsaved studio, kept in memory for a while. The storefront is
+# paced to one request a second, so a revisit (or the second device opening the
+# same studio) should not pay for it again. Short enough that "trending" is
+# still honest; saved studios use the weekly database cache instead.
+_LIVE_TTL = 6 * 60 * 60
+_live: dict[tuple[int, str], tuple[float, list[StudioTitle]]] = {}
 
-    Saved studios get their rows from the weekly cache (see
-    ``StudioService.sync_rows``) -- instant, capped at
-    ``studio_rows_top_n``. A studio that is not saved, or was saved too
-    recently for the cache to have run yet, falls back to a live read (same
-    as before this cache existed) so the page is never blank.
 
-    A row that fails comes back empty rather than failing the request: these
-    are two independent page reads of someone else's shop, and one being
-    unavailable should not blank the studio.
-    """
+def _thumb(url: str | None) -> str | None:
+    """The grid-size boxcover. The listing upgrades to the large art, which is
+    several times the bytes for a card drawn 180px wide."""
 
+    return re.sub(r"(\d+)h\.jpg$", r"\1m.jpg", url) if url else url
+
+
+def _row(studio_id: int, sort: str, per_row: int) -> StudioRow:
+    meta = {key: (name, description) for key, name, description in ROWS}
+
+    if sort not in meta:
+        raise HTTPException(status_code=404, detail="No such row")
+
+    name, description = meta[sort]
+
+    # The session is closed before any network read: holding a database
+    # connection across a storefront call that can take many seconds starves
+    # every other request of one.
     with db_session() as session:
         studio = session.get(Studio, studio_id)
 
         if studio is None:
             raise HTTPException(status_code=404, detail="No such studio")
 
-        studios = service()
+        cached = (
+            session.execute(
+                select(StudioRowEntry)
+                .where(StudioRowEntry.studio_id == studio.id, StudioRowEntry.sort == sort)
+                .order_by(StudioRowEntry.rank.asc())
+            )
+            .scalars()
+            .all()
+        )
+        titles = [
+            StudioTitle(
+                rank=e.rank, product_id=e.product_id, title=e.title, poster=_thumb(e.poster)
+            )
+            for e in cached[:per_row]
+        ]
+        session.expunge(studio)
 
-        rows: list[StudioRow] = []
+    if not titles:
+        hit = _live.get((studio_id, sort))
 
-        for sort, name, description in ROWS:
-            cached = (
-                session.execute(
-                    select(StudioRowEntry)
-                    .where(
-                        StudioRowEntry.studio_id == studio.id,
-                        StudioRowEntry.sort == sort,
-                    )
-                    .order_by(StudioRowEntry.rank.asc())
+        if hit and time.monotonic() - hit[0] < _LIVE_TTL:
+            titles = hit[1][:per_row]
+        else:
+            try:
+                fetched = service().listing(studio, sort)
+            except AdultEmpireError as exc:
+                logger.warning(f"Studio {studio.name} {sort} row failed: {exc}")
+                fetched = []
+
+            titles = [
+                StudioTitle(
+                    rank=t.rank, product_id=t.product_id, title=t.title, poster=_thumb(t.poster)
                 )
-                .scalars()
-                .all()
-            )
+                for t in fetched
+            ]
 
-            if cached:
-                row_titles = [
-                    StudioTitle(
-                        rank=entry.rank,
-                        product_id=entry.product_id,
-                        title=entry.title,
-                        poster=entry.poster,
-                    )
-                    for entry in cached[:per_row]
-                ]
-            else:
-                try:
-                    titles = studios.listing(studio, sort)
-                except AdultEmpireError as exc:
-                    logger.warning(f"Studio {studio.name} {sort} row failed: {exc}")
-                    titles = []
+            # An empty answer is a failure, not a fact: never remember it.
+            if titles:
+                _live[(studio_id, sort)] = (time.monotonic(), titles)
 
-                row_titles = [
-                    StudioTitle(
-                        rank=title.rank,
-                        product_id=title.product_id,
-                        title=title.title,
-                        poster=title.poster,
-                    )
-                    for title in titles[:per_row]
-                ]
+            titles = titles[:per_row]
 
-            rows.append(
-                StudioRow(key=sort, name=name, description=description, titles=row_titles)
-            )
+    return StudioRow(key=sort, name=name, description=description, titles=titles)
 
-        return StudioRows(rows=rows)
+
+@router.get("/{studio_id}/rows/{sort}", operation_id="get_studio_row")
+def studio_row(
+    studio_id: Annotated[int, Path()],
+    sort: Annotated[str, Path()],
+    per_row: Annotated[int, Query(ge=1, le=48)] = 12,
+) -> StudioRow:
+    """One ranked row. Lets the page show each row as soon as it lands instead
+    of waiting for both storefront reads."""
+
+    return _row(studio_id, sort, per_row)
+
+
+@router.get("/{studio_id}/rows", operation_id="get_studio_rows")
+def studio_rows(
+    studio_id: Annotated[int, Path()],
+    per_row: Annotated[int, Query(ge=1, le=48)] = 12,
+) -> StudioRows:
+    """Every ranked row. A row that fails comes back empty, not as an error."""
+
+    return StudioRows(rows=[_row(studio_id, key, per_row) for key, _, _ in ROWS])
 
 
 class PromoteResponse(BaseModel):
