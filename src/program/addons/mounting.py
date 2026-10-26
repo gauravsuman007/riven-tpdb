@@ -165,9 +165,17 @@ def _attach_ui(app: Any, key: str, root: Any) -> None:
         if not target.is_file() or ui_root.resolve() not in target.parents:
             raise HTTPException(status_code=404, detail="No such file")
 
+        # `no-cache`: revalidate every time, never serve from cache unasked.
+        # The URL never changes across add-on updates, and without this the
+        # browser kept an update's bundle on heuristic freshness -- an
+        # add-on's new settings panel stayed invisible through hard
+        # refreshes, because a dynamic `import()` is not re-fetched by one.
+        # Revalidation is a 304 when nothing changed (FileResponse sends
+        # ETag and Last-Modified), so it costs a round trip, not the bytes.
         return FileResponse(
             target,
             media_type=_CONTENT_TYPES.get(target.suffix, "application/octet-stream"),
+            headers={"Cache-Control": "no-cache"},
         )
 
 
