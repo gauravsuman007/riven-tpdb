@@ -95,6 +95,7 @@ class AwardsService:
             return 0
 
         corpus = self._merge_site_winners(corpus)
+        avn.clean_craft_titles(corpus)
 
         if not corpus:
             logger.warning("AVN corpus came back empty; leaving collections untouched")
@@ -179,8 +180,7 @@ class AwardsService:
             demoted = self._prune_person_awards(
                 session,
                 people,
-                avn.credited_people(corpus),
-                {(e.year, e.category, e.title) for e in corpus},
+                {(e.year, e.category, e.title) for e in corpus if e.title},
             )
             session.commit()
 
@@ -289,7 +289,6 @@ class AwardsService:
     def _prune_person_awards(
         session,
         people: set[str] = frozenset(),
-        credited: set[str] = frozenset(),
         current: set[tuple] | None = None,
     ) -> int:
         """Delete stored entries whose category awards a person, not a film.
@@ -310,6 +309,8 @@ class AwardsService:
         precisely the ceremonies that have been synced longest.
         """
 
+        covered = {year for year, _, _ in current or ()}
+
         stale = [
             entry
             for entry in session.execute(
@@ -322,17 +323,17 @@ class AwardsService:
             if not avn.awards_a_work(entry.category)
             # ...or whose title is a person's name (see `avn.person_titles`).
             or avn.norm_name(entry.title) in people
-            # ...or a craft winner stored as "Person, Title" before
-            # `avn.split_credit` existed; the sync re-adds it as "Title".
-            # Only when the fresh corpus no longer has the row verbatim: a
-            # Wikipedia title that merely starts with a name ("Diva, The
-            # Series") would otherwise be deleted and re-added on every sync,
-            # losing its TPDB match each time.
+            # ...or a craft winner the corpus no longer produces: one stored as
+            # "Person, Title" before `avn.clean_craft_titles` existed (the sync
+            # re-adds it as "Title"), or a studio-and-person row with no film.
+            # Only for years the fresh corpus actually covers, so one failed
+            # article fetch cannot wipe that year's rows; and a row it still
+            # has verbatim is never touched, so nothing churns between syncs.
             or (
                 current is not None
                 and avn.is_craft(entry.category)
+                and entry.year in covered
                 and (entry.year, entry.category, entry.title) not in current
-                and avn.norm_name(avn.split_credit(entry.title)[1]) in credited
             )
         ]
 

@@ -142,7 +142,9 @@ CRAFT_AWARD = re.compile(
 _NOT_CRAFT = re.compile(
     r"(?i)(of the year|of the decade|hall of fame|act(?:or|ress|ing)|performer|"
     # "Directing Portfolio" honours a director's body of work: no one film.
-    r"starlet|newcomer|portfolio)"
+    r"starlet|newcomer|portfolio|"
+    # "Best Directing \u2013 Banner/Network" goes to a studio's output.
+    r"banner|network)"
 )
 
 
@@ -175,7 +177,56 @@ def split_credit(title: str | None) -> tuple[str | None, str | None]:
     if not match or len(match.group(1).split()) > 4 or re.search(r"[\d:]", match.group(1)):
         return title, None
 
-    return match.group(2).strip() or title, match.group(1).strip()
+    rest = match.group(2).strip()
+
+    # "Person \u2013 Title, Studio": after a dash credit the last comma
+    # introduces the studio. (After a comma credit the studio is already gone.)
+    if title and title[match.end(1) :].lstrip().startswith(("\u2013", "\u2014")):
+        head, sep, _ = rest.rpartition(",")
+        rest = head.strip() if sep and head.strip() else rest
+
+    return rest or title, match.group(1).strip()
+
+
+def clean_craft_titles(corpus) -> None:
+    """Strip a credited person off the front of craft winners' titles.
+
+    Wikipedia is mostly split already, but some years write craft winners as
+    "Michael Hues, Grinders" or "Kayden Kross \u2013 Psychosexual, Vixen Media
+    Group". Applied only when the leading name is someone the corpus credits
+    as a person, which is what keeps "Face Dance, Parts 1 & 2" whole.
+    Mutates the entries in place.
+    """
+
+    credited = credited_people(corpus)
+
+    def is_person(name: str | None) -> bool:
+        # Two words at least: one-word stage names ("Diva", "Rosa") are also
+        # the first word of real titles ("Diva, The Series").
+        return bool(name) and len(name.split()) >= 2 and norm_name(name) in credited
+
+    for entry in corpus:
+        if not is_craft(entry.category) or not entry.title:
+            continue
+
+        # Repeatedly: "Jonathan Morgan, August Warwick, Camp Cuddly Pines ..."
+        while True:
+            title, person = split_credit(entry.title)
+
+            if not is_person(person):
+                break
+
+            entry.title = title
+
+            if person not in (entry.performers or []):
+                entry.performers = [person] + list(entry.performers or [])
+
+        # "Tushy \u2013 Gabrielle Anex": a studio and a person, no film at all.
+        # A None title is not media, so the row is not stored.
+        _, dash, tail = entry.title.partition(" \u2013 ")
+
+        if dash and is_person(tail.strip()):
+            entry.title = None
 
 
 def credited_people(corpus) -> set[str]:

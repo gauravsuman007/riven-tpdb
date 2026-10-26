@@ -452,6 +452,43 @@ def test_a_craft_credit_is_split_from_the_film():
     assert avn.split_credit("Star Wars: The Last Temptation \u2013 A Parody")[1] is None
 
 
+class _Award:
+    def __init__(self, category, title, performers=()):
+        self.category, self.title, self.performers = category, title, list(performers)
+
+
+def test_a_dash_credit_drops_the_trailing_studio():
+    assert avn.split_credit("Kayden Kross \u2013 Psychosexual, Vixen Media Group") == (
+        "Psychosexual",
+        "Kayden Kross",
+    )
+
+
+def test_wikipedia_craft_titles_lose_only_credited_people():
+    corpus = [
+        _Award("Best Editing", "Michael Hues, Grinders"),
+        _Award("Best Cinematography", "Face Dance, Parts 1 & 2"),
+        _Award("Best Drama", "Grinders", ["Michael Hues"]),
+    ]
+    avn.clean_craft_titles(corpus)
+    assert corpus[0].title == "Grinders" and corpus[0].performers == ["Michael Hues"]
+    assert corpus[1].title == "Face Dance, Parts 1 & 2"
+
+
+def test_craft_title_edge_cases():
+    corpus = [
+        _Award("Best Videography", "Diva, The Series"),
+        _Award("Best Screenplay", "Jonathan Morgan, August Warwick, Camp Cuddly Pines"),
+        _Award("Best Editing", "Tushy \u2013 Gabrielle Anex"),
+        _Award("Best Drama", "x", ["Diva", "Jonathan Morgan", "August Warwick", "Gabrielle Anex"]),
+    ]
+    avn.clean_craft_titles(corpus)
+    assert corpus[0].title == "Diva, The Series"  # one-word credit: never split
+    assert corpus[1].title == "Camp Cuddly Pines"
+    assert corpus[2].title is None  # a studio and a person, no film
+    assert not avn.is_craft("Best Directing \u2013 Banner/Network")
+
+
 def test_craft_is_not_acting():
     assert avn.is_craft("Best Cinematography")
     assert not avn.is_craft("Best Actress")

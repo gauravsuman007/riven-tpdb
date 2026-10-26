@@ -1848,9 +1848,15 @@ prints `SKIP:` and exits 0 if a dependency is missing.
   Wikipedia rows are already split and have real commas ("Face Dance, Parts 1
   & 2"). The credit must look like a name (<=4 words, no digit/colon) and a
   plain hyphen is never a separator ("Star Wars: ... - A ... Parody").
-  Stored "Person, Title" rows are pruned only when the fresh corpus no longer
-  has them verbatim, or a Wikipedia title starting with a name would be
-  deleted and re-added (losing its TPDB match) on every sync.
+  Wikipedia does it too in some years ("Michael Hues, Grinders", "Kayden Kross
+  \u2013 Psychosexual, Vixen Media Group"), so `avn.clean_craft_titles` runs on
+  the merged corpus: it strips a leading name only when the corpus credits it
+  as a person AND it has two words or more ("Diva, The Series" is a title),
+  repeats for multi-person credits, and drops "Studio \u2013 Person" rows
+  that name no film.
+  A stored craft row is pruned when the fresh corpus no longer produces it,
+  only for years the corpus covers (one failed fetch must not wipe a year);
+  a row it still has verbatim is never touched, so nothing churns per sync.
 - Companies are not titles either: production company/brand/banner, service
   bureau, VOD interface, and "Video Branch" (Hall of Fame inductee lists) are
   in `NON_MEDIA_CATEGORY`.
