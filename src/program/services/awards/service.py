@@ -102,9 +102,14 @@ class AwardsService:
 
         keep_nominees = self.settings.include_nominees
         by_year: dict[int, list[avn.AwardEntry]] = {}
+        # Titles only: a row that parsed a person into the title is not stored.
+        people = avn.person_titles(corpus)
 
         for entry in corpus:
             if entry.year < self.settings.first_year or not entry.is_media:
+                continue
+
+            if avn.norm_name(entry.title) in people:
                 continue
 
             if not entry.winner and not keep_nominees:
@@ -171,7 +176,7 @@ class AwardsService:
                 collection.refreshed_at = utcnow()
 
             removed = self._prune_nominees(session) if not keep_nominees else 0
-            demoted = self._prune_person_awards(session)
+            demoted = self._prune_person_awards(session, people)
             session.commit()
 
         scope = "winners and nominees" if keep_nominees else "winners only"
@@ -276,7 +281,7 @@ class AwardsService:
         return len(nominees)
 
     @staticmethod
-    def _prune_person_awards(session) -> int:
+    def _prune_person_awards(session, people: set[str] = frozenset()) -> int:
         """Delete stored entries whose category awards a person, not a film.
 
         Needed because the category gates were tightened after the corpus had
@@ -305,6 +310,8 @@ class AwardsService:
             .scalars()
             .all()
             if not avn.awards_a_work(entry.category)
+            # ...or whose title is a person's name (see `avn.person_titles`).
+            or avn.norm_name(entry.title) in people
         ]
 
         for entry in stale:

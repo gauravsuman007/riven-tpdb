@@ -52,7 +52,13 @@ NON_MEDIA_CATEGORY = re.compile(
     r"(?i)\b(?:web\s?site|website|web retail|retail chain|pleasure product|"
     r"manufacturer|distributor|marketing|packaging|store|novelty|toy|"
     r"social media|cam\s?girl|cam/creator|web starlet|crossover star|"
-    r"porn star website|company image)\b"
+    r"porn star website|company image|"
+    # Companies and services, not titles: "Best New Production Brand" goes to
+    # "MILFY", "Best Live Video Service Bureau" to a vendor.
+    r"production (?:company|brand|banner)|service bureau|live video feed|"
+    r"video-on-demand interface|"
+    # The Hall of Fame's video wing: a list of inducted people every year.
+    r"video branch)\b"
 )
 
 # Categories whose award goes to a person. Modern articles quote the work
@@ -64,7 +70,8 @@ PERSON_CATEGORY = re.compile(
     r"director of the year|executive of the year|"
     r"performer of the decade|hall of fame|"
     r"\bact(?:or|ress)\b|\bdirector\b|supporting|"
-    r"cinematograph|editing|\bmusic\b|screenplay|writer|art direction|"
+    r"cinematograph|videograph|editing|\bmusic\b|musical score|original song|"
+    r"soundtrack|screenplay|writer|art direction|"
     r"make ?up|special effects|tease performance|non-?sex performance)"
 )
 
@@ -121,16 +128,80 @@ WORK_CATEGORY = re.compile(
 )
 
 
+# Craft awards go to a person, but FOR a film, and the parser files the person
+# as cast and the film as the title ("Person, Title" in older articles, the
+# italicised work in newer ones). They are kept for their film -- the Explore
+# rail's "Production Value" group is made of them -- while awards that honour
+# the person themselves (acting, performer, "of the year", hall of fame) stay
+# rejected by PERSON_AWARD.
+CRAFT_AWARD = re.compile(
+    r"(?i)(cinematograph|videograph|direct(?:or|ing)|edit(?:ing|or)|screenplay|"
+    r"writ(?:er|ing)|\bmusic\b|musical score|original song|soundtrack|"
+    r"art direction|make ?up|special effects)"
+)
+_NOT_CRAFT = re.compile(
+    r"(?i)(of the year|of the decade|hall of fame|act(?:or|ress|ing)|performer|"
+    # "Directing Portfolio" honours a director's body of work: no one film.
+    r"starlet|newcomer|portfolio)"
+)
+
+
 def awards_a_work(category: str | None) -> bool:
-    """Whether this category's award goes to a film rather than to a person."""
+    """Whether this category's award names a film rather than only a person."""
 
     if not category:
         return False
 
-    if NON_MEDIA_CATEGORY.search(category) or PERSON_AWARD.search(category):
+    if NON_MEDIA_CATEGORY.search(category):
+        return False
+
+    if CRAFT_AWARD.search(category) and not _NOT_CRAFT.search(category):
+        return True
+
+    if PERSON_AWARD.search(category):
         return False
 
     return bool(WORK_CATEGORY.search(category))
+
+
+def norm_name(text: str | None) -> str:
+    return " ".join((text or "").casefold().split())
+
+
+def person_titles(corpus) -> set[str]:
+    """Titles that are really a person's name, normalised.
+
+    Some rows parse with the person in the title slot -- "Best Oral Sex Scene:
+    Tori Black", "Best Director: Rocco Siffredi". The corpus itself knows who
+    is a person: such a name is credited as cast/crew elsewhere far more often
+    than it is used as a title ("Rocco Siffredi": 103 credits, 3 titles).
+
+    Only short titles are judged -- a person's name is at most three words and
+    carries no digit or colon -- because a film's name can leak into a cast
+    list through a mis-parse too, and "Escape From Camp Conversion" (five
+    credits, one title) is a film. Measured on the live corpus: 28 winners
+    removed, the only film among them a single-word title.
+    """
+
+    as_person: dict[str, int] = {}
+    as_title: dict[str, int] = {}
+
+    for entry in corpus:
+        for name in entry.performers or []:
+            key = norm_name(name)
+            as_person[key] = as_person.get(key, 0) + 1
+
+        if entry.title:
+            key = norm_name(entry.title)
+            as_title[key] = as_title.get(key, 0) + 1
+
+    return {
+        title
+        for title, count in as_title.items()
+        if len(title.split()) <= 3
+        and not re.search(r"[\d:]", title)
+        and as_person.get(title, 0) > count
+    }
 
 
 _REF = re.compile(r"<ref[^>]*/>|<ref.*?</ref>", re.S)

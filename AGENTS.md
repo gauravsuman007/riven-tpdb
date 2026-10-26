@@ -1817,6 +1817,38 @@ prints `SKIP:` and exits 0 if a dependency is missing.
   touches only the four awards/brochure jobs, adds or removes them, and drops
   the cached service instances (they read their settings at construction).
 
+### AVN by group (the Explore rail)
+- `GET /collections/avn/categories` and `/avn/categories/{group}` serve AVN
+  winners in TEN broad groups (`program/services/awards/categories.py`), story
+  first: Story & Drama, Comedy & Parody, Production Value, All-Girl, Group &
+  Gangbang, Anal & Oral, Boy/Girl & Solo, Gonzo/Amateur/POV, Specialty & Niche,
+  International. ~620 category strings are mostly renames; per-category
+  grouping still left ~320, which the user rejected as far too many.
+- Rule ORDER is not display order: themes match before the broad Story rule,
+  or "Best All-Girl Feature" is Story because it says "Feature". Anything no
+  rule claims goes to Specialty -- never Story, which must stay story.
+- Both routes are declared BEFORE `/{key}/categories`, which would otherwise
+  take "/avn/categories" as a collection keyed "avn".
+- TITLES ONLY, three layers:
+  1. `CRAFT_AWARD` (cinematography, directing, editing, screenplay, music,
+     art direction...) now PASSES `awards_a_work`: the parser stores the film
+     as the title and the person as cast, so these give "Production Value".
+     Acting, performer, "of the year", hall of fame and "Directing Portfolio"
+     (a body of work) stay rejected.
+  2. `avn.person_titles(corpus)`: a short title credited as a PERSON more
+     often than used as a title is a person parsed into the title slot ("Best
+     Oral Sex Scene: Tori Black", "Best Director: Rocco Siffredi"). Not stored
+     at sync, and pruned from what is stored. Titles over three words or with
+     a digit/colon are never judged: film names leak into cast lists too
+     ("Escape From Camp Conversion", 5 credits, 1 title).
+  3. The endpoint re-applies the gate and drops a title equal to one of its
+     own credited people, so an un-resynced database cannot show a person.
+- Companies are not titles either: production company/brand/banner, service
+  bureau, VOD interface, and "Video Branch" (Hall of Fame inductee lists) are
+  in `NON_MEDIA_CATEGORY`.
+- `test_awards_service.py` is broken independently of all this: its stubs
+  predate `program.utils.time` and it fails to import on a clean tree.
+
 ## Enabling content jobs from their own page
 `/avn` and `/brochure` each have an enable button that posts to
 `/collections/{avn,brochure}/enable`. Both go through `_toggle_content_job`,

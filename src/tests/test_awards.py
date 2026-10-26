@@ -40,6 +40,7 @@ avn = _load("avn_under_test", AWARDS / "avn.py")
 
 # matching.py imports program.utils.text_matching, which is stdlib-only.
 matching = _load("avn_matching_under_test", AWARDS / "matching.py")
+categories = _load("avn_categories_under_test", AWARDS / "categories.py")
 text_matching = sys.modules["program.utils.text_matching"]
 
 PASSED = []
@@ -306,17 +307,27 @@ def test_person_awards_are_rejected():
         "Best Male Newcomer",
         "Best New Starlet",
         "Male Performer of the Year",
+        "Best Non-Sex Performance",
+        "Best Tease Performance",
+        "Hall of Fame",
+        "Director of the Year",
+        "Video Branch",
+    ):
+        assert not avn.awards_a_work(category), category
+
+
+def test_craft_awards_are_kept_for_their_film():
+    """They go to a person FOR a film; the film is what is stored."""
+
+    for category in (
         "Best Director - Feature",
         "Best Cinematography",
         "Best Editing",
         "Best Screenplay",
-        "Best Non-Sex Performance",
-        "Best Tease Performance",
         "Best Music, Gay Video",
         "Best Art Direction, Film",
-        "Hall of Fame",
     ):
-        assert not avn.awards_a_work(category), category
+        assert avn.awards_a_work(category), category
 
 
 def test_non_media_categories_are_rejected():
@@ -332,8 +343,99 @@ def test_non_media_categories_are_rejected():
         "Favorite Adult Podcast",
         "Best Affiliate Program",
         "Best Body",
+        "Best New Production Brand",
+        "Best New Video Production Company",
+        "Best Live Video Service Bureau",
     ):
         assert not avn.awards_a_work(category), category
+
+
+def test_renames_of_one_award_land_in_one_group():
+    names = (
+        "Best Anal-Themed Feature",
+        "Best Anal Release",
+        "Best Anal Movie or Limited Series",
+        "Best Anal Sex Scene\u2014Video",
+        "Best Double-Penetration Sex Scene",
+    )
+    assert {categories.group_of(name) for name in names} == {"anal-oral"}
+
+
+def test_a_theme_beats_the_format_noun():
+    """"Feature" alone must not make a theme award a story award."""
+
+    group = categories.group_of
+    assert group("Best All-Girl Feature") == "all-girl"
+    assert group("Best Foreign Feature") == "international"
+    assert group("Best Anal-Themed Feature") == "anal-oral"
+    assert group("Best Sex Scene\u2014Feature Film") == "boy-girl"
+
+
+def test_story_holds_only_story_driven_awards():
+    group = categories.group_of
+    for name in (
+        "Best Film",
+        "Best Video Feature",
+        "Movie of the Year",
+        "Best Drama",
+        "Best Screenplay",
+        "Best Romance Movie",
+        "Top Selling Release of the Year",
+    ):
+        assert group(name) == "story", name
+
+    for name in ("Best Celebrity Sex Tape", "Best Educational Release", "Best Gonzo Release"):
+        assert group(name) != "story", name
+
+
+def test_craft_awards_are_production_value():
+    group = categories.group_of
+    for name in ("Best Cinematography", "Best Director - Feature", "Best Editing", "Best Music"):
+        assert group(name) == "production", name
+    assert group("Best Gonzo/Cinemacore Movie or Series") == "gonzo"
+
+
+def test_every_group_key_is_a_displayed_group():
+    keys = {key for key, _ in categories._RULES} | {"specialty"}
+    assert keys == set(categories.BY_KEY)
+    assert categories.GROUPS[0].key == "story"
+
+
+class _Row:
+    def __init__(self, title, performers=()):
+        self.title = title
+        self.performers = list(performers)
+
+
+def test_a_person_parsed_into_the_title_is_recognised():
+    corpus = [
+        _Row("Tori Black"),  # "Best Oral Sex Scene: Tori Black"
+        _Row("Pure", ["Tori Black", "Keni Styles"]),
+        _Row("Dirty Girls", ["Tori Black"]),
+    ]
+    assert avn.person_titles(corpus) == {"tori black"}
+
+
+def test_a_film_leaked_into_a_cast_list_is_not_a_person():
+    """Long titles are never judged: names are short, film titles often are not."""
+
+    leaked = ["Escape From Camp Conversion"] * 5
+    corpus = [_Row("Escape From Camp Conversion")] + [_Row("x", [n]) for n in leaked]
+    assert avn.person_titles(corpus) == set()
+
+    # ...nor titles with a digit or a colon.
+    corpus = [_Row("Pirates 2")] + [_Row("x", ["Pirates 2"])] * 3
+    assert avn.person_titles(corpus) == set()
+
+
+def test_a_name_used_mostly_as_a_title_is_a_title():
+    corpus = [_Row("Pirates"), _Row("Pirates"), _Row("x", ["Pirates"])]
+    assert avn.person_titles(corpus) == set()
+
+
+def test_directing_portfolio_honours_a_person():
+    assert not avn.awards_a_work("Best Directing Portfolio \u2013 Narrative")
+    assert avn.awards_a_work("Outstanding Directing \u2013 Individual Work")
 
 
 def test_a_title_alone_is_not_enough():

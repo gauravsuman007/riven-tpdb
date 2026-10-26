@@ -531,6 +531,142 @@ def get_entry(entry_id: Annotated[int, Path()]) -> CollectionEntryResponse:
         return _entry_response(entry, states, library_links(session))
 
 
+# ------------------------------------------------------ AVN by category
+#
+# Declared before ``/{key}/categories``: that route would otherwise take
+# "/avn/categories" as the categories of a collection keyed "avn" and 404.
+
+
+class AvnCategory(BaseModel):
+    """One of the ten broad award groups, across every ceremony.
+
+    See ``program.services.awards.categories`` for how AVN's ~620 category
+    names are folded into these.
+    """
+
+    key: str
+    name: str
+    description: str
+    winners: int
+    first_year: int | None
+    last_year: int | None
+    #: The newest winner that has artwork, to stand for the group.
+    poster_path: str | None
+
+
+class AvnCategoryDetail(BaseModel):
+    category: AvnCategory
+    #: Every winner, newest ceremony first. Each keeps its own ``category``,
+    #: the exact award it won.
+    entries: list[CollectionEntryResponse]
+
+
+def _avn_winners_by_group(session) -> dict[str, list[CollectionEntry]]:
+    """Every AVN winner that names a film, grouped, newest first.
+
+    Titles only, enforced here as well as at sync. The film-award gate is
+    re-applied because a database synced before a gate was tightened keeps
+    person awards until the next sync prunes them; and an entry whose "title"
+    is one of its own credited people (a parse that kept the person) is
+    dropped, because a performer's name must never appear here as a title.
+    """
+
+    from program.services.awards import avn
+    from program.services.awards.categories import group_of
+    from program.services.awards.service import SOURCE as AVN_SOURCE
+
+    entries = (
+        session.execute(
+            select(CollectionEntry)
+            .join(Collection)
+            .where(
+                Collection.source == AVN_SOURCE,
+                CollectionEntry.winner.is_(True),
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    groups: dict[str, list[CollectionEntry]] = {}
+
+    for entry in entries:
+        if not entry.title or not avn.awards_a_work(entry.category):
+            continue
+
+        if entry.title in (entry.performers or []):
+            continue
+
+        groups.setdefault(group_of(entry.category), []).append(entry)
+
+    for group in groups.values():
+        group.sort(key=lambda e: (-(e.year or 0), e.category or "", e.title))
+
+    return groups
+
+
+def _avn_category(key: str, entries: list[CollectionEntry]) -> AvnCategory:
+    from program.services.awards.categories import BY_KEY
+
+    group = BY_KEY[key]
+    years = [e.year for e in entries if e.year]
+
+    return AvnCategory(
+        key=key,
+        name=group.name,
+        description=group.description,
+        winners=len(entries),
+        first_year=min(years) if years else None,
+        last_year=max(years) if years else None,
+        poster_path=next((e.poster_path for e in entries if e.poster_path), None),
+    )
+
+
+@router.get("/avn/categories", operation_id="list_avn_categories")
+def avn_categories() -> list[AvnCategory]:
+    """The award groups that have winners, story-driven first."""
+
+    from program.services.awards.categories import GROUPS
+
+    with db_session() as session:
+        groups = _avn_winners_by_group(session)
+
+    return [
+        _avn_category(group.key, groups[group.key])
+        for group in GROUPS
+        if groups.get(group.key)
+    ]
+
+
+@router.get("/avn/categories/{category}", operation_id="get_avn_category")
+def avn_category(category: Annotated[str, Path()]) -> AvnCategoryDetail:
+    """Every winner in one group, from every ceremony, newest first."""
+
+    with db_session() as session:
+        entries = _avn_winners_by_group(session).get(category)
+
+        if not entries:
+            raise HTTPException(status_code=404, detail="No such AVN category")
+
+        item_ids = [e.media_item_id for e in entries if e.media_item_id]
+        states: dict[int, str] = {}
+
+        if item_ids:
+            for item_id, state in session.execute(
+                select(MediaItem.id, MediaItem.last_state).where(
+                    MediaItem.id.in_(item_ids)
+                )
+            ).all():
+                states[item_id] = state.value if state else "Unknown"
+
+        links = library_links(session)
+
+        return AvnCategoryDetail(
+            category=_avn_category(category, entries),
+            entries=[_entry_response(e, states, links) for e in entries],
+        )
+
+
 @router.get("/{key}/categories", operation_id="list_collection_categories")
 def list_categories(
     key: Annotated[str, Path()],
