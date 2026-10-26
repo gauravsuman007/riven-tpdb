@@ -64,7 +64,12 @@ _CARD_TITLE = re.compile(
     r'<div class="product-details__item-title"><a href="([^"]+)"[^>]*\s*title="([^"]*)"',
     re.S,
 )
-_CARD_POSTER = re.compile(r'src="(https://[^"]+?/products/[^"]+?\.jpg)"')
+# Two shapes of cover URL: the old static `/products/...jpg`, and the image
+# service's `/movie/<id>?w=190&h=270&fit=cover` that the storefront moved to --
+# which is why every listing silently came back without posters.
+_CARD_POSTER = re.compile(
+    r'src="(https://[^"]+?/(?:products/[^"]+?\.jpg|movie/\d+\?[^"]*))"'
+)
 
 # Boxcovers come in sized variants; "m" is the grid thumbnail and "h" the large
 # one. Asking for the large art up front avoids a second fetch per title.
@@ -488,7 +493,8 @@ def parse_detail(html: str, item: RankedTitle) -> RankedTitle:
 
     if not item.poster:
         cover = re.search(
-            r'src="(https://[^"]+?/products/[^"]+?\.jpg)"', html
+            r'src="(https://[^"]+?/(?:products/[^"]+?\.jpg|movie/\d+\?[^"]*))"',
+            html
         )
 
         if cover:
