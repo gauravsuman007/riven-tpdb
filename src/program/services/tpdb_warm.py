@@ -87,6 +87,7 @@ def warm_title(api: TpdbApi, uuid: str) -> bool:
             return False
 
         fill_gaps(uuid, record.model_dump())
+        warm_performer_pictures(api, record.model_dump())
 
         # Billing order, wide art and IMDb id from TMDB (`title_extras`),
         # cached and pinned with the rest. Its own failure is not this one's.
@@ -115,6 +116,47 @@ def warm_title(api: TpdbApi, uuid: str) -> bool:
         # warming the rest; the next run picks it up.
         logger.debug(f"Could not warm TPDB data for {uuid}: {exc}")
         return False
+
+
+def performer_picture_urls(record: dict) -> list[str]:
+    """The picture URL the title page asks for, per performer.
+
+    Same choice as the frontend (`+page.server.ts`): the performer's own poster,
+    then the canonical performer's, then the face crops. A different pick would
+    warm files the page never requests.
+    """
+
+    urls: list[str] = []
+
+    for performer in record.get("performers") or []:
+        parent = performer.get("parent") if isinstance(performer.get("parent"), dict) else {}
+        url = (
+            performer.get("image")
+            or parent.get("image")
+            or performer.get("face")
+            or parent.get("face")
+        )
+
+        if url and url not in urls:
+            urls.append(url)
+
+    return urls
+
+
+def warm_performer_pictures(api: TpdbApi, record: dict) -> None:
+    """Download and shrink the cast's pictures now, so the page finds them cached.
+
+    Before this they were fetched the first time anyone opened the title, one
+    CDN round trip and one ffmpeg each, and a slow one left initials on screen.
+    """
+
+    from program.apis import tpdb_images
+
+    for url in performer_picture_urls(record):
+        try:
+            tpdb_images.performer_image(api, url)
+        except Exception as exc:  # noqa: BLE001 -- a picture is decoration
+            logger.debug(f"Performer picture {url} not warmed: {exc}")
 
 
 def fill_gaps(uuid: str, record: dict) -> int:
