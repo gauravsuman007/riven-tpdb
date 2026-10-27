@@ -806,9 +806,16 @@ class Downloader(Runner[None, DownloaderBase]):
         # show. For a Movie there is no episode to be, so it is a part. Left
         # alone, every file was rejected and a fully downloaded release was
         # reported as "none were cached" while the item stayed on the old file.
-        bare_number_part = (
-            file_data.type != "movie"
-            and file.filename.rsplit(".", 1)[0].strip().isdigit()
+        #
+        # The same goes for a release whose files are named "Muse Episode 1":
+        # TPDB lists some multi-scene titles as a single movie ("Muse Season
+        # 1"), the parser reads each file as an episode with no season, and
+        # all five were rejected -- the release sat fully cached on TorBox
+        # while the item stayed in Scraped, logging "none were cached". An
+        # explicit season marker (S01E02) still means a different title.
+        bare_number_part = file_data.type != "movie" and (
+            file.filename.rsplit(".", 1)[0].strip().isdigit()
+            or (bool(file_data.episodes) and not file_data.seasons)
         )
 
         if isinstance(item, Movie) and (file_data.type == "movie" or bare_number_part):
