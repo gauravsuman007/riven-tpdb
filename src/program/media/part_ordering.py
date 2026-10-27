@@ -40,7 +40,15 @@ _NAMED_EXTRA_MAX_SHARE = 0.5
 # Unnamed junk: the 0.00 GB `RARBG.com.mp4` of the world.
 _ANY_EXTRA_MAX_SHARE = 0.1
 
-_PART_MARKER = re.compile(r"(?:part|pt|cd|disc|disk)[\s._-]*(\d+)", re.IGNORECASE)
+# `episode`/`scene` count as markers because a split-scene title whose files
+# lead with different performers ("Maitland Ward - Muse Episode 1", "Lena Paul
+# - Muse Episode 4") has no shared prefix for the digit-run rule, and sorted
+# alphabetically by performer instead of by episode. The lookbehind (not \b)
+# keeps `_part1` matching while stopping "deep 3" from reading as `ep 3`.
+_PART_MARKER = re.compile(
+    r"(?<![a-z])(?:part|pt|cd|disc|disk|episode|ep|scene|chapter)[\s._-]*(\d+)",
+    re.IGNORECASE,
+)
 _DIGIT_RUN = re.compile(r"\d+")
 
 

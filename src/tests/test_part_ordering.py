@@ -173,6 +173,28 @@ def test_a_single_file_is_returned_untouched():
     assert order_parts(entries) == entries
 
 
+def test_episode_markers_order_scenes_led_by_different_performers():
+    """Muse Season 1: alphabetical by performer put episode 5 first."""
+
+    ordered = order_parts(
+        _parts(
+            ("Muse/Adriana Chechik - Muse Episode 5  1080p.mp4", 3.0),
+            ("Muse/Lena Paul - Muse Episode 4  1080p.mp4", 2.9),
+            ("Muse/Maitland Ward - Muse Episode 1  1080p.mp4", 5.9),
+            ("Muse/Maitland Ward and Adriana Chechik - Muse Episode 3  1080p.mp4", 5.6),
+            ("Muse/Scarlit Scandal and Gianna Dior - Muse episode 2  1080p.mp4", 5.5),
+        )
+    )
+
+    assert [n.split("Episode ")[-1][0] if "Episode" in n else n.split("episode ")[-1][0] for n in _names(ordered)] == list("12345")
+
+
+def test_a_word_ending_in_ep_is_not_an_episode_marker():
+    ordered = order_parts(_parts(("Deep 3 Zed.mp4", 4), ("Deep 1 Alpha.mp4", 4)))
+
+    assert _names(ordered) == ["Deep 1 Alpha.mp4", "Deep 3 Zed.mp4"]
+
+
 def test_media_parts_orders_through_this_module():
     """`media_parts` must not grow a sort of its own again.
 

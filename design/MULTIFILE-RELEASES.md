@@ -93,6 +93,9 @@ misclassified.
    mistaken for an index.
 2. **`part` / `pt` / `cd` / `disc` / `disk` markers.** 0 of 30 needed this;
    kept because `divxfactory-fsd2_part1/_part2` is one rename away from it.
+   Since 2026-10-27 the marker also accepts `episode`/`ep`/`scene`/`chapter`:
+   Muse Season 1's files lead with different performers, so no prefix is
+   shared and rule 1 cannot fire; alphabetical played episode 5 first.
 3. **Alphabetical** -- today's behaviour. **11 of 30**, and for those it is
    the right answer, not a fallback: they are performer-named
    (`Ava Sinclaire.mp4`, `Riley Reid.mp4`) or description-named
