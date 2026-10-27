@@ -1556,6 +1556,19 @@ in a query string, so a card naming one would be wrong on the other. It is
 also a safety property: an add-on is third-party code, and a card that could
 name a link would be naming it on a page carrying the viewer's session.
 
+### The television's Explore has its own arrangement ("tv-explore")
+- Stored like any page (`/api/v1/rails/tv-explore`, keys only, no backend
+  change). **Unarranged it follows the web Explore layout minus rails with
+  `tv: false`** -- the old behaviour, so nobody who never opens the picker sees
+  a change. Once saved it stands alone and only ever offers rails a television
+  can draw (`tvExploreCatalogue`); Reset (DELETE) goes back to following the web.
+- Defined once in `riven-tpdb-frontend/src/lib/rails.ts` (`tvExploreRails`) and
+  used by BOTH `/api/tv/explore` and the Explore page's "TV rows" picker, so the
+  picker and the screen cannot disagree. Ranked rails are `tv: true` for the
+  television though the web catalogue marks them false.
+- Studios, AVN categories and the shelves are `tv: false` on purpose (no TV
+  page draws them); a first attempt to render them was shelved, not lost.
+
 ## Add-on capabilities are inferred, except the one that matters
 
 `/api/v1/addons` reports "settings", "api", "jobs", "rails", "database",
